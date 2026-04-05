@@ -1,0 +1,69 @@
+from __future__ import annotations
+import numpy as np
+
+
+def simulate_over_under(
+    p_goal: float,
+    line_goals: float = 2.5,
+    minutes_left: int = 25,
+    pace_adj: float = 1.0,
+    sims: int = 20_000,
+    seed: int | None = None,
+) -> np.ndarray:
+    """
+    Simula goles restantes como un proceso de Poisson según la probabilidad de que haya ≥1 gol
+    en el tiempo restante. Usa Monte Carlo para estimar la distribución de goles restantes.
+
+    Parámetros:
+        p_goal: Probabilidad de que haya ≥1 gol en el tiempo restante.
+        line_goals: Línea total (solo informativo en esta función).
+        minutes_left: Minutos restantes en el partido.
+        pace_adj: Factor de ajuste de ritmo (1.0 = normal).
+        sims: Número de simulaciones.
+        seed: Semilla opcional para reproducibilidad.
+
+    Retorna:
+        np.ndarray con los goles simulados restantes en cada iteración.
+    """
+    rng = np.random.default_rng(seed)
+
+    # Conversión: P(≥1) = 1 - e^(-λ) => λ = -ln(1 - p)
+    p_clamped = np.clip(p_goal, 1e-9, 1 - 1e-9)  # evita valores extremos
+    lam = -np.log(1 - p_clamped) * pace_adj
+
+    # Simula número de goles restantes
+    rest_goals = rng.poisson(lam, sims)
+    return rest_goals
+
+
+def simulate_winprob(
+    mu_home: float,
+    mu_away: float,
+    sims: int = 20_000,
+    seed: int | None = None,
+) -> dict[str, float]:
+    """
+    Simula resultados posibles entre dos equipos con tasas de gol promedio (modelo Poisson).
+    Retorna la probabilidad empírica de ganar, empatar o perder, junto con la media de goles.
+
+    Parámetros:
+        mu_home: Media de goles esperados del equipo local.
+        mu_away: Media de goles esperados del visitante.
+        sims: Número de simulaciones de Monte Carlo.
+        seed: Semilla opcional para reproducibilidad.
+
+    Retorna:
+        dict con llaves: 'home_win', 'draw', 'away_win', 'avg_goals'.
+    """
+    rng = np.random.default_rng(seed)
+
+    goals_home = rng.poisson(mu_home, sims)
+    goals_away = rng.poisson(mu_away, sims)
+
+    return {
+        "home_win": float((goals_home > goals_away).mean()),
+        "draw": float((goals_home == goals_away).mean()),
+        "away_win": float((goals_home < goals_away).mean()),
+        "avg_goals": float((goals_home + goals_away).mean()),
+    }
+

@@ -1,0 +1,96 @@
+[
+  {
+    "game_pk": 813033,
+    "game_date": "2025-10-16T22:08:00Z",
+    "home_team": "Los Angeles Dodgers",
+    "away_team": "Milwaukee Brewers",
+    "home_pitcher": "Tyler Glasnow",
+    "home_pitcher_id": 607192,
+    "away_pitcher": "Aaron Ashby",
+    "away_pitcher_id": 676879,
+    "venue": "Dodger Stadium",
+    "game_type": "L",
+    "status": "Final",
+    "home_pitcher_stats": {
+      "era": 3.49,
+      "whip": 0.95,
+      "wins": 9,
+      "losses": 6,
+      "innings_pitched": 134.0,
+      "strikeouts": 168,
+      "walks": 35,
+      "k_per_9": 11.28,
+      "bb_per_9": 2.35,
+      "hits_allowed": 92,
+      "earned_runs": 52,
+      "games_started": 22
+    },
+    "away_pitcher_stats": {
+      "era": 2.86,
+      "whip": 1.06,
+      "wins": 1,
+      "losses": 2,
+      "innings_pitched": 28.1,
+      "strikeouts": 33,
+      "walks": 10,
+      "k_per_9": 10.57,
+      "bb_per_9": 3.2,
+      "hits_allowed": 20,
+      "earned_runs": 9,
+      "games_started": 2
+    },
+    "park_factor": {
+      "stadium": "Dodger Stadium",
+      "runs": 0.95,
+      "hr": 0.92,
+      "type": "pitcher"
+    }
+  },
+  {
+    "game_pk": 813035,
+    "game_date": "2025-10-17T00:33:00Z",
+    "home_team": "Seattle Mariners",
+    "away_team": "Toronto Blue Jays",
+    "home_pitcher": "Luis Castillo",
+    "home_pitcher_id": 622491,
+    "away_pitcher": "Max Scherzer",
+    "away_pitcher_id": 453286,
+    "venue": "T-Mobile Park",
+    "game_type": "L",
+    "status": "In Progress",
+    "home_pitcher_stats": {
+      "era": 3.64,
+      "whip": 1.17,
+      "wins": 11,
+      "losses": 12,
+      "innings_pitched": 175.1,
+      "strikeouts": 175,
+      "walks": 47,
+      "k_per_9": 8.99,
+      "bb_per_9": 2.42,
+      "hits_allowed": 158,
+      "earned_runs": 71,
+      "games_started": 30
+    },
+    "away_pitcher_stats": {
+      "era": 3.95,
+      "whip": 1.15,
+      "wins": 2,
+      "losses": 4,
+      "innings_pitched": 43.1,
+      "strikeouts": 40,
+      "walks": 10,
+      "k_per_9": 8.35,
+      "bb_per_9": 2.09,
+      "hits_allowed": 40,
+      "earned_runs": 19,
+      "games_started": 9
+    },
+    "park_factor": {
+      "stadium": "T-Mobile Park",
+      "runs": 0.92,
+      "hr": 0.88,
+      "type": "pitcher"
+    }
+  }
+]

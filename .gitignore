@@ -1,0 +1,36 @@
+# Entorno
+mi_entorno/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.swp
+
+# Bases de datos
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs / cache
+*.log
+.cache/
+
+# Variables sensibles
+.env
+.streamlit/secrets.toml
+
+# Sistema específico
+.aws/
+.azure/
+.docker/
+.keras/
+.local/
+.python_history
+.bash_history
+.bash_logout
+.bashrc
+.profile
+.sudo_as_admin_successful

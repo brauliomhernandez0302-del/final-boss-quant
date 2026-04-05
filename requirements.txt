@@ -1,0 +1,8 @@
+requests 
+pandas
+numpy
+matplotlib
+flask
+websocket-client
+scikit-learn
+beautifulsoup4
