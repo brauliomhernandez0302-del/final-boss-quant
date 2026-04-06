@@ -434,7 +434,7 @@ def analyze_first5(
     la_f5 = la * f5_factor
     
     # Mini Monte Carlo para F5
-    from monte_carlo_engine import monte_carlo_advanced
+    from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced
     
     mc_f5 = monte_carlo_advanced(
         lh=lh_f5,
