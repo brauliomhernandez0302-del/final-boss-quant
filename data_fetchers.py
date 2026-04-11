@@ -615,7 +615,8 @@ class MLBStatsAPI:
                         eliminated = bool(team_record.get("eliminated", False))
                         # algunos payloads usan wildCardEliminationNumber="E" cuando está eliminado
                         wc_elim = (team_record.get("wildCardEliminationNumber") == "E")
-                        games_back = float(team_record.get("wildCardGamesBack", 0.0))
+                        raw_gb = team_record.get("wildCardGamesBack", 0.0)
+                        games_back = float(raw_gb) if str(raw_gb).replace('.','').lstrip('-').isdigit() else 0.0
                         if clinched:
                             status = "clinched"
                         elif eliminated or wc_elim:

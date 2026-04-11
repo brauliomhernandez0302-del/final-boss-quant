@@ -51,7 +51,8 @@ def monte_carlo_advanced(
     lambda_noise: float = 0.05,
     early_stop_se: float = 0.003,
     progress_callback: Optional[Callable[[int, int], None]] = None,
-    store_samples: bool = False
+    store_samples: bool = True,
+    analyze_f5: bool = False,
 ) -> Dict[str, Any]:
     """Simulación Monte Carlo avanzada CORREGIDA."""
     
