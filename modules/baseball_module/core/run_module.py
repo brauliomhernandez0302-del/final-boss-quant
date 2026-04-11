@@ -35,7 +35,7 @@ from modules.baseball_module.value.value_detector import evaluate_value_ultra
 
 # Odds API
 try:
-    from odds_api import get_odds
+    from odds_api import get_best_odds_for_teams
 except ImportError:
     get_odds = None
 
@@ -136,17 +136,22 @@ def run_module(
                 return results
         # ====================================================
 
-        game_data = api.get_complete_game_data(game_id)
-
+        from data_fetchers import MLBDataIntegrator
+        _integrator = MLBDataIntegrator()
+        today = datetime.now().strftime("%Y-%m-%d")
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        all_games = (_integrator.get_complete_game_data(date=today) or []) + \
+                    (_integrator.get_complete_game_data(date=tomorrow) or [])
+        game_data = next((g for g in all_games if g.get('game_pk') == game_id), None)
         if not game_data:
             logger.error(f"❌ No se pudo obtener datos del juego {game_id}")
             results['status'] = 'error_data'
             return results
 
-        home_team = game_data.get('home_team', {}).get('name', 'Unknown')
-        away_team = game_data.get('away_team', {}).get('name', 'Unknown')
-        pitcher_home = game_data.get('pitcher_home', {}).get('name', 'Unknown')
-        pitcher_away = game_data.get('pitcher_away', {}).get('name', 'Unknown')
+        home_team = game_data.get('home_team', 'Unknown')
+        away_team = game_data.get('away_team', 'Unknown')
+        pitcher_home = game_data.get('home_pitcher', 'Unknown')
+        pitcher_away = game_data.get('away_pitcher', 'Unknown')
 
         logger.info(f"   🏟️  {away_team} @ {home_team}")
         logger.info(f"   ⚾ Pitchers: {pitcher_away} vs {pitcher_home}")
@@ -157,7 +162,36 @@ def run_module(
             'pitcher_home': pitcher_home,
             'pitcher_away': pitcher_away
         }
-
+# Normalizar game_data para los engines
+        game_data['home_team'] = {
+            'name': home_team,
+            'runs_per_game': game_data.get('home_team_runs', {}).get('runs_scored_avg', 4.5) if isinstance(game_data.get('home_team_runs'), dict) else 4.5,
+            'wins': game_data.get('home_team_form', {}).get('wins', 5) if isinstance(game_data.get('home_team_form'), dict) else 5,
+            'losses': game_data.get('home_team_form', {}).get('losses', 5) if isinstance(game_data.get('home_team_form'), dict) else 5,
+            'last_10': game_data.get('home_team_form', {}).get('last_10', '5-5') if isinstance(game_data.get('home_team_form'), dict) else '5-5',
+            'streak': game_data.get('home_team_form', {}).get('streak', '') if isinstance(game_data.get('home_team_form'), dict) else '',
+        }
+        game_data['away_team'] = {
+            'name': away_team,
+            'runs_per_game': game_data.get('away_team_runs', {}).get('runs_scored_avg', 4.2) if isinstance(game_data.get('away_team_runs'), dict) else 4.2,
+            'wins': game_data.get('away_team_form', {}).get('wins', 5) if isinstance(game_data.get('away_team_form'), dict) else 5,
+            'losses': game_data.get('away_team_form', {}).get('losses', 5) if isinstance(game_data.get('away_team_form'), dict) else 5,
+            'last_10': game_data.get('away_team_form', {}).get('last_10', '5-5') if isinstance(game_data.get('away_team_form'), dict) else '5-5',
+            'streak': game_data.get('away_team_form', {}).get('streak', '') if isinstance(game_data.get('away_team_form'), dict) else '',
+        }
+        game_data['pitcher_home'] = {
+            'name': pitcher_home,
+            'era': game_data.get('home_pitcher_stats', {}).get('era', 4.38) if isinstance(game_data.get('home_pitcher_stats'), dict) else 4.38,
+            'whip': game_data.get('home_pitcher_stats', {}).get('whip', 1.30) if isinstance(game_data.get('home_pitcher_stats'), dict) else 1.30,
+            'k_per_9': game_data.get('home_pitcher_stats', {}).get('k_per_9', 8.5) if isinstance(game_data.get('home_pitcher_stats'), dict) else 8.5,
+        }
+        game_data['pitcher_away'] = {
+            'name': pitcher_away,
+            'era': game_data.get('away_pitcher_stats', {}).get('era', 4.38) if isinstance(game_data.get('away_pitcher_stats'), dict) else 4.38,
+            'whip': game_data.get('away_pitcher_stats', {}).get('whip', 1.30) if isinstance(game_data.get('away_pitcher_stats'), dict) else 1.30,
+            'k_per_9': game_data.get('away_pitcher_stats', {}).get('k_per_9', 8.5) if isinstance(game_data.get('away_pitcher_stats'), dict) else 8.5,
+        }
+        game_data['park'] = {'name': game_data.get('venue', 'Unknown')}
         lh = lh_base
         la = la_base
 
@@ -274,24 +308,36 @@ def run_module(
         logger.info("\n💰 PASO 6: Value Detection...")
 
         market_odds = None
-        if get_odds:
-            try:
-                market_odds = get_odds(game_id)
-            except Exception as e:
-                logger.warning(f"   ⚠️  No se pudieron obtener odds: {e}")
+        try:
+            market_odds = get_best_odds_for_teams(
+                home_team=home_team,
+                away_team=away_team,
+                sport="baseball_mlb"
+            )
+        except Exception as e:
+            logger.warning(f"   ⚠️  No se pudieron obtener odds: {e}")
 
-        if market_odds:
-            value_results = evaluate_value_ultra(mc_results, market_odds)
-            results['best_bets'] = value_results.get('best_bets', [])
+        if market_odds and market_odds.get('ml_home') and market_odds.get('ml_away'):
+            from modules.baseball_module.value.value_detector import GameOdds
+            game_odds = GameOdds(
+                ml_home=market_odds['ml_home'],
+                ml_away=market_odds['ml_away'],
+            )
+            value_results = evaluate_value_ultra(
+                mc_result=mc_results,
+                odds=game_odds,
+                lh=lh,
+                la=la,
+                home_samples=mc_results.get('home_samples'),
+                away_samples=mc_results.get('away_samples'),
+                total_samples=mc_results.get('total_samples'),
+                analyze_f5=False,
+            )
+            results['best_bets'] = value_results.get('global_recommendation', {}).get('all_opportunities', [])
             results['metadata']['value'] = value_results
-
-            logger.info(f"   ✅ {len(results['best_bets'])} value bets encontradas")
-
-            for i, bet in enumerate(results['best_bets'][:3], 1):
-                logger.info(f"   {i}. {bet['market']}: EV={bet['ev']:+.1%}, Kelly={bet['kelly_pct']:.1%}")
+            logger.info(f"   ✅ Value detection completado")
         else:
-            logger.warning("   ⚠️  Sin odds de mercado, saltando value detection")
-
+            logger.warning("   ⚠️  Sin odds de mercado disponibles")
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # RESUMEN FINAL
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
