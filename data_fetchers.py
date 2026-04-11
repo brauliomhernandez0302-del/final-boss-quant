@@ -144,7 +144,7 @@ class MLBStatsAPI:
     # -------------------------
     # PITCHER STATS (compat + fallback)
     # -------------------------
-    def get_pitcher_stats(self, pitcher_id: int, season: int = 2024) -> Optional[Dict[str, Any]]:
+    def get_pitcher_stats(self, pitcher_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
         """Stats de temporada (overall). Mantiene compatibilidad con tu método original."""
         cache_file = CACHE_DIR / f"pitcher_{pitcher_id}_{season}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < self.cache_ttl:
@@ -344,9 +344,52 @@ class MLBStatsAPI:
         print("  ❌ Sin stats válidas")
         return None, None
 
-    # ==========================================================
-    # FEATURE 1 - TEAM RECENT FORM (W-L últimos 10)
-    # ==========================================================
+    def get_pitcher_game_log(self, pitcher_id: int, season: int, last_n: int = 5):
+        cache_file = CACHE_DIR / f"pitcher_log_{pitcher_id}_{season}_{last_n}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
+            try:
+                with open(cache_file, "r") as f2:
+                    return json.load(f2)
+            except Exception:
+                pass
+        url = f"{self.BASE_URL}/people/{pitcher_id}/stats"
+        params = {"stats": "gameLog", "season": season, "group": "pitching"}
+        try:
+            r = self.session.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            splits = data.get("stats", [{}])[0].get("splits", [])
+            if not splits:
+                return None
+            starts = [s for s in splits if int(s.get("stat", {}).get("gamesStarted", 0)) > 0]
+            if not starts:
+                starts = splits
+            starts.sort(key=lambda x: x.get("date", ""), reverse=True)
+            recent = starts[:last_n]
+            if not recent:
+                return None
+            total_er = sum(int(s.get("stat", {}).get("earnedRuns", 0)) for s in recent)
+            total_ip = sum(float(s.get("stat", {}).get("inningsPitched", 0)) for s in recent)
+            era_last_n = round((total_er / total_ip * 9), 2) if total_ip > 0 else 4.50
+            last_start = recent[0]
+            last_date_str = last_start.get("date", "")
+            last_pitch_count = int(last_start.get("stat", {}).get("numberOfPitches", 90))
+            days_rest = 4
+            if last_date_str:
+                try:
+                    from datetime import datetime as dt
+                    last_date = dt.strptime(last_date_str, "%Y-%m-%d")
+                    days_rest = (dt.utcnow() - last_date).days
+                except Exception:
+                    pass
+            result = {"era_last_5": era_last_n, "days_rest": days_rest, "last_pitch_count": last_pitch_count, "starts_analyzed": len(recent)}
+            with open(cache_file, "w") as f2:
+                json.dump(result, f2)
+            return result
+        except Exception as e:
+            print(f"Error game log pitcher {pitcher_id}: {e}")
+            return None
+
     def get_team_recent_form(self, team_id: int, games: int = 10) -> Optional[Dict[str, Any]]:
         """{"wins": int, "losses": int, "win_pct": float, "streak": str, "last_10": "WLWL..."}"""
         cache_file = CACHE_DIR / f"team_form_{team_id}_{games}.json"
@@ -523,7 +566,7 @@ class MLBStatsAPI:
     # ==========================================================
     # FEATURE 4 - H2H HISTÓRICO
     # ==========================================================
-    def get_head_to_head(self, team1_id: int, team2_id: int, season: int = 2024) -> Optional[Dict[str, Any]]:
+    def get_head_to_head(self, team1_id: int, team2_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
         """{"team1_wins": int, "team2_wins": int, "total_games": int, "avg_total_runs": float, "has_history": bool}"""
         cache_key = f"h2h_{min(team1_id, team2_id)}_{max(team1_id, team2_id)}_{season}"
         cache_file = CACHE_DIR / f"{cache_key}.json"
@@ -582,7 +625,7 @@ class MLBStatsAPI:
     # ==========================================================
     # FEATURE 5 - PITCHER VS TEAM (placeholder)
     # ==========================================================
-    def get_pitcher_vs_team(self, pitcher_id: int, team_id: int, season: int = 2024) -> Optional[Dict[str, Any]]:
+    def get_pitcher_vs_team(self, pitcher_id: int, team_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
         """Devuelve None por ahora (requiere game logs detallados)."""
         # TODO: implementar con endpoint de game logs si está disponible públicamente
         return None
@@ -590,7 +633,7 @@ class MLBStatsAPI:
     # ==========================================================
     # FEATURE 6 - STANDINGS STATUS
     # ==========================================================
-    def get_standings_status(self, team_id: int, season: int = 2024) -> Optional[Dict[str, Any]]:
+    def get_standings_status(self, team_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
         """{"status": "clinched|eliminated|in_race", "games_back": float, "clinched": bool, "eliminated": bool, "win_pct": float}"""
         cache_key = f"standings_{team_id}_{season}"
         cache_file = CACHE_DIR / f"{cache_key}.json"
@@ -849,6 +892,14 @@ class MLBDataIntegrator:
                 key_valid = f"{side}_pitcher_valid"
                 if stats:
                     results[key_stats] = stats
+                    # Enriquecer con game log (era_last_5, days_rest, pitch_count)
+                    pitcher_id = game.get(f"{side}_pitcher_id")
+                    if pitcher_id:
+                        game_log = self.mlb_api.get_pitcher_game_log(pitcher_id, season)
+                        if game_log:
+                            stats.update(game_log)
+                            results[key_stats] = stats
+                            print(f"  ✅ {side.upper()} game log: ERA_L5={game_log.get('era_last_5','?')} rest={game_log.get('days_rest','?')}d")
                     results[key_source] = source
                     results[key_valid] = True
                     print(f"  ✅ {side.upper()} pitcher: ERA {stats.get('era','?')} ({source})")
@@ -857,7 +908,7 @@ class MLBDataIntegrator:
                     print(f"  ❌ {side.upper()} pitcher: sin stats válidas")
         return results
 
-    def get_complete_game_data(self, date: Optional[str] = None, season: int = 2024) -> List[Dict[str, Any]]:
+    def get_complete_game_data(self, date: Optional[str] = None, season: int = 2026) -> List[Dict[str, Any]]:
         """
         Obtiene data COMPLETA con TODAS las features.
         """

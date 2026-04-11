@@ -179,19 +179,28 @@ def run_module(
             'last_10': game_data.get('away_team_form', {}).get('last_10', '5-5') if isinstance(game_data.get('away_team_form'), dict) else '5-5',
             'streak': game_data.get('away_team_form', {}).get('streak', '') if isinstance(game_data.get('away_team_form'), dict) else '',
         }
+        home_ps = game_data.get('home_pitcher_stats', {}) if isinstance(game_data.get('home_pitcher_stats'), dict) else {}
+        away_ps = game_data.get('away_pitcher_stats', {}) if isinstance(game_data.get('away_pitcher_stats'), dict) else {}
+
         game_data['pitcher_home'] = {
             'name': pitcher_home,
-            'era': game_data.get('home_pitcher_stats', {}).get('era', 4.38) if isinstance(game_data.get('home_pitcher_stats'), dict) else 4.38,
-            'whip': game_data.get('home_pitcher_stats', {}).get('whip', 1.30) if isinstance(game_data.get('home_pitcher_stats'), dict) else 1.30,
-            'k_per_9': game_data.get('home_pitcher_stats', {}).get('k_per_9', 8.5) if isinstance(game_data.get('home_pitcher_stats'), dict) else 8.5,
+            'era': home_ps.get('era', 4.38),
+            'whip': home_ps.get('whip', 1.30),
+            'k_per_9': home_ps.get('k_per_9', 8.5),
+            'era_last_5': home_ps.get('era_last_5', home_ps.get('era', 4.38)),
+            'days_rest': home_ps.get('days_rest', 4),
+            'last_pitch_count': home_ps.get('last_pitch_count', 90),
         }
         game_data['pitcher_away'] = {
             'name': pitcher_away,
-            'era': game_data.get('away_pitcher_stats', {}).get('era', 4.38) if isinstance(game_data.get('away_pitcher_stats'), dict) else 4.38,
-            'whip': game_data.get('away_pitcher_stats', {}).get('whip', 1.30) if isinstance(game_data.get('away_pitcher_stats'), dict) else 1.30,
-            'k_per_9': game_data.get('away_pitcher_stats', {}).get('k_per_9', 8.5) if isinstance(game_data.get('away_pitcher_stats'), dict) else 8.5,
+            'era': away_ps.get('era', 4.38),
+            'whip': away_ps.get('whip', 1.30),
+            'k_per_9': away_ps.get('k_per_9', 8.5),
+            'era_last_5': away_ps.get('era_last_5', away_ps.get('era', 4.38)),
+            'days_rest': away_ps.get('days_rest', 4),
+            'last_pitch_count': away_ps.get('last_pitch_count', 90),
+            'last_pitch_count': away_ps.get('last_pitch_count', 90),
         }
-        game_data['park'] = {'name': game_data.get('venue', 'Unknown')}
         lh = lh_base
         la = la_base
 
