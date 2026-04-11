@@ -823,27 +823,22 @@ class MLBAnalyzer(BaseAnalyzer):
     def find_game_id(self, game_data: GameData) -> Optional[int]:
         """Busca el Game ID en MLB Stats API."""
         try:
-            from data_fetchers import MLBStatsAPI
-
-            api = MLBStatsAPI()
-            today_games = api.get_todays_games() or []
-            tomorrow = datetime.now() + timedelta(days=1)
-            tomorrow_games = api.get_games_by_date(tomorrow.strftime("%Y-%m-%d")) or []
-
+            from data_fetchers import MLBDataIntegrator
+            from datetime import datetime, timedelta
+            integrator = MLBDataIntegrator()
+            today = datetime.now().strftime("%Y-%m-%d")
+            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            today_games = integrator.mlb_api.get_todays_games(date=today) or []
+            tomorrow_games = integrator.mlb_api.get_todays_games(date=tomorrow) or []
             all_games = today_games + tomorrow_games
-
             for game in all_games:
-                mlb_home = game["teams"]["home"]["team"]["name"]
-                mlb_away = game["teams"]["away"]["team"]["name"]
-
+                mlb_home = game.get('home_team', '')
+                mlb_away = game.get('away_team', '')
                 home_match = self._fuzzy_match(game_data["home"], mlb_home)
                 away_match = self._fuzzy_match(game_data["away"], mlb_away)
-
                 if home_match and away_match:
-                    return int(game["gamePk"])
-
+                    return int(game.get('game_pk', 0))
             return None
-
         except Exception as e:
             logger.error(f"Error buscando Game ID: {e}")
             return None
@@ -1039,9 +1034,9 @@ def render_mlb_results(
     st.markdown("---")
 
     probs = result.get("probabilities", {})
-    p_home = float(probs.get("home_win", 0.0))
-    p_away = float(probs.get("away_win", 0.0))
-    total = float(probs.get("total_expected", lh + la))
+    p_home = float(probs.get("p_home", probs.get("home_win", 0.0)))
+    p_away = float(probs.get("p_away", probs.get("away_win", 0.0)))
+    total = float(probs.get("mean_total", probs.get("total_expected", lh + la)))
 
     st.markdown("### 📊 Probabilidades del Modelo")
     c1, c2, c3 = st.columns(3)
@@ -1094,7 +1089,7 @@ def render_mlb_results(
                 f"""
                 <div class='value-card' style='border-left:4px solid {color};'>
                     <b>#{i} {market}</b> [{rating}] - EV: 
-                    <b style='color:{color}'>{ev:+.1%}</b>
+                    <b style='color:{color}'>{ev:+.1f}%</b>
                 </div>
                 """,
                 unsafe_allow_html=True,
