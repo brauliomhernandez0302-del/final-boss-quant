@@ -853,7 +853,137 @@ class MLBDataIntegrator:
         self.mlb_api = MLBStatsAPI()
         self.weather_api = WeatherAPI()
         self.park_factors = ParkFactors()
+# RPG 2025 por equipo (temporada completa - ancla estadística)
+        self.team_rpg_2025 = {
+            "Athletics": 4.525,
+            "Pittsburgh Pirates": 3.599,
+            "San Diego Padres": 4.333,
+            "Seattle Mariners": 4.728,
+            "San Francisco Giants": 4.352,
+            "St. Louis Cardinals": 4.253,
+            "Tampa Bay Rays": 4.407,
+            "Texas Rangers": 4.222,
+            "Toronto Blue Jays": 4.926,
+            "Minnesota Twins": 4.185,
+            "Philadelphia Phillies": 4.802,
+            "Atlanta Braves": 4.469,
+            "Chicago White Sox": 3.994,
+            "Miami Marlins": 4.377,
+            "New York Yankees": 5.241,
+            "Milwaukee Brewers": 4.975,
+            "Los Angeles Angels": 4.154,
+            "Arizona Diamondbacks": 4.883,
+            "Baltimore Orioles": 4.179,
+            "Boston Red Sox": 4.852,
+            "Chicago Cubs": 4.895,
+            "Cincinnati Reds": 4.420,
+            "Cleveland Guardians": 3.969,
+            "Colorado Rockies": 3.685,
+            "Detroit Tigers": 4.679,
+            "Houston Astros": 4.235,
+            "Kansas City Royals": 4.019,
+            "Los Angeles Dodgers": 5.093,
+            "Washington Nationals": 4.241,
+            "New York Mets": 4.728,
+        }
+        self.league_avg_rpg = 4.38
+        self._rpg_cache = {}
 
+    def _get_season(self) -> tuple:
+        """Retorna (temporada_actual, temporada_anterior) automáticamente."""
+        now = datetime.now()
+        current = now.year if now.month >= 3 else now.year - 1
+        return current, current - 1
+
+    def _fetch_team_rpg(self, team_id: int, season: int) -> float:
+        """Jala RPG de un equipo para una temporada desde MLB Stats API."""
+        cache_key = f"{team_id}_{season}"
+        if cache_key in self._rpg_cache:
+            return self._rpg_cache[cache_key]
+
+        cache_file = CACHE_DIR / f"team_rpg_{team_id}_{season}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 86400:
+            try:
+                with open(cache_file) as f:
+                    data = json.load(f)
+                    self._rpg_cache[cache_key] = data['rpg']
+                    return data['rpg']
+            except Exception:
+                pass
+
+        try:
+            url = f"{self.mlb_api.BASE_URL}/teams/{team_id}/stats"
+            params = {"stats": "season", "season": season,
+                     "group": "hitting", "sportId": 1}
+            r = self.mlb_api.session.get(url, params=params, timeout=8)
+            data = r.json()
+            splits = data.get("stats", [{}])[0].get("splits", [{}])
+            if splits:
+                stat = splits[0].get("stat", {})
+                games = int(stat.get("gamesPlayed", 0))
+                runs = int(stat.get("runs", 0))
+                if games >= 10:
+                    rpg = round(runs / games, 3)
+                    self._rpg_cache[cache_key] = rpg
+                    with open(cache_file, "w") as f:
+                        json.dump({"rpg": rpg, "games": games}, f)
+                    return rpg
+        except Exception:
+            pass
+
+        return self.league_avg_rpg
+
+    def get_team_lambda(self, team_name: str, recent_rpg: float = None,
+                        team_id: int = None) -> float:
+        """
+        Lambda base dinámico. Pesos automáticos según juegos jugados:
+        - Temporada actual < 35 juegos: 60% anterior + 30% reciente + 10% league
+        - Temporada actual >= 35 juegos: 40% anterior + 20% actual + 30% reciente + 10% league
+        Nunca necesita cambios manuales.
+        """
+        current_season, previous_season = self._get_season()
+
+        rpg_previous = self._fetch_team_rpg(team_id, previous_season) if team_id else self.league_avg_rpg
+
+        rpg_current = None
+        games_current = 0
+        if team_id:
+            cache_key = f"{team_id}_{current_season}"
+            try:
+                url = f"{self.mlb_api.BASE_URL}/teams/{team_id}/stats"
+                params = {"stats": "season", "season": current_season,
+                         "group": "hitting", "sportId": 1}
+                r = self.mlb_api.session.get(url, params=params, timeout=8)
+                data = r.json()
+                splits = data.get("stats", [{}])[0].get("splits", [{}])
+                if splits:
+                    stat = splits[0].get("stat", {})
+                    games_current = int(stat.get("gamesPlayed", 0))
+                    runs_current = int(stat.get("runs", 0))
+                    if games_current >= 35:
+                        rpg_current = round(runs_current / games_current, 3)
+            except Exception:
+                pass
+
+        recent = recent_rpg if recent_rpg and recent_rpg > 0 else rpg_previous
+
+        if rpg_current and games_current >= 35:
+            lambda_base = (
+                rpg_previous * 0.40 +
+                rpg_current  * 0.20 +
+                recent       * 0.30 +
+                self.league_avg_rpg * 0.10
+            )
+        else:
+            lambda_base = (
+                rpg_previous * 0.60 +
+                recent       * 0.30 +
+                self.league_avg_rpg * 0.10
+            )
+
+        return round(max(2.5, min(7.0, lambda_base)), 3)
+
+        return round(max(2.5, min(7.0, lambda_base)), 3)
     def _enrich_pitchers_concurrent(self, game: Dict[str, Any], season: int) -> Dict[str, Any]:
         """Enriquecer pitchers en paralelo con fallback."""
         is_playoff = game.get("is_playoff", False)

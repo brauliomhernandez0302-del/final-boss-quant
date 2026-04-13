@@ -199,17 +199,21 @@ def run_module(
             'era_last_5': away_ps.get('era_last_5', away_ps.get('era', 4.38)),
             'days_rest': away_ps.get('days_rest', 4),
             'last_pitch_count': away_ps.get('last_pitch_count', 90),
-            'last_pitch_count': away_ps.get('last_pitch_count', 90),
         }
-        lh = lh_base
-        la = la_base
-
-        results['lambdas_history']['base'] = {
-            'lh': lh,
-            'la': la
-        }
-
-        logger.info(f"   Lambda base: λ_h={lh:.3f}, λ_a={la:.3f}")
+        game_data['park'] = {'name': game_data.get('venue', 'Unknown')}
+        # Lambdas base con media ponderada por equipo
+        from data_fetchers import MLBDataIntegrator as _Int
+        _int = _Int()
+        home_recent = game_data.get('home_team_runs', {})
+        away_recent = game_data.get('away_team_runs', {})
+        home_rpg = float(home_recent.get('runs_scored_avg', 0)) if isinstance(home_recent, dict) else 0
+        away_rpg = float(away_recent.get('runs_scored_avg', 0)) if isinstance(away_recent, dict) else 0
+        home_team_id = game_data.get('home_team_id')
+        away_team_id = game_data.get('away_team_id')
+        lh = _int.get_team_lambda(home_team, home_rpg, team_id=home_team_id)
+        la = _int.get_team_lambda(away_team, away_rpg, team_id=away_team_id)
+        results['lambdas_history']['base'] = {'lh': lh, 'la': la}
+        logger.info(f"   Lambda base: λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 1: CALIBRATION ENGINE
