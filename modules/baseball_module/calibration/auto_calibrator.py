@@ -23,11 +23,14 @@ Función: Obtiene todos los datos reales de MLB Stats API y los guarda
 """
 
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, List, Dict, Optional, Tuple
 import logging
 import time
 from pathlib import Path
 from config import LEAGUE_AVG_RUNS, LEAGUE_AVG_OPS, LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP
+
+if TYPE_CHECKING:
+    from modules.baseball_module.calibration.learning_engine import LearningEngine
 
 logger = logging.getLogger(__name__)
 
@@ -46,15 +49,16 @@ class LambdaCalibrator:
     7. Division/conference strength
     """
     
-    def __init__(self):
+    def __init__(self, learning_engine: "Optional[LearningEngine]" = None):
         self.name = "LambdaCalibrator G10 Pro"
-        
+        self.learning_engine = learning_engine
+
         # MLB averages — sourced from config.py
         self.league_avg_runs = LEAGUE_AVG_RUNS
         self.league_avg_ops = LEAGUE_AVG_OPS
         self.league_avg_era = LEAGUE_AVG_ERA
         self.league_avg_whip = LEAGUE_AVG_WHIP
-        
+
         # Pesos para diferentes factores
         self.weights = {
             'offense': 0.25,
@@ -97,14 +101,26 @@ class LambdaCalibrator:
         # Calibrar cada equipo
         lh_new = self._calibrate_team_advanced(lh_base, home_team, away_team, is_home=True)
         la_new = self._calibrate_team_advanced(la_base, away_team, home_team, is_home=False)
-        
+
+        # Apply learned bias correction (only when sufficient history exists)
+        if self.learning_engine:
+            season = datetime.now().year
+            home_name = home_team.get('name', '') if isinstance(home_team, dict) else str(home_team)
+            away_name = away_team.get('name', '') if isinstance(away_team, dict) else str(away_team)
+            home_bias = self.learning_engine.compute_team_bias(home_name, season)
+            away_bias = self.learning_engine.compute_team_bias(away_name, season)
+            lh_new *= home_bias
+            la_new *= away_bias
+            if home_bias != 1.0 or away_bias != 1.0:
+                logger.info(f"   Learning bias — home: {home_bias:.4f}, away: {away_bias:.4f}")
+
         # Log resultados
         delta_h = lh_new - lh_base
         delta_a = la_new - la_base
-        
+
         logger.info(f"   Calibration Home: {lh_base:.3f} → {lh_new:.3f} (Δ {delta_h:+.3f})")
         logger.info(f"   Calibration Away: {la_base:.3f} → {la_new:.3f} (Δ {delta_a:+.3f})")
-        
+
         return lh_new, la_new
     
     
@@ -380,13 +396,9 @@ class LambdaCalibrator:
 def calibrate_lambdas(
     lh_base: float,
     la_base: float,
-    game_data: Dict
+    game_data: Dict,
+    learning_engine=None,
 ) -> Tuple[float, float]:
-    """
-    Helper function para usar directamente.
-    
-    Usage:
-        lh_cal, la_cal = calibrate_lambdas(4.5, 4.2, game_data)
-    """
-    calibrator = LambdaCalibrator()
+    """Helper function para usar directamente."""
+    calibrator = LambdaCalibrator(learning_engine=learning_engine)
     return calibrator.calibrate(lh_base, la_base, game_data)

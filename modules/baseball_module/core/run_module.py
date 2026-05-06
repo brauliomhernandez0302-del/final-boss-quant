@@ -18,6 +18,7 @@ from config import MLB_SIMULATIONS, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP
 
 # Calibration - ABSOLUTO
 from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
+from modules.baseball_module.calibration.learning_engine import LearningEngine
 
 # HFA - ABSOLUTO
 from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
@@ -71,6 +72,14 @@ def run_module(
         'best_bets': [],
         'status': 'success'
     }
+
+    # Learning engine — initialised once per run; fetches pending outcomes first
+    from config import DATA_DIR
+    _learning = LearningEngine(db_path=DATA_DIR / "predictions_history.db")
+    try:
+        _learning.fetch_pending_outcomes()
+    except Exception:
+        pass  # never block analysis on learning failures
 
     try:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -222,7 +231,7 @@ def run_module(
         if use_calibration:
             logger.info("\n🎯 PASO 1: Calibration Engine...")
 
-            calibrator = LambdaCalibrator()
+            calibrator = LambdaCalibrator(learning_engine=_learning)
             lh, la = calibrator.calibrate(lh, la, game_data)
 
             results['lambdas_history']['calibration'] = {
@@ -315,6 +324,25 @@ def run_module(
         logger.info(f"   ✅ Simulaciones completadas")
         logger.info(f"   Home Win: {mc_results.get('p_home', 0):.1%}")
         logger.info(f"   Away Win: {mc_results.get('p_away', 0):.1%}")
+
+        # Persist prediction for future learning
+        _gk = game_data.get('game_pk') or game_id
+        _gd = str(game_data.get('game_date', datetime.now().strftime("%Y-%m-%d")))[:10]
+        if _gk:
+            try:
+                _learning.record_prediction(
+                    game_pk=int(_gk),
+                    game_date=_gd,
+                    season=datetime.now().year,
+                    home_team=home_team if isinstance(home_team, str) else home_team.get('name', ''),
+                    away_team=away_team if isinstance(away_team, str) else away_team.get('name', ''),
+                    lambda_home=lh,
+                    lambda_away=la,
+                    p_home=mc_results.get('p_home', 0.5),
+                    p_away=mc_results.get('p_away', 0.5),
+                )
+            except Exception:
+                pass
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 6: VALUE DETECTION

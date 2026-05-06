@@ -275,14 +275,47 @@ class PredictionsDB:
                 );
 
                 -- Índices para consultas frecuentes
-                CREATE INDEX IF NOT EXISTS idx_predictions_sport 
+                CREATE INDEX IF NOT EXISTS idx_predictions_sport
                     ON predictions(sport);
-                CREATE INDEX IF NOT EXISTS idx_predictions_timestamp 
+                CREATE INDEX IF NOT EXISTS idx_predictions_timestamp
                     ON predictions(timestamp DESC);
-                CREATE INDEX IF NOT EXISTS idx_predictions_ev 
+                CREATE INDEX IF NOT EXISTS idx_predictions_ev
                     ON predictions(ev);
-                CREATE INDEX IF NOT EXISTS idx_predictions_rating 
+                CREATE INDEX IF NOT EXISTS idx_predictions_rating
                     ON predictions(rating);
+
+                -- Learning engine tables (MLB)
+                CREATE TABLE IF NOT EXISTS game_outcomes (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    game_pk          INTEGER NOT NULL UNIQUE,
+                    game_date        TEXT    NOT NULL,
+                    season           INTEGER NOT NULL,
+                    home_team        TEXT    NOT NULL,
+                    away_team        TEXT    NOT NULL,
+                    lambda_home      REAL,
+                    lambda_away      REAL,
+                    p_home           REAL,
+                    p_away           REAL,
+                    actual_home_runs INTEGER,
+                    actual_away_runs INTEGER,
+                    home_won         INTEGER,
+                    created_at       TEXT DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_go_home_team
+                    ON game_outcomes(home_team, season);
+                CREATE INDEX IF NOT EXISTS idx_go_away_team
+                    ON game_outcomes(away_team, season);
+
+                CREATE TABLE IF NOT EXISTS ml_state (
+                    key          TEXT    NOT NULL,
+                    scope        TEXT    NOT NULL,
+                    season       INTEGER NOT NULL,
+                    value_json   TEXT    NOT NULL,
+                    sample_count INTEGER DEFAULT 0,
+                    updated_at   TEXT    NOT NULL,
+                    PRIMARY KEY (key, scope, season)
+                );
             """)
 
     def save(self, pred: PredictionData) -> int:
