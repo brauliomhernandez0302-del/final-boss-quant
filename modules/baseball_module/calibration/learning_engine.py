@@ -98,10 +98,13 @@ class LearningEngine:
         lambda_away: float,
         p_home: float,
         p_away: float,
-    ) -> None:
-        """Insert a pre-game prediction row. Silently skips duplicate game_pk."""
+    ) -> bool:
+        """
+        Insert a pre-game prediction row.
+        Returns True if a new row was created, False if game_pk already existed.
+        """
         with self._get_conn() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO game_outcomes
                     (game_pk, game_date, season, home_team, away_team,
@@ -111,7 +114,9 @@ class LearningEngine:
                 (game_pk, game_date, season, home_team, away_team,
                  lambda_home, lambda_away, p_home, p_away),
             )
+            inserted = cursor.rowcount == 1
         logger.debug(f"   [learning] recorded prediction game_pk={game_pk}")
+        return inserted
 
     # ------------------------------------------------------------------
     # Outcome fetching
