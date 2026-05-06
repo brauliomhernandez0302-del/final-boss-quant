@@ -81,6 +81,10 @@ class MLBStatsAPI:
             print(f"❌ Error obteniendo juegos MLB: {e}")
             return []
 
+    def get_games_by_date(self, date: str) -> List[Dict[str, Any]]:
+        """Alias for get_todays_games with an explicit date string (YYYY-MM-DD)."""
+        return self.get_todays_games(date=date)
+
     def _parse_game(self, game: Dict) -> Optional[Dict[str, Any]]:
         """Parsea datos del juego con contexto playoff/series conservando claves originales."""
         try:

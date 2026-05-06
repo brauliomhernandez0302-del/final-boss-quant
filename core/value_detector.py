@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from enum import Enum
 from scipy.stats import norm
 import config as _cfg
+from core.utils import calculate_ev
 
 logger = logging.getLogger(__name__)
 
@@ -164,11 +165,11 @@ def calculate_ev_stats(
     prob_ci: Optional[Tuple[float, float]] = None
 ) -> Dict[str, float]:
     """Calcula EV con intervalos de confianza."""
-    ev = (model_prob * odds - 1) * 100
-    
+    ev = calculate_ev(model_prob, odds)
+
     if prob_ci:
-        ev_lower = (prob_ci[0] * odds - 1) * 100
-        ev_upper = (prob_ci[1] * odds - 1) * 100
+        ev_lower = calculate_ev(prob_ci[0], odds)
+        ev_upper = calculate_ev(prob_ci[1], odds)
     else:
         ev_lower = ev_upper = ev
     
@@ -182,7 +183,7 @@ def calculate_ev_stats(
 def kelly_criterion(
     model_prob: float,
     odds: float,
-    fractional: float = 0.25
+    fractional: float = _cfg.KELLY_FRACTION
 ) -> float:
     """Calcula fracción Kelly óptima."""
     if odds <= 1.0 or model_prob <= 0:

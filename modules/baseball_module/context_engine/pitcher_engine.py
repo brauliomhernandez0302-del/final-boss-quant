@@ -219,20 +219,19 @@ class PitcherEngine:
             game_data, is_home
         )
         
-        # COMBINAR TODO
-        result['total_multiplier'] = (
-            result['quality_mult'] * self.weights['pitcher_quality'] +
-            result['form_mult'] * self.weights['pitcher_form'] +
-            result['matchup_mult'] * self.weights['pitcher_matchup'] +
-            result['fatigue_mult'] * self.weights['pitcher_fatigue'] +
-            result['park_mult'] * self.weights['park_for_pitcher'] +
-            result['travel_mult'] * self.weights['travel_pitcher'] +
-            result['bullpen_mult'] * self.weights['bullpen_quality']
+        # Combine via delta formula: 1.0 + Σ((factor - 1.0) × weight)
+        # Neutral factors (1.0) always yield total_multiplier == 1.0,
+        # regardless of whether weights happen to sum to 1.0.
+        result['total_multiplier'] = 1.0 + (
+            (result['quality_mult']  - 1.0) * self.weights['pitcher_quality'] +
+            (result['form_mult']     - 1.0) * self.weights['pitcher_form'] +
+            (result['matchup_mult']  - 1.0) * self.weights['pitcher_matchup'] +
+            (result['fatigue_mult']  - 1.0) * self.weights['pitcher_fatigue'] +
+            (result['park_mult']     - 1.0) * self.weights['park_for_pitcher'] +
+            (result['travel_mult']   - 1.0) * self.weights['travel_pitcher'] +
+            (result['bullpen_mult']  - 1.0) * self.weights['bullpen_quality']
         )
-        
-        # Normalizar (los weights suman 1.0)
-        # El multiplicador ya está ponderado correctamente
-        
+
         return result
     
     

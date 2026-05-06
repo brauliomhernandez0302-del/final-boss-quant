@@ -16,6 +16,7 @@ import numpy as np
 from typing import Dict, Any, Tuple, Optional
 from dataclasses import dataclass
 import logging
+from config import LEAGUE_AVG_RUNS
 
 logger = logging.getLogger(__name__)
 
@@ -198,10 +199,11 @@ class HFAEngine:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         
         hfa_boost = self.hfa_base.get(park_name, 0.13)
-        lh_new = lh + hfa_boost
+        hfa_mult = 1.0 + hfa_boost / LEAGUE_AVG_RUNS
+        lh_new = lh * hfa_mult
         metadata['hfa_base'] = hfa_boost
-        
-        logger.info(f"   HFA Base: +{hfa_boost:.3f} runs")
+
+        logger.info(f"   HFA Base: {hfa_boost:.3f} runs → {hfa_mult:.4f}x")
         
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 2: PARK FACTORS FOR HITTERS
@@ -224,26 +226,24 @@ class HFAEngine:
             altitude = self.stadium_db[park_name].altitude
             
             if altitude > 1000:  # Significant altitude
-                # Convertir altitude a boost de runs
-                alt_boost = (altitude / 5000) * 0.15
-                
-                # Home acostumbrado (50% efecto)
-                lh_new += (alt_boost * 0.5)
-                la_new += alt_boost
-                
+                alt_boost = (altitude / 5000) * 0.15  # in run units
+                # Home team acclimatised — half effect; away team full effect
+                lh_new *= 1.0 + (alt_boost * 0.5) / LEAGUE_AVG_RUNS
+                la_new *= 1.0 + alt_boost / LEAGUE_AVG_RUNS
+
                 metadata['altitude'] = alt_boost
-                logger.info(f"   Altitude: +{alt_boost:.3f} runs")
+                logger.info(f"   Altitude: {alt_boost:.3f} runs → home ×{1 + (alt_boost*0.5)/LEAGUE_AVG_RUNS:.4f}, away ×{1 + alt_boost/LEAGUE_AVG_RUNS:.4f}")
         
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 4: TRAVEL FATIGUE (EQUIPO)
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         
         travel_penalty = self._calculate_travel_fatigue(game_data)
-        la_new -= travel_penalty
+        la_new *= 1.0 - travel_penalty / LEAGUE_AVG_RUNS
         metadata['travel_away'] = travel_penalty
-        
+
         if travel_penalty > 0:
-            logger.info(f"   Travel Away: -{travel_penalty:.3f} runs")
+            logger.info(f"   Travel Away: {travel_penalty:.3f} runs → ×{1 - travel_penalty/LEAGUE_AVG_RUNS:.4f}")
         
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 5: TEAM OFFENSE

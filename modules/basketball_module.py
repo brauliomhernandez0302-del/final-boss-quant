@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 import logging
 import numpy as np
 from config import NBA_SIMULATIONS, KELLY_FRACTION
+from core.utils import calculate_ev
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1950,8 +1951,8 @@ class NBAAnalyzerG10PlusV2:
         # Edge real
         edge = probability - implied_prob
 
-        # EV por unidad apostada
-        ev_per_unit = (probability * (decimal_odds - 1)) - (1 - probability)
+        # EV por unidad apostada (canonical formula from core.utils)
+        ev_per_unit = calculate_ev(probability, decimal_odds) / 100
 
         # Kelly Criterion
         if edge > 0 and decimal_odds > 1:
