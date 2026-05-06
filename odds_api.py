@@ -1,10 +1,12 @@
+import os
 import requests
-import requests
+from dotenv import load_dotenv
 
-# 🔑 Tu API key personal de The Odds API
-API_KEY = "4198abca7014f3c2c2a8ad036209e15b"
+load_dotenv()
 
-# 🌐 URL base de la API
+# Prefer env variable; fall back to the hardcoded key for backwards compatibility
+API_KEY = os.getenv("ODDS_API_KEY", "4198abca7014f3c2c2a8ad036209e15b")
+
 BASE_URL = "https://api.the-odds-api.com/v4"
 
 
@@ -41,6 +43,9 @@ def get_best_odds_for_teams(home_team: str, away_team: str,
     Retorna las odds más altas disponibles entre todos los bookmakers.
     """
     all_games = get_odds(sport=sport, region=region, market="h2h")
+
+    if not all_games:
+        return {}
 
     for game in all_games:
         g_home = game.get("home_team", "")

@@ -17,6 +17,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 load_dotenv()
 
+
+def _safe_float(value, default: float = 0.0) -> float:
+    """Convert value to float, returning default on any failure."""
+    try:
+        return float(value) if value is not None else default
+    except (ValueError, TypeError):
+        return default
+
+
 # Directorios
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
@@ -658,8 +667,10 @@ class MLBStatsAPI:
                         eliminated = bool(team_record.get("eliminated", False))
                         # algunos payloads usan wildCardEliminationNumber="E" cuando está eliminado
                         wc_elim = (team_record.get("wildCardEliminationNumber") == "E")
-                        raw_gb = team_record.get("wildCardGamesBack", 0.0)
-                        games_back = float(raw_gb) if str(raw_gb).replace('.','').lstrip('-').isdigit() else 0.0
+                        try:
+                            games_back = float(team_record.get("wildCardGamesBack", 0.0))
+                        except (ValueError, TypeError):
+                            games_back = 0.0
                         if clinched:
                             status = "clinched"
                         elif eliminated or wc_elim:
@@ -671,7 +682,7 @@ class MLBStatsAPI:
                             "games_back": games_back,
                             "clinched": clinched,
                             "eliminated": eliminated,
-                            "win_pct": float(team_record.get("winningPercentage", 0.0))
+                            "win_pct": _safe_float(team_record.get("winningPercentage"))
                         }
                         with open(cache_file, "w") as f:
                             json.dump(result, f)
