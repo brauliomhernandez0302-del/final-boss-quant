@@ -19,6 +19,7 @@ from typing import Dict, Any, List, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
 from scipy.stats import norm
+import config as _cfg
 
 logger = logging.getLogger(__name__)
 
@@ -37,18 +38,18 @@ class ValueTier(Enum):
 @dataclass
 class ValueConfig:
     """Configuración del sistema de valor."""
-    MIN_KELLY: float = 0.01
-    MAX_KELLY: float = 0.15
-    FRACTIONAL_KELLY: float = 0.25
-    MIN_CONFIDENCE: float = 0.65
-    MIN_EDGE: float = 0.5
+    MIN_KELLY: float = _cfg.MIN_KELLY
+    MAX_KELLY: float = _cfg.MAX_KELLY
+    FRACTIONAL_KELLY: float = _cfg.KELLY_FRACTION
+    MIN_CONFIDENCE: float = _cfg.MIN_CONFIDENCE
+    MIN_EDGE: float = _cfg.MIN_EDGE
     VIG_METHODS: List[str] = None
-    BOOTSTRAP_SAMPLES: int = 1000
-    CI_LEVEL: float = 0.95
-    
+    BOOTSTRAP_SAMPLES: int = _cfg.BOOTSTRAP_SAMPLES
+    CI_LEVEL: float = _cfg.CI_LEVEL
+
     def __post_init__(self):
         if self.VIG_METHODS is None:
-            self.VIG_METHODS = ['multiplicative', 'power', 'shin']
+            self.VIG_METHODS = list(_cfg.VIG_METHODS)
 
 CONFIG = ValueConfig()
 

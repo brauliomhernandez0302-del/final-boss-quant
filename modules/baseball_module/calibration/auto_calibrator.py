@@ -27,6 +27,7 @@ from typing import List, Dict, Optional, Tuple
 import logging
 import time
 from pathlib import Path
+from config import LEAGUE_AVG_RUNS, LEAGUE_AVG_OPS, LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +49,11 @@ class LambdaCalibrator:
     def __init__(self):
         self.name = "LambdaCalibrator G10 Pro"
         
-        # MLB averages (2024 season)
-        self.league_avg_runs = 4.5
-        self.league_avg_ops = 0.735
-        self.league_avg_era = 4.15
-        self.league_avg_whip = 1.30
+        # MLB averages — sourced from config.py
+        self.league_avg_runs = LEAGUE_AVG_RUNS
+        self.league_avg_ops = LEAGUE_AVG_OPS
+        self.league_avg_era = LEAGUE_AVG_ERA
+        self.league_avg_whip = LEAGUE_AVG_WHIP
         
         # Pesos para diferentes factores
         self.weights = {

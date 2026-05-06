@@ -1,16 +1,17 @@
 from dataclasses import dataclass
+from config import KELLY_FRACTION, MAX_RISK_PCT, MIN_STAKE
 
 @dataclass
 class KellyConfig:
     """
     Configuración del sistema Kelly fraccional.
-    - kelly_fraction: porcentaje del Kelly completo (0.5 = medio Kelly)
+    - kelly_fraction: porcentaje del Kelly completo (0.25 = cuarto Kelly)
     - max_risk_pct: riesgo máximo permitido por apuesta (% de la banca)
     - min_stake: apuesta mínima absoluta en USD
     """
-    kelly_fraction: float = 0.5
-    max_risk_pct: float = 0.05
-    min_stake: float = 1.0
+    kelly_fraction: float = KELLY_FRACTION
+    max_risk_pct: float = MAX_RISK_PCT
+    min_stake: float = MIN_STAKE
 
 
 def kelly_stake(odds: float, prob: float, bankroll: float, cfg: KellyConfig) -> float:

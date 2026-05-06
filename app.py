@@ -35,6 +35,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import config as _cfg
 
 # ============================================================
 # CONFIGURACIÓN Y CONSTANTES
@@ -55,31 +56,26 @@ class ThemeColors(Enum):
 
 @dataclass
 class AppConfig:
-    """Configuración de la aplicación."""
+    """Configuración de la aplicación — valores sourced from config.py."""
 
-    APP_NAME: str = "FINAL BOSS QUANT G8+"
-    APP_VERSION: str = "2.1"
-    PAGE_ICON: str = "🎯"
+    APP_NAME: str = _cfg.APP_NAME
+    APP_VERSION: str = _cfg.APP_VERSION
+    PAGE_ICON: str = _cfg.PAGE_ICON
 
-    # Valores por defecto
-    DEFAULT_KELLY_FACTOR: float = 0.25
-    DEFAULT_MIN_EV: float = 3.0  # porcentaje
-    DEFAULT_MIN_RATING: float = 6.5
+    DEFAULT_KELLY_FACTOR: float = _cfg.KELLY_FRACTION
+    DEFAULT_MIN_EV: float = _cfg.DEFAULT_MIN_EV
+    DEFAULT_MIN_RATING: float = _cfg.DEFAULT_MIN_RATING
 
-    # Simulaciones por deporte
-    MLB_SIMULATIONS: int = 5_000_000
-    NBA_SIMULATIONS: int = 50_000
-    UFC_SIMULATIONS: int = 100_000
+    MLB_SIMULATIONS: int = _cfg.MLB_SIMULATIONS
+    NBA_SIMULATIONS: int = _cfg.NBA_SIMULATIONS
+    UFC_SIMULATIONS: int = _cfg.UFC_SIMULATIONS
 
-    # Game IDs de fallback para testing
-    MLB_FALLBACK_GAME_ID: int = 746_929  # World Series 2024
+    MLB_FALLBACK_GAME_ID: int = _cfg.MLB_FALLBACK_GAME_ID
 
-    # Cache TTL
-    ODDS_CACHE_TTL: int = 300  # segundos
+    ODDS_CACHE_TTL: int = _cfg.ODDS_CACHE_TTL
 
-    # Límites
-    MAX_HISTORY_RECORDS: int = 200
-    MAX_DISPLAY_RECORDS: int = 50
+    MAX_HISTORY_RECORDS: int = _cfg.MAX_HISTORY_RECORDS
+    MAX_DISPLAY_RECORDS: int = _cfg.MAX_DISPLAY_RECORDS
 
     def __post_init__(self) -> None:
         """Inicializa directorios derivados."""

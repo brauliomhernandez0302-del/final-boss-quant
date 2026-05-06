@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 
 # Data fetching
 from data_fetchers import MLBStatsAPI
+from config import MLB_SIMULATIONS, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP
 
 # Calibration - ABSOLUTO
 from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
@@ -45,14 +46,14 @@ logger = logging.getLogger(__name__)
 
 def run_module(
     game_id: Optional[int] = None,
-    lh_base: float = 4.5,
+    lh_base: float = LEAGUE_AVG_RUNS,
     la_base: float = 4.2,
     use_calibration: bool = True,
     use_hfa: bool = True,
     use_pitcher: bool = True,
     use_regression: bool = True,
     analyze_f5: bool = True,
-    n_max: int = 5_000_000
+    n_max: int = MLB_SIMULATIONS
 ) -> Dict[str, Any]:
     """
     Ejecuta el análisis completo de un juego MLB.
@@ -165,7 +166,7 @@ def run_module(
 # Normalizar game_data para los engines
         game_data['home_team'] = {
             'name': home_team,
-            'runs_per_game': game_data.get('home_team_runs', {}).get('runs_scored_avg', 4.5) if isinstance(game_data.get('home_team_runs'), dict) else 4.5,
+            'runs_per_game': game_data.get('home_team_runs', {}).get('runs_scored_avg', LEAGUE_AVG_RUNS) if isinstance(game_data.get('home_team_runs'), dict) else LEAGUE_AVG_RUNS,
             'wins': game_data.get('home_team_form', {}).get('wins', 5) if isinstance(game_data.get('home_team_form'), dict) else 5,
             'losses': game_data.get('home_team_form', {}).get('losses', 5) if isinstance(game_data.get('home_team_form'), dict) else 5,
             'last_10': game_data.get('home_team_form', {}).get('last_10', '5-5') if isinstance(game_data.get('home_team_form'), dict) else '5-5',
@@ -173,7 +174,7 @@ def run_module(
         }
         game_data['away_team'] = {
             'name': away_team,
-            'runs_per_game': game_data.get('away_team_runs', {}).get('runs_scored_avg', 4.2) if isinstance(game_data.get('away_team_runs'), dict) else 4.2,
+            'runs_per_game': game_data.get('away_team_runs', {}).get('runs_scored_avg', LEAGUE_AVG_RUNS) if isinstance(game_data.get('away_team_runs'), dict) else LEAGUE_AVG_RUNS,
             'wins': game_data.get('away_team_form', {}).get('wins', 5) if isinstance(game_data.get('away_team_form'), dict) else 5,
             'losses': game_data.get('away_team_form', {}).get('losses', 5) if isinstance(game_data.get('away_team_form'), dict) else 5,
             'last_10': game_data.get('away_team_form', {}).get('last_10', '5-5') if isinstance(game_data.get('away_team_form'), dict) else '5-5',
@@ -185,7 +186,7 @@ def run_module(
         game_data['pitcher_home'] = {
             'name': pitcher_home,
             'era': home_ps.get('era', 4.38),
-            'whip': home_ps.get('whip', 1.30),
+            'whip': home_ps.get('whip', LEAGUE_AVG_WHIP),
             'k_per_9': home_ps.get('k_per_9', 8.5),
             'era_last_5': home_ps.get('era_last_5', home_ps.get('era', 4.38)),
             'days_rest': home_ps.get('days_rest', 4),
@@ -194,7 +195,7 @@ def run_module(
         game_data['pitcher_away'] = {
             'name': pitcher_away,
             'era': away_ps.get('era', 4.38),
-            'whip': away_ps.get('whip', 1.30),
+            'whip': away_ps.get('whip', LEAGUE_AVG_WHIP),
             'k_per_9': away_ps.get('k_per_9', 8.5),
             'era_last_5': away_ps.get('era_last_5', away_ps.get('era', 4.38)),
             'days_rest': away_ps.get('days_rest', 4),

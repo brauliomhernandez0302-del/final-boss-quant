@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import requests
 from dotenv import load_dotenv
+from config import ODDS_FILE_CACHE_TTL
 
 # ==========================
 # CONFIGURACIÓN GLOBAL
@@ -62,7 +63,7 @@ SPORTS_KEYS = [
 CACHE_DIR = Path(".cache")
 CACHE_DIR.mkdir(exist_ok=True)
 CACHE_FILE = CACHE_DIR / "odds_last.json"
-CACHE_TTL_SECONDS = 10 * 60  # 10 minutos (reducido para datos más frescos)
+CACHE_TTL_SECONDS = ODDS_FILE_CACHE_TTL
 
 # ==========================
 # UTILIDADES

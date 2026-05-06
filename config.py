@@ -45,7 +45,8 @@ LEAGUE_AVG_ERA  = 4.15
 LEAGUE_AVG_WHIP = 1.30
 
 # ── Odds API / caching ─────────────────────────────────────────────────────
-ODDS_CACHE_TTL       = 300   # seconds
+ODDS_CACHE_TTL       = 300   # seconds — Streamlit function-cache TTL
+ODDS_FILE_CACHE_TTL  = 600   # seconds — on-disk JSON cache TTL (odds_fetcher)
 MLB_FALLBACK_GAME_ID = 746_929  # World Series 2024
 
 # ── UI limits ──────────────────────────────────────────────────────────────
