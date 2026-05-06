@@ -110,12 +110,12 @@ def run_module(
                     mapping = {}
 
                     for g in games:
-                        home = g['teams']['home']['team']['name']
-                        away = g['teams']['away']['team']['name']
-                        date_str = datetime.fromisoformat(g['gameDate']).strftime("%Y-%m-%d %H:%M")
+                        home = g['home_team']
+                        away = g['away_team']
+                        date_str = datetime.fromisoformat(g['game_date'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M")
                         label = f"{away} @ {home} — {date_str}"
                         options.append(label)
-                        mapping[label] = g['gamePk']
+                        mapping[label] = g['game_pk']
 
                     selected_label = st.selectbox(
                         "🎯 Selecciona el partido a analizar:",
@@ -126,9 +126,9 @@ def run_module(
                     st.info(f"📊 Analizando: {selected_label}")
                     logger.info(f"   Juego seleccionado: {game_id}")
 
-                except Exception:
-                    # Si no hay Streamlit (modo terminal)
-                    game_id = games[0]['gamePk']
+                except ImportError:
+                    # Terminal mode — no Streamlit
+                    game_id = games[0]['game_pk']
                     logger.info(f"   Streamlit no disponible, usando primer juego: {game_id}")
 
             except Exception as e:
@@ -313,8 +313,8 @@ def run_module(
         results['probabilities'] = mc_results
 
         logger.info(f"   ✅ Simulaciones completadas")
-        logger.info(f"   Home Win: {mc_results.get('home_win', 0):.1%}")
-        logger.info(f"   Away Win: {mc_results.get('away_win', 0):.1%}")
+        logger.info(f"   Home Win: {mc_results.get('p_home', 0):.1%}")
+        logger.info(f"   Away Win: {mc_results.get('p_away', 0):.1%}")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 6: VALUE DETECTION
@@ -359,7 +359,7 @@ def run_module(
         logger.info("✅ ANÁLISIS COMPLETADO")
         logger.info("=" * 70)
         logger.info(f"Lambdas finales: λ_h={lh:.3f}, λ_a={la:.3f}")
-        logger.info(f"Home Win: {mc_results.get('home_win', 0):.1%}")
+        logger.info(f"Home Win: {mc_results.get('p_home', 0):.1%}")
         logger.info(f"Value Bets: {len(results['best_bets'])}")
         logger.info("=" * 70)
 
