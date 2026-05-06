@@ -93,8 +93,13 @@ def load_cache() -> Optional[List[Dict[str, Any]]]:
     
     try:
         cache_content = json.loads(CACHE_FILE.read_text(encoding='utf-8'))
+
+        # app.py writes a raw list; treat that as expired (no timestamp)
+        if isinstance(cache_content, list):
+            return None
+
         timestamp = cache_content.get("timestamp", 0)
-        
+
         # Verificar si el caché aún es válido
         if time.time() - timestamp < CACHE_TTL_SECONDS:
             age_minutes = (time.time() - timestamp) / 60
@@ -294,6 +299,8 @@ def get_odds_data() -> List[Dict[str, Any]]:
             try:
                 cache = json.loads(CACHE_FILE.read_text(encoding='utf-8'))
                 print("⚠️ Usando caché antiguo (sin API key)")
+                if isinstance(cache, list):
+                    return cache
                 return cache.get("data", [])
             except Exception:
                 pass
