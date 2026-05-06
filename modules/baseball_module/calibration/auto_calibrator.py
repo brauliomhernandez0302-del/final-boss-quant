@@ -31,7 +31,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-class AutoCalibrator:
+class LambdaCalibrator:
     """
     Motor de calibración POTENTE con análisis histórico profundo.
     
@@ -46,7 +46,7 @@ class AutoCalibrator:
     """
     
     def __init__(self):
-        self.name = "AutoCalibrator G10 Pro"
+        self.name = "LambdaCalibrator G10 Pro"
         
         # MLB averages (2024 season)
         self.league_avg_runs = 4.5
@@ -83,7 +83,7 @@ class AutoCalibrator:
             (lh_calibrated, la_calibrated)
         """
         
-        logger.info("🎯 AutoCalibrator G10 Pro - Iniciando calibración...")
+        logger.info("🎯 LambdaCalibrator G10 Pro - Iniciando calibración...")
         
         # Extraer datos
         home_team = game_data.get('home_team', {})
@@ -387,5 +387,5 @@ def calibrate_lambdas(
     Usage:
         lh_cal, la_cal = calibrate_lambdas(4.5, 4.2, game_data)
     """
-    calibrator = AutoCalibrator()
+    calibrator = LambdaCalibrator()
     return calibrator.calibrate(lh_base, la_base, game_data)

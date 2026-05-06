@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from data_fetchers import MLBStatsAPI
 
 # Calibration - ABSOLUTO
-from modules.baseball_module.calibration.auto_calibrator import AutoCalibrator
+from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
 
 # HFA - ABSOLUTO
 from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
@@ -31,7 +31,7 @@ from modules.baseball_module.context_engine.pitchers_regression import calculate
 from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced
 
 # Value Detection - ABSOLUTO
-from modules.baseball_module.value.value_detector import evaluate_value_ultra
+from core.value_detector import evaluate_value_ultra
 
 # Odds API
 try:
@@ -221,7 +221,7 @@ def run_module(
         if use_calibration:
             logger.info("\n🎯 PASO 1: Calibration Engine...")
 
-            calibrator = AutoCalibrator()
+            calibrator = LambdaCalibrator()
             lh, la = calibrator.calibrate(lh, la, game_data)
 
             results['lambdas_history']['calibration'] = {
@@ -331,7 +331,7 @@ def run_module(
             logger.warning(f"   ⚠️  No se pudieron obtener odds: {e}")
 
         if market_odds and market_odds.get('ml_home') and market_odds.get('ml_away'):
-            from modules.baseball_module.value.value_detector import GameOdds
+            from core.value_detector import GameOdds
             game_odds = GameOdds(
                 ml_home=market_odds['ml_home'],
                 ml_away=market_odds['ml_away'],
