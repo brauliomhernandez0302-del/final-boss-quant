@@ -200,16 +200,16 @@ class LambdaCalibrator:
         else:
             woba_factor = ops_factor  # Fallback a OPS
         
-        # wRC+ (weighted Runs Created Plus) si disponible
-        wrc_plus = team.get('wrc_plus', 100)
+        # wRC+ (approximated from wOBA; 100 = league average)
+        wrc_plus = team.get('wrc_plus', 100.0)
         wrc_factor = wrc_plus / 100.0
-        
+
         # Combinar métricas con pesos
         offense_mult = (
-            rpg_factor * 0.40 +
-            ops_factor * 0.25 +
-            woba_factor * 0.20 +
-            wrc_factor * 0.15
+            rpg_factor  * 0.35 +
+            woba_factor * 0.30 +
+            ops_factor  * 0.20 +
+            wrc_factor  * 0.15
         )
         
         # Normalizar alrededor de 1.0
@@ -224,19 +224,20 @@ class LambdaCalibrator:
         
         # Runs permitidos por juego
         runs_allowed = opponent.get('runs_allowed_per_game', self.league_avg_runs)
-        
-        # Invertir: más runs permitidos = más fácil anotar
-        defense_factor = self.league_avg_runs / runs_allowed
-        
+        # Higher runs_allowed → easier to score → factor > 1.0
+        defense_factor = runs_allowed / self.league_avg_runs
+
         # ERA del staff (si disponible)
         team_era = opponent.get('team_era', self.league_avg_era)
-        era_factor = self.league_avg_era / team_era
-        
+        # Higher ERA → weaker pitching → easier to score → factor > 1.0
+        era_factor = team_era / self.league_avg_era
+
         # WHIP del staff
         team_whip = opponent.get('team_whip', self.league_avg_whip)
-        whip_factor = self.league_avg_whip / team_whip
-        
-        # DER (Defensive Efficiency Rating)
+        # Higher WHIP → weaker pitching → easier to score → factor > 1.0
+        whip_factor = team_whip / self.league_avg_whip
+
+        # DER (Defensive Efficiency Rating): higher = better defense = harder to score → factor < 1.0
         der = opponent.get('der', 0.700)
         der_factor = 0.700 / der
         

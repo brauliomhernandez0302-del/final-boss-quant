@@ -173,8 +173,10 @@ def run_module(
             'pitcher_away': pitcher_away
         }
 # Normalizar game_data para los engines
-        _home_off = game_data.get('home_offensive_stats') or {}
-        _away_off = game_data.get('away_offensive_stats') or {}
+        _home_off   = game_data.get('home_offensive_stats') or {}
+        _away_off   = game_data.get('away_offensive_stats') or {}
+        _home_pitch = game_data.get('home_pitching_stats') or {}
+        _away_pitch = game_data.get('away_pitching_stats') or {}
         game_data['home_team'] = {
             'name': home_team,
             'runs_per_game': game_data.get('home_team_runs', {}).get('runs_scored_avg', LEAGUE_AVG_RUNS) if isinstance(game_data.get('home_team_runs'), dict) else LEAGUE_AVG_RUNS,
@@ -182,8 +184,16 @@ def run_module(
             'losses': game_data.get('home_team_form', {}).get('losses', 5) if isinstance(game_data.get('home_team_form'), dict) else 5,
             'last_10': game_data.get('home_team_form', {}).get('last_10', '5-5') if isinstance(game_data.get('home_team_form'), dict) else '5-5',
             'streak': game_data.get('home_team_form', {}).get('streak', '') if isinstance(game_data.get('home_team_form'), dict) else '',
+            # Offense
             'woba': _home_off.get('woba', 0.320),
             'ops': _home_off.get('ops', 0.735),
+            'wrc_plus': _home_off.get('wrc_plus', 100.0),
+            # Defense (used by calibrator's _calculate_defense_multiplier on the opponent)
+            'runs_allowed_per_game': _home_pitch.get('runs_allowed_per_game', LEAGUE_AVG_RUNS),
+            'team_era': _home_pitch.get('team_era', 4.15),
+            'team_whip': _home_pitch.get('team_whip', 1.30),
+            # Rest
+            'rest_days': game_data.get('home_days_rest', 1),
         }
         game_data['away_team'] = {
             'name': away_team,
@@ -192,9 +202,23 @@ def run_module(
             'losses': game_data.get('away_team_form', {}).get('losses', 5) if isinstance(game_data.get('away_team_form'), dict) else 5,
             'last_10': game_data.get('away_team_form', {}).get('last_10', '5-5') if isinstance(game_data.get('away_team_form'), dict) else '5-5',
             'streak': game_data.get('away_team_form', {}).get('streak', '') if isinstance(game_data.get('away_team_form'), dict) else '',
+            # Offense
             'woba': _away_off.get('woba', 0.320),
             'ops': _away_off.get('ops', 0.735),
+            'wrc_plus': _away_off.get('wrc_plus', 100.0),
+            # Defense
+            'runs_allowed_per_game': _away_pitch.get('runs_allowed_per_game', LEAGUE_AVG_RUNS),
+            'team_era': _away_pitch.get('team_era', 4.15),
+            'team_whip': _away_pitch.get('team_whip', 1.30),
+            # Rest + travel
+            'rest_days': game_data.get('away_days_rest', 1),
+            'miles_traveled': game_data.get('miles_traveled_away', 0),
+            'time_zones_crossed': game_data.get('time_zones_crossed_away', 0),
         }
+        # Top-level travel keys used by HFA engine and pitcher engine
+        game_data.setdefault('miles_traveled_away', 0)
+        game_data.setdefault('time_zones_crossed_away', 0)
+        game_data.setdefault('back_to_back_away', False)
         home_ps = game_data.get('home_pitcher_stats', {}) if isinstance(game_data.get('home_pitcher_stats'), dict) else {}
         away_ps = game_data.get('away_pitcher_stats', {}) if isinstance(game_data.get('away_pitcher_stats'), dict) else {}
 

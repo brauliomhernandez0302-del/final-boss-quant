@@ -26,6 +26,28 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in miles between two lat/lon points."""
+    import math
+    R = 3958.8
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.asin(math.sqrt(a))
+
+
+def _lon_to_tz_offset(lon: float) -> int:
+    """Approximate North American UTC offset from longitude."""
+    if lon > -90:
+        return -5   # Eastern
+    elif lon > -105:
+        return -6   # Central
+    elif lon > -115:
+        return -7   # Mountain
+    else:
+        return -8   # Pacific
+
+
 # Directorios
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
@@ -766,7 +788,14 @@ class MLBStatsAPI:
             slg = _safe_float(stat.get("slg", 0.0))
             ops = round(obp + slg, 3) if obp > 0 and slg > 0 else _safe_float(stat.get("ops", 0.735))
 
-            result = {"woba": woba, "ops": ops, "obp": round(obp, 3), "slg": round(slg, 3), "games": games}
+            # Approximate wRC+ from wOBA (no park adjustment; close enough for lambda scaling)
+            # wRC+ = ((wOBA - lgwOBA) / wOBAscale) * 100 + 100
+            LG_WOBA, WOBA_SCALE = 0.320, 1.157
+            wrc_plus = round(((woba - LG_WOBA) / WOBA_SCALE) * 100 + 100, 1)
+            wrc_plus = max(50.0, min(165.0, wrc_plus))
+
+            result = {"woba": woba, "ops": ops, "obp": round(obp, 3), "slg": round(slg, 3),
+                      "wrc_plus": wrc_plus, "games": games}
             with open(cache_file, "w") as f:
                 json.dump(result, f)
             return result
@@ -775,10 +804,10 @@ class MLBStatsAPI:
             return None
 
     # ==========================================================
-    # FEATURE 7 - TRAVEL FATIGUE (heurística simple)
+    # FEATURE 7 - TRAVEL FATIGUE (coordinate-based)
     # ==========================================================
-    def get_travel_fatigue(self, team_id: int, game_date: str) -> Optional[Dict[str, Any]]:
-        """{"has_travel_fatigue": bool, "hours_since_last_game": float, "previous_venue": str, "is_cross_country": bool}"""
+    def get_travel_fatigue(self, team_id: int, game_date: str, current_venue: str = "") -> Optional[Dict[str, Any]]:
+        """Returns travel metrics: miles_traveled, time_zones_crossed, back_to_back, has_travel_fatigue."""
         cache_key = f"travel_{team_id}_{game_date}"
         cache_file = CACHE_DIR / f"{cache_key}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 7200:
@@ -818,30 +847,129 @@ class MLBStatsAPI:
                         previous_game_date = gd
 
             if not previous_venue or not previous_game_date:
-                return {"has_travel_fatigue": False, "reason": "No previous game found"}
+                return {"has_travel_fatigue": False, "miles_traveled": 0, "time_zones_crossed": 0, "back_to_back": False}
 
             prev_dt = datetime.fromisoformat(previous_game_date.replace('Z', '+00:00'))
             hours_between = (game_dt - prev_dt).total_seconds() / 3600
+            back_to_back = hours_between < 30
 
-            west = {"Oracle Park", "Dodger Stadium", "T-Mobile Park", "Petco Park"}
-            east = {"Yankee Stadium", "Fenway Park", "Citi Field", "Citizens Bank Park"}
-            is_west = previous_venue in west
-            is_east = previous_venue in east
-            # Heurística de cruce costa a costa: si venía de costa opuesta y menos de 24h
-            is_cross_country = is_west or is_east  # simplificación: viaje largo desde costa
-            has_fatigue = is_cross_country and hours_between < 24
+            # Coordinate-based distance and time-zone calculation
+            coords = WeatherAPI.STADIUM_COORDS
+            miles = 0
+            time_zones = 0
+            if previous_venue in coords and current_venue in coords:
+                prev_c = coords[previous_venue]
+                curr_c = coords[current_venue]
+                miles = round(_haversine_miles(prev_c["lat"], prev_c["lon"], curr_c["lat"], curr_c["lon"]))
+                tz_prev = _lon_to_tz_offset(prev_c["lon"])
+                tz_curr = _lon_to_tz_offset(curr_c["lon"])
+                time_zones = abs(tz_curr - tz_prev)
+            elif previous_venue != current_venue:
+                # Fallback: unknown stadium → assume mid-range travel
+                miles = 1000
+                time_zones = 1
+
+            has_fatigue = (miles > 1000 or time_zones >= 2) and hours_between < 30
 
             result = {
                 "has_travel_fatigue": bool(has_fatigue),
                 "hours_since_last_game": round(hours_between, 1),
                 "previous_venue": previous_venue,
-                "is_cross_country": bool(is_cross_country)
+                "miles_traveled": miles,
+                "time_zones_crossed": time_zones,
+                "back_to_back": back_to_back,
             }
             with open(cache_file, "w") as f:
                 json.dump(result, f)
             return result
         except Exception as e:
             print(f"⚠️ Error calculando travel fatigue: {e}")
+            return None
+
+    # ==========================================================
+    # FEATURE 8 - DAYS REST PER TEAM
+    # ==========================================================
+    def get_team_days_rest(self, team_id: int, game_date: str) -> int:
+        """Returns days since the team's last completed game (0 = back-to-back, 4 = normal)."""
+        cache_file = CACHE_DIR / f"rest_{team_id}_{game_date}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
+            try:
+                with open(cache_file) as f:
+                    return json.load(f).get("days_rest", 4)
+            except Exception:
+                pass
+        try:
+            target = datetime.strptime(game_date[:10], "%Y-%m-%d").date()
+            start = target - timedelta(days=7)
+            url = f"{self.BASE_URL}/schedule"
+            params = {
+                "sportId": 1,
+                "teamId": team_id,
+                "startDate": start.strftime("%Y-%m-%d"),
+                "endDate": (target - timedelta(days=1)).strftime("%Y-%m-%d"),
+                "gameType": "R,F,D,L,W",
+            }
+            r = self.session.get(url, params=params, timeout=8)
+            r.raise_for_status()
+            data = r.json()
+            last_date = None
+            for date_item in data.get("dates", []):
+                for game in date_item.get("games", []):
+                    if game.get("status", {}).get("abstractGameState") == "Final":
+                        d = date_item.get("date", "")
+                        if d and (last_date is None or d > last_date):
+                            last_date = d
+            if last_date:
+                days_rest = (target - datetime.strptime(last_date, "%Y-%m-%d").date()).days
+            else:
+                days_rest = 4
+            with open(cache_file, "w") as f:
+                json.dump({"days_rest": days_rest}, f)
+            return days_rest
+        except Exception:
+            return 4
+
+    # ==========================================================
+    # FEATURE 9 - TEAM PITCHING / DEFENSE STATS
+    # ==========================================================
+    def get_team_pitching_stats(self, team_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
+        """Fetches team ERA, WHIP, and runs-allowed-per-game from the pitching stats endpoint."""
+        cache_file = CACHE_DIR / f"team_pitching_{team_id}_{season}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
+            try:
+                with open(cache_file) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        try:
+            url = f"{self.BASE_URL}/teams/{team_id}/stats"
+            params = {"stats": "season", "season": season, "group": "pitching", "sportId": 1}
+            r = self.session.get(url, params=params, timeout=8)
+            r.raise_for_status()
+            splits = r.json().get("stats", [{}])[0].get("splits", [{}])
+            if not splits:
+                return None
+            stat = splits[0].get("stat", {})
+            games = int(stat.get("gamesPlayed", 0))
+            if games < 5:
+                return None
+            era = _safe_float(stat.get("era"))
+            whip = _safe_float(stat.get("whip"))
+            runs_allowed = int(stat.get("runs", 0))
+            ra_per_game = round(runs_allowed / games, 3) if games > 0 else 4.5
+            if era <= 0 or whip <= 0:
+                return None
+            result = {
+                "team_era": round(era, 2),
+                "team_whip": round(whip, 2),
+                "runs_allowed_per_game": ra_per_game,
+                "games": games,
+            }
+            with open(cache_file, "w") as f:
+                json.dump(result, f)
+            return result
+        except Exception as e:
+            print(f"⚠️ Error obteniendo pitching stats team {team_id}: {e}")
             return None
 
 
@@ -1247,12 +1375,39 @@ class MLBDataIntegrator:
                         enriched["away_offensive_stats"] = away_off
                         print(f"  ✅ {game['away_team']} offense: wOBA={away_off['woba']} OPS={away_off['ops']}")
 
-                # 6) Travel Fatigue (para el equipo visitante)
+                # 6) Travel Fatigue (coordinate-based miles + time zones)
                 if game.get("away_team_id") and game.get("game_date"):
-                    travel = self.mlb_api.get_travel_fatigue(game["away_team_id"], game["game_date"])
-                    if travel and travel.get("has_travel_fatigue"):
+                    travel = self.mlb_api.get_travel_fatigue(
+                        game["away_team_id"],
+                        game["game_date"],
+                        current_venue=game.get("venue", "")
+                    )
+                    if travel:
                         enriched["away_travel_fatigue"] = travel
-                        print(f"  ✈️ {game['away_team']}: FATIGA DE VIAJE detectada")
+                        enriched["miles_traveled_away"] = travel.get("miles_traveled", 0)
+                        enriched["time_zones_crossed_away"] = travel.get("time_zones_crossed", 0)
+                        enriched["back_to_back_away"] = travel.get("back_to_back", False)
+                        if travel.get("has_travel_fatigue"):
+                            print(f"  ✈️ {game['away_team']}: {travel['miles_traveled']} mi, {travel['time_zones_crossed']} TZ")
+
+                # 7) Days rest (home and away)
+                game_date_str = (game.get("game_date") or "")[:10]
+                if game.get("home_team_id") and game_date_str:
+                    enriched["home_days_rest"] = self.mlb_api.get_team_days_rest(game["home_team_id"], game_date_str)
+                if game.get("away_team_id") and game_date_str:
+                    enriched["away_days_rest"] = self.mlb_api.get_team_days_rest(game["away_team_id"], game_date_str)
+
+                # 8) Team pitching/defense stats (ERA, WHIP, RA/G)
+                if game.get("home_team_id"):
+                    home_pitch = self.mlb_api.get_team_pitching_stats(game["home_team_id"], season)
+                    if home_pitch:
+                        enriched["home_pitching_stats"] = home_pitch
+                        print(f"  ✅ {game['home_team']} pitching: ERA={home_pitch['team_era']} WHIP={home_pitch['team_whip']}")
+                if game.get("away_team_id"):
+                    away_pitch = self.mlb_api.get_team_pitching_stats(game["away_team_id"], season)
+                    if away_pitch:
+                        enriched["away_pitching_stats"] = away_pitch
+                        print(f"  ✅ {game['away_team']} pitching: ERA={away_pitch['team_era']} WHIP={away_pitch['team_whip']}")
 
                 status_icon = "✅" if enriched["pitchers_valid"] else "⚠️"
                 status_msg = "Data completa" if enriched["pitchers_valid"] else "Data incompleta - NO APOSTAR"

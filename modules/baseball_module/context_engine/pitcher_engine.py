@@ -243,18 +243,12 @@ class PitcherEngine:
             Multiplicador (1.0 = average, <1.0 = elite, >1.0 = malo)
         """
         
-        # Obtener stats (con defaults)
         era = pitcher.get('era', 4.50)
-        fip = pitcher.get('fip', era)  # Usar ERA si no hay FIP
-        xfip = pitcher.get('xfip', fip)  # Usar FIP si no hay xFIP
-        
-        # Ponderar: xFIP > FIP > ERA
-        # xFIP es mejor predictor futuro
-        composite = (
-            era * 0.30 +
-            fip * 0.35 +
-            xfip * 0.35
-        )
+        fip = pitcher.get('fip', era)  # falls back to ERA if FIP not fetched
+
+        # xFIP requires fly-ball counts not available from the free API;
+        # use FIP (which we now compute from HR/BB/HBP/K) at higher weight.
+        composite = era * 0.40 + fip * 0.60
         
         # League average ≈ 4.20
         league_avg = 4.20

@@ -49,10 +49,8 @@ class PitcherRegressionEngine:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         
         era = pitcher_stats.get("era", 4.00)
-        fip = pitcher_stats.get("fip", 4.10)
-        xfip = pitcher_stats.get("xfip", 4.20)
-        siera = pitcher_stats.get("siera", 4.10)
-        
+        fip = pitcher_stats.get("fip", era)  # fall back to ERA; xFIP/SIERA not available from free API
+
         # Recent performance
         last3_era = pitcher_stats.get("last3_era", era)
         
@@ -80,8 +78,8 @@ class PitcherRegressionEngine:
         # 1. SKILL-BASED REGRESSION (ERA vs peripherals)
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         
-        # True talent estimate (ponderar FIP/xFIP/SIERA)
-        true_talent = (fip * 0.40 + xfip * 0.35 + siera * 0.25)
+        # True talent: FIP outweighs ERA as a predictor; xFIP/SIERA not available
+        true_talent = fip * 0.65 + era * 0.35
         
         # Diferencia entre recent ERA y true talent
         diff = last3_era - true_talent

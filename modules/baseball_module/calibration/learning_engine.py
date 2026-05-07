@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 _MLB_API_BASE = "https://statsapi.mlb.com/api/v1"
 _MIN_SAMPLES = 10          # min finished games before bias is applied
-_BIAS_CLAMP = 0.20         # max ±20% correction
+_BIAS_CLAMP = 0.30         # max ±30% correction
 _BIAS_CACHE_HOURS = 6      # invalidate cached bias after this many hours
 
 
