@@ -338,34 +338,29 @@ class HFAEngine:
     
     
     def _calculate_defense_multiplier(self, team: Dict) -> float:
-        """Calcula multiplicador por calidad defensiva."""
-        
-        der = team.get('der', 0.700)
-        uzr = team.get('uzr', 0.0)
-        fielding_pct = team.get('fielding_pct', 0.985)
-        
-        der_mult = 0.700 / der
-        
-        if uzr > 20:
-            uzr_adj = 0.95
-        elif uzr > 10:
-            uzr_adj = 0.97
-        elif uzr < -20:
-            uzr_adj = 1.06
-        elif uzr < -10:
-            uzr_adj = 1.03
-        else:
-            uzr_adj = 1.00
-        
-        field_mult = 0.985 / fielding_pct
-        
+        """
+        Defensive quality of the team whose pitching staff the batter faces.
+        Uses team ERA/WHIP/RA-per-game (available from the free API).
+        DER/UZR/fielding_pct are unavailable without paid data; omitted.
+        Higher ERA/WHIP → easier to score → mult > 1.0.
+        """
+        from config import LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP, LEAGUE_AVG_RUNS
+
+        team_era = team.get('team_era', LEAGUE_AVG_ERA)
+        team_whip = team.get('team_whip', LEAGUE_AVG_WHIP)
+        ra_per_game = team.get('runs_allowed_per_game', LEAGUE_AVG_RUNS)
+
+        era_mult = team_era / LEAGUE_AVG_ERA
+        whip_mult = team_whip / LEAGUE_AVG_WHIP
+        ra_mult = ra_per_game / LEAGUE_AVG_RUNS
+
         mult = (
-            der_mult * 0.50 +
-            uzr_adj * 0.30 +
-            field_mult * 0.20
+            era_mult  * 0.40 +
+            whip_mult * 0.35 +
+            ra_mult   * 0.25
         )
-        
-        return np.clip(mult, 0.88, 1.12)
+
+        return np.clip(mult, 0.78, 1.22)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
