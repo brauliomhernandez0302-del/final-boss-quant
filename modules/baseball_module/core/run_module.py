@@ -173,6 +173,8 @@ def run_module(
             'pitcher_away': pitcher_away
         }
 # Normalizar game_data para los engines
+        _home_off = game_data.get('home_offensive_stats') or {}
+        _away_off = game_data.get('away_offensive_stats') or {}
         game_data['home_team'] = {
             'name': home_team,
             'runs_per_game': game_data.get('home_team_runs', {}).get('runs_scored_avg', LEAGUE_AVG_RUNS) if isinstance(game_data.get('home_team_runs'), dict) else LEAGUE_AVG_RUNS,
@@ -180,6 +182,8 @@ def run_module(
             'losses': game_data.get('home_team_form', {}).get('losses', 5) if isinstance(game_data.get('home_team_form'), dict) else 5,
             'last_10': game_data.get('home_team_form', {}).get('last_10', '5-5') if isinstance(game_data.get('home_team_form'), dict) else '5-5',
             'streak': game_data.get('home_team_form', {}).get('streak', '') if isinstance(game_data.get('home_team_form'), dict) else '',
+            'woba': _home_off.get('woba', 0.320),
+            'ops': _home_off.get('ops', 0.735),
         }
         game_data['away_team'] = {
             'name': away_team,
@@ -188,6 +192,8 @@ def run_module(
             'losses': game_data.get('away_team_form', {}).get('losses', 5) if isinstance(game_data.get('away_team_form'), dict) else 5,
             'last_10': game_data.get('away_team_form', {}).get('last_10', '5-5') if isinstance(game_data.get('away_team_form'), dict) else '5-5',
             'streak': game_data.get('away_team_form', {}).get('streak', '') if isinstance(game_data.get('away_team_form'), dict) else '',
+            'woba': _away_off.get('woba', 0.320),
+            'ops': _away_off.get('ops', 0.735),
         }
         home_ps = game_data.get('home_pitcher_stats', {}) if isinstance(game_data.get('home_pitcher_stats'), dict) else {}
         away_ps = game_data.get('away_pitcher_stats', {}) if isinstance(game_data.get('away_pitcher_stats'), dict) else {}
@@ -195,6 +201,7 @@ def run_module(
         game_data['pitcher_home'] = {
             'name': pitcher_home,
             'era': home_ps.get('era', 4.38),
+            'fip': home_ps.get('fip', home_ps.get('era', 4.38)),
             'whip': home_ps.get('whip', LEAGUE_AVG_WHIP),
             'k_per_9': home_ps.get('k_per_9', 8.5),
             'era_last_5': home_ps.get('era_last_5', home_ps.get('era', 4.38)),
@@ -204,6 +211,7 @@ def run_module(
         game_data['pitcher_away'] = {
             'name': pitcher_away,
             'era': away_ps.get('era', 4.38),
+            'fip': away_ps.get('fip', away_ps.get('era', 4.38)),
             'whip': away_ps.get('whip', LEAGUE_AVG_WHIP),
             'k_per_9': away_ps.get('k_per_9', 8.5),
             'era_last_5': away_ps.get('era_last_5', away_ps.get('era', 4.38)),

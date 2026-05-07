@@ -207,14 +207,24 @@ class MLBStatsAPI:
             k_per_9 = (so / innings * 9) if innings > 0 else 0.0
             bb_per_9 = (bb / innings * 9) if innings > 0 else 0.0
 
+            hr = int(stat.get("homeRuns", 0))
+            hbp = int(stat.get("hitBatsmen", stat.get("hitByPitch", 0)))
+            # FIP = (13*HR + 3*(BB+HBP) - 2*K) / IP + FIP_constant
+            FIP_CONSTANT = 3.10
+            fip = round((13 * hr + 3 * (bb + hbp) - 2 * so) / innings + FIP_CONSTANT, 2)
+            fip = round(max(0.0, min(fip, 12.0)), 2)
+
             return {
                 "era": round(era, 2),
                 "whip": round(whip, 2),
+                "fip": fip,
                 "wins": int(stat.get("wins", 0)),
                 "losses": int(stat.get("losses", 0)),
                 "innings_pitched": round(innings, 1),
                 "strikeouts": so,
                 "walks": bb,
+                "home_runs_allowed": hr,
+                "hit_batsmen": hbp,
                 "k_per_9": round(k_per_9, 2),
                 "bb_per_9": round(bb_per_9, 2),
                 "hits_allowed": int(stat.get("hits", 0)),
@@ -322,14 +332,21 @@ class MLBStatsAPI:
             bb = int(stat.get("baseOnBalls", 0))
             k9 = (so / innings * 9) if innings > 0 else 0.0
             bb9 = (bb / innings * 9) if innings > 0 else 0.0
+            hr = int(stat.get("homeRuns", 0))
+            hbp = int(stat.get("hitBatsmen", stat.get("hitByPitch", 0)))
+            FIP_CONSTANT = 3.10
+            fip = round((13 * hr + 3 * (bb + hbp) - 2 * so) / innings + FIP_CONSTANT, 2)
+            fip = round(max(0.0, min(fip, 12.0)), 2)
             return {
                 "era": round(era, 2),
                 "whip": round(whip, 2),
+                "fip": fip,
                 "innings_pitched": round(innings, 1),
                 "k_per_9": round(k9, 2),
                 "bb_per_9": round(bb9, 2),
                 "strikeouts": so,
-                "walks": bb
+                "walks": bb,
+                "home_runs_allowed": hr,
             }
         except Exception:
             return None
@@ -697,6 +714,67 @@ class MLBStatsAPI:
             return None
 
     # ==========================================================
+    # FEATURE 6b - TEAM OFFENSIVE STATS (wOBA, OPS)
+    # ==========================================================
+    def get_team_offensive_stats(self, team_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
+        """Fetches wOBA (computed from components) and OPS from the team hitting endpoint."""
+        cache_file = CACHE_DIR / f"team_offense_{team_id}_{season}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
+            try:
+                with open(cache_file) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+
+        try:
+            url = f"{self.BASE_URL}/teams/{team_id}/stats"
+            params = {"stats": "season", "season": season, "group": "hitting", "sportId": 1}
+            r = self.session.get(url, params=params, timeout=8)
+            r.raise_for_status()
+            splits = r.json().get("stats", [{}])[0].get("splits", [{}])
+            if not splits:
+                return None
+            stat = splits[0].get("stat", {})
+
+            games = int(stat.get("gamesPlayed", 0))
+            if games < 5:
+                return None
+
+            bb = int(stat.get("baseOnBalls", 0))
+            ibb = int(stat.get("intentionalWalks", 0))
+            hbp = int(stat.get("hitByPitch", 0))
+            hits = int(stat.get("hits", 0))
+            doubles = int(stat.get("doubles", 0))
+            triples = int(stat.get("triples", 0))
+            hr = int(stat.get("homeRuns", 0))
+            ab = int(stat.get("atBats", 0))
+            sf = int(stat.get("sacrificeFlies", 0))
+
+            ubb = bb - ibb
+            singles = hits - doubles - triples - hr
+            denom = ab + ubb + hbp + sf
+            if denom > 0:
+                woba = round(
+                    (0.690 * ubb + 0.722 * hbp + 0.888 * singles +
+                     1.271 * doubles + 1.616 * triples + 2.101 * hr) / denom,
+                    3
+                )
+            else:
+                woba = 0.320
+
+            obp = _safe_float(stat.get("obp", 0.0))
+            slg = _safe_float(stat.get("slg", 0.0))
+            ops = round(obp + slg, 3) if obp > 0 and slg > 0 else _safe_float(stat.get("ops", 0.735))
+
+            result = {"woba": woba, "ops": ops, "obp": round(obp, 3), "slg": round(slg, 3), "games": games}
+            with open(cache_file, "w") as f:
+                json.dump(result, f)
+            return result
+        except Exception as e:
+            print(f"⚠️ Error obteniendo offensive stats team {team_id}: {e}")
+            return None
+
+    # ==========================================================
     # FEATURE 7 - TRAVEL FATIGUE (heurística simple)
     # ==========================================================
     def get_travel_fatigue(self, team_id: int, game_date: str) -> Optional[Dict[str, Any]]:
@@ -792,6 +870,20 @@ class WeatherAPI:
         "Tropicana Field": {"lat": 27.7682, "lon": -82.6534, "city": "St. Petersburg"},
         "Citi Field": {"lat": 40.7571, "lon": -73.8458, "city": "New York"},
         "Citizens Bank Park": {"lat": 39.9061, "lon": -75.1665, "city": "Philadelphia"},
+        "Great American Ball Park": {"lat": 39.0979, "lon": -84.5063, "city": "Cincinnati"},
+        "Chase Field": {"lat": 33.4453, "lon": -112.0667, "city": "Phoenix"},
+        "Globe Life Field": {"lat": 32.7512, "lon": -97.0837, "city": "Arlington"},
+        "Target Field": {"lat": 44.9817, "lon": -93.2779, "city": "Minneapolis"},
+        "Kauffman Stadium": {"lat": 39.0517, "lon": -94.4803, "city": "Kansas City"},
+        "Camden Yards": {"lat": 39.2838, "lon": -76.6216, "city": "Baltimore"},
+        "Guaranteed Rate Field": {"lat": 41.8300, "lon": -87.6338, "city": "Chicago"},
+        "Comerica Park": {"lat": 42.3390, "lon": -83.0489, "city": "Detroit"},
+        "PNC Park": {"lat": 40.4468, "lon": -80.0057, "city": "Pittsburgh"},
+        "Angel Stadium": {"lat": 33.8003, "lon": -117.8827, "city": "Anaheim"},
+        "loanDepot park": {"lat": 25.7781, "lon": -80.2201, "city": "Miami"},
+        "Nationals Park": {"lat": 38.8730, "lon": -77.0074, "city": "Washington"},
+        "American Family Field": {"lat": 43.0281, "lon": -87.9712, "city": "Milwaukee"},
+        "RingCentral Coliseum": {"lat": 37.7516, "lon": -122.2005, "city": "Oakland"},
     }
 
     def __init__(self):
@@ -1142,6 +1234,18 @@ class MLBDataIntegrator:
                         enriched["away_standings"] = away_standings
                         if away_standings["status"] in ["clinched", "eliminated"]:
                             print(f"  📊 {game['away_team']}: {away_standings['status'].upper()}")
+
+                # 5b) Team Offensive Stats (wOBA, OPS)
+                if game.get("home_team_id"):
+                    home_off = self.mlb_api.get_team_offensive_stats(game["home_team_id"], season)
+                    if home_off:
+                        enriched["home_offensive_stats"] = home_off
+                        print(f"  ✅ {game['home_team']} offense: wOBA={home_off['woba']} OPS={home_off['ops']}")
+                if game.get("away_team_id"):
+                    away_off = self.mlb_api.get_team_offensive_stats(game["away_team_id"], season)
+                    if away_off:
+                        enriched["away_offensive_stats"] = away_off
+                        print(f"  ✅ {game['away_team']} offense: wOBA={away_off['woba']} OPS={away_off['ops']}")
 
                 # 6) Travel Fatigue (para el equipo visitante)
                 if game.get("away_team_id") and game.get("game_date"):
