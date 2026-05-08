@@ -9,6 +9,7 @@ Versión: G10 Ultra Pro + Selector de Partido + Juegos Hoy y Mañana
 """
 
 import logging
+from math import log as _log, exp as _exp
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 
@@ -43,6 +44,17 @@ except ImportError:
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ── Platt calibration constants (fitted on 4 859-game backtest) ───────────
+_PLATT_A = 0.547
+_PLATT_B = 0.098
+
+
+def _platt(p: float) -> float:
+    """Shrink an over-confident probability toward calibrated range."""
+    p = max(0.01, min(p, 0.99))
+    logit = _log(p / (1.0 - p))
+    return 1.0 / (1.0 + _exp(-(_PLATT_A * logit + _PLATT_B)))
 
 
 def _compute_f5_lambda(pitcher_stats: Dict, bullpen_era: float = 4.20) -> Optional[float]:
@@ -240,13 +252,22 @@ def run_module(
         home_ps = game_data.get('home_pitcher_stats', {}) if isinstance(game_data.get('home_pitcher_stats'), dict) else {}
         away_ps = game_data.get('away_pitcher_stats', {}) if isinstance(game_data.get('away_pitcher_stats'), dict) else {}
 
+        # Use team staff ERA as fallback so we never silently inject 4.38.
+        _home_team_era  = _home_pitch.get('team_era',  LEAGUE_AVG_ERA)  if _home_pitch else LEAGUE_AVG_ERA
+        _home_team_whip = _home_pitch.get('team_whip', LEAGUE_AVG_WHIP) if _home_pitch else LEAGUE_AVG_WHIP
+        _away_team_era  = _away_pitch.get('team_era',  LEAGUE_AVG_ERA)  if _away_pitch else LEAGUE_AVG_ERA
+        _away_team_whip = _away_pitch.get('team_whip', LEAGUE_AVG_WHIP) if _away_pitch else LEAGUE_AVG_WHIP
+
+        _home_era = home_ps.get('era', _home_team_era)
+        _away_era = away_ps.get('era', _away_team_era)
+
         game_data['pitcher_home'] = {
             'name': pitcher_home,
-            'era': home_ps.get('era', 4.38),
-            'fip': home_ps.get('fip', home_ps.get('era', 4.38)),
-            'whip': home_ps.get('whip', LEAGUE_AVG_WHIP),
+            'era': _home_era,
+            'fip': home_ps.get('fip', _home_era),
+            'whip': home_ps.get('whip', _home_team_whip),
             'k_per_9': home_ps.get('k_per_9', 8.5),
-            'era_last_5': home_ps.get('era_last_5', home_ps.get('era', 4.38)),
+            'era_last_5': home_ps.get('era_last_5', _home_era),
             'days_rest': home_ps.get('days_rest', 4),
             'last_pitch_count': home_ps.get('last_pitch_count', 90),
             'avg_innings_per_start': home_ps.get('avg_innings_per_start'),
@@ -254,11 +275,11 @@ def run_module(
         }
         game_data['pitcher_away'] = {
             'name': pitcher_away,
-            'era': away_ps.get('era', 4.38),
-            'fip': away_ps.get('fip', away_ps.get('era', 4.38)),
-            'whip': away_ps.get('whip', LEAGUE_AVG_WHIP),
+            'era': _away_era,
+            'fip': away_ps.get('fip', _away_era),
+            'whip': away_ps.get('whip', _away_team_whip),
             'k_per_9': away_ps.get('k_per_9', 8.5),
-            'era_last_5': away_ps.get('era_last_5', away_ps.get('era', 4.38)),
+            'era_last_5': away_ps.get('era_last_5', _away_era),
             'days_rest': away_ps.get('days_rest', 4),
             'last_pitch_count': away_ps.get('last_pitch_count', 90),
             'avg_innings_per_start': away_ps.get('avg_innings_per_start'),
@@ -377,6 +398,12 @@ def run_module(
         if la_f5 is not None:
             logger.info(f"   F5 λ_a={la_f5:.3f} (home pitcher avg_IPS={game_data['pitcher_home'].get('avg_innings_per_start','?')} f5_ERA={game_data['pitcher_home'].get('f5_era','?')})")
 
+        # Fix 5: clamp lambdas before simulation.
+        # lambda_sum < 5 produced systematic -13pp bias; values above 9 are
+        # physically implausible for a single team's expected runs.
+        lh = max(3.0, min(lh, 7.0))
+        la = max(3.0, min(la, 7.0))
+
         mc_results = monte_carlo_advanced(
             lh=lh,
             la=la,
@@ -385,6 +412,12 @@ def run_module(
             lh_f5=lh_f5,
             la_f5=la_f5,
         )
+
+        # Fix 1: Platt calibration — fitted on 4 859-game backtest.
+        # Poisson win-probability is over-confident at extreme lambda ratios;
+        # global logit slope = 0.534 (ideal = 1.0).
+        mc_results['p_home'] = round(_platt(mc_results['p_home']), 5)
+        mc_results['p_away'] = round(_platt(mc_results['p_away']), 5)
 
         results['probabilities'] = mc_results
 

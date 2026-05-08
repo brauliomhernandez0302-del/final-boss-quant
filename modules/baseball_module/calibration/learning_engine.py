@@ -40,8 +40,9 @@ class LearningEngine:
     # ------------------------------------------------------------------
 
     def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
     def _init_tables(self) -> None:

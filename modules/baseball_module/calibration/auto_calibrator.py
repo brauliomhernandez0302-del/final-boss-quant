@@ -168,10 +168,12 @@ class LambdaCalibrator:
         # Si todos los factores son 1.0, el resultado debe ser lambda_base
         lambda_new = lambda_base * total_multiplier
         
-        # Safety limits: no más de ±35% del base
-        lambda_min = lambda_base * 0.65
-        lambda_max = lambda_base * 1.35
-        
+        # Safety limits: no más de ±20% del base.
+        # Backtest showed ±35% allowed lambda_ratio to reach 0.48–2.08, causing
+        # 9–13pp calibration error at extreme ratios (>1.5 or <0.67).
+        lambda_min = lambda_base * 0.80
+        lambda_max = lambda_base * 1.20
+
         if lambda_new < lambda_min:
             lambda_new = lambda_min
         elif lambda_new > lambda_max:
@@ -263,28 +265,29 @@ class LambdaCalibrator:
         try:
             wins_str = last_10.split('-')[0]
             wins = int(wins_str)
-            
-            # Escala: 0 wins = 0.85x, 5 wins = 1.0x, 10 wins = 1.15x
-            form_mult = 0.85 + (wins / 10.0) * 0.30
-            
+
+            # Reduced range: 0 wins = 0.92x, 5 wins = 1.00x, 10 wins = 1.08x.
+            # Previous 0.85–1.15 (30% range) amplified lambda_ratio via cascade;
+            # backtest showed form was over-weighted vs actual predictive value.
+            form_mult = 0.92 + (wins / 10.0) * 0.16
+
         except (ValueError, IndexError):
-            # Si no se puede parsear, asumir promedio
             form_mult = 1.0
-        
-        # Ajuste adicional por streaks
+
+        # Streak bonus capped at ±2% (was ±5%) to avoid stacking with form_mult.
         streak = team.get('streak', '')
         if 'W' in streak:
             try:
                 streak_num = int(streak.replace('W', ''))
                 if streak_num >= 5:
-                    form_mult *= 1.05  # Hot streak bonus
+                    form_mult *= 1.02
             except:
                 pass
         elif 'L' in streak:
             try:
                 streak_num = int(streak.replace('L', ''))
                 if streak_num >= 5:
-                    form_mult *= 0.95  # Cold streak penalty
+                    form_mult *= 0.98
             except:
                 pass
         

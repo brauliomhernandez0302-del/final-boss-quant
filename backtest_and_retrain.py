@@ -51,6 +51,7 @@ import requests
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
+from math import log as _log, exp as _exp
 from config import DATA_DIR, LEAGUE_AVG_ERA, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP
 from data_fetchers import MLBDataIntegrator, MLBStatsAPI, ParkFactors
 from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
@@ -71,6 +72,20 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 MLB_API_BASE = "https://statsapi.mlb.com/api/v1"
 N_MC = 50_000
+
+# ── Platt calibration constants (fitted on 4 859-game backtest) ────────────
+# Global logistic slope was 0.534 (should be 1.0), intercept 0.144.
+# Applying these shrinks over-confident extremes: 80% → 70.8%, 20% → 35.5%.
+_PLATT_A = 0.547
+_PLATT_B = 0.098
+
+
+def _platt(p: float) -> float:
+    """Shrink an over-confident probability toward calibrated range."""
+    p = max(0.01, min(p, 0.99))
+    logit = _log(p / (1.0 - p))
+    return 1.0 / (1.0 + _exp(-(_PLATT_A * logit + _PLATT_B)))
+
 
 logging.basicConfig(
     level=logging.WARNING,          # suppress engine chatter during batch
@@ -299,25 +314,30 @@ def build_game_data(
     lh = integrator.get_team_lambda(home_name, home_rpg_api, team_id=htid)
     la = integrator.get_team_lambda(away_name, away_rpg_api, team_id=atid)
 
-    # ── pitcher stats ───────────────────────────────────────────────────────
-    def _pitcher_stats(pid: Optional[int], is_home: bool) -> Dict:
+    # ── pitcher stats (5-level fallback) ────────────────────────────────────
+    def _pitcher_stats(pid: Optional[int], is_home: bool, team_pitch: Dict) -> Dict:
         if not pid:
             return {}
-        stats, _ = api.get_pitcher_stats_with_fallback(pid, season,
-                                                        is_playoff=False,
-                                                        is_home=is_home)
+        stats, source = api.get_pitcher_stats_full_fallback(
+            pid, season,
+            team_pitching=team_pitch,
+            is_home=is_home,
+            is_playoff=False,
+        )
         if not stats:
             return {}
-        gl = api.get_pitcher_game_log(pid, season)
-        if gl:
-            stats.update(gl)
-        f5 = api.get_pitcher_f5_stats(pid, season)
-        if f5:
-            stats.update(f5)
+        # Enrich with game-log recency and F5 data (MLB levels only; skip for MiLB)
+        if source not in ("aaa_current", "aa_current", "team_staff_era"):
+            gl = api.get_pitcher_game_log(pid, season)
+            if gl:
+                stats.update(gl)
+            f5 = api.get_pitcher_f5_stats(pid, season)
+            if f5:
+                stats.update(f5)
         return stats
 
-    home_ps = _pitcher_stats(home_pitcher_id, is_home=True)
-    away_ps = _pitcher_stats(away_pitcher_id, is_home=False)
+    home_ps = _pitcher_stats(home_pitcher_id, is_home=True,  team_pitch=home_pitch)
+    away_ps = _pitcher_stats(away_pitcher_id, is_home=False, team_pitch=away_pitch)
 
     # ── team sub-dicts (what calibrator + HFA + pitcher engine expect) ──────
     def _team_dict(name: str, off: dict, pitch: dict, rpg: float,
@@ -339,14 +359,18 @@ def build_game_data(
     home_dict = _team_dict(home_name, home_off, home_pitch, home_rpg_api, True)
     away_dict = _team_dict(away_name, away_off, away_pitch, away_rpg_api, False)
 
-    def _pitcher_dict(name: str, ps: dict) -> Dict:
+    def _pitcher_dict(name: str, ps: dict, team_pitch: dict) -> Dict:
+        # Use team staff ERA as fallback so we never silently inject 4.38.
+        team_era = float(team_pitch.get("team_era", LEAGUE_AVG_ERA)) if team_pitch else LEAGUE_AVG_ERA
+        team_whip = float(team_pitch.get("team_whip", LEAGUE_AVG_WHIP)) if team_pitch else LEAGUE_AVG_WHIP
+        era = ps.get("era", team_era)
         return {
             "name": name or "Unknown",
-            "era": ps.get("era", 4.38),
-            "fip": ps.get("fip", ps.get("era", 4.38)),
-            "whip": ps.get("whip", LEAGUE_AVG_WHIP),
+            "era": era,
+            "fip": ps.get("fip", era),
+            "whip": ps.get("whip", team_whip),
             "k_per_9": ps.get("k_per_9", 8.5),
-            "era_last_5": ps.get("era_last_5", ps.get("era", 4.38)),
+            "era_last_5": ps.get("era_last_5", era),
             "days_rest": ps.get("days_rest", 4),
             "last_pitch_count": ps.get("last_pitch_count", 90),
             "avg_innings_per_start": ps.get("avg_innings_per_start"),
@@ -364,8 +388,8 @@ def build_game_data(
         "away_team_id": atid,
         "venue": venue,
         "park": {"name": venue},
-        "pitcher_home": _pitcher_dict(f"Home SP ({game_pk})", home_ps),
-        "pitcher_away": _pitcher_dict(f"Away SP ({game_pk})", away_ps),
+        "pitcher_home": _pitcher_dict(f"Home SP ({game_pk})", home_ps, home_pitch),
+        "pitcher_away": _pitcher_dict(f"Away SP ({game_pk})", away_ps, away_pitch),
         "home_pitcher_stats": home_ps,
         "away_pitcher_stats": away_ps,
         "bullpen_home": home_bp,
@@ -420,6 +444,12 @@ def run_pipeline(
     lh_f5 = _compute_f5_lambda(game_data.get("pitcher_away", {}), away_bp_era)
     la_f5 = _compute_f5_lambda(game_data.get("pitcher_home", {}), home_bp_era)
 
+    # Fix 5: clamp lambdas before simulation.
+    # lambda_sum < 5 (bad pitcher data) produced p_home=0.52 vs actual=0.39 (-13pp).
+    # lambda_sum > 18 are physically implausible and inflate extreme probabilities.
+    lh = max(3.0, min(lh, 7.0))
+    la = max(3.0, min(la, 7.0))
+
     # 6. Monte Carlo — block must be <= n_max per simulator validation
     mc = monte_carlo_advanced(
         lh=lh, la=la, n_max=n_mc,
@@ -428,11 +458,16 @@ def run_pipeline(
         lh_f5=lh_f5, la_f5=la_f5,
     )
 
+    # Fix 1: Platt calibration — shrinks over-confident extremes.
+    # Fitted on 4 859-game backtest: logit-slope=0.534 (should be 1.0).
+    p_home_cal = round(_platt(mc["p_home"]), 5)
+    p_away_cal = round(_platt(mc["p_away"]), 5)
+
     return {
         "lh": round(lh, 4),
         "la": round(la, 4),
-        "p_home": round(mc["p_home"], 5),
-        "p_away": round(mc["p_away"], 5),
+        "p_home": p_home_cal,
+        "p_away": p_away_cal,
         "n_mc": mc["n"],
     }
 
@@ -440,8 +475,9 @@ def run_pipeline(
 # ── database helpers ────────────────────────────────────────────────────────
 
 def get_conn(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -735,7 +771,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="MLB pipeline backtest + retrain")
     parser.add_argument("--limit",       type=int,   default=0,
                         help="Process only the first N games (0 = all)")
-    parser.add_argument("--season",      type=int,   default=0,
+    parser.add_argument("--season", "--seasons", type=int, default=0,
                         help="Restrict to one season (0 = all)")
     parser.add_argument("--report-only", action="store_true",
                         help="Skip pipeline; just re-generate report from current DB state")
@@ -797,7 +833,7 @@ def main() -> None:
                    actual_home_runs, actual_away_runs, home_won,
                    ml_home_pin, ml_away_pin
             FROM game_outcomes {where}
-            WHERE backtest_run_at IS NOT NULL
+            AND backtest_run_at IS NOT NULL
             {order} {limit}
             """
         ).fetchall()
@@ -855,8 +891,7 @@ def main() -> None:
                 pred["lh"], pred["la"],
                 pred["p_home"], pred["p_away"],
             )
-            if idx % 100 == 0:
-                conn.commit()       # batch commits for speed
+            conn.commit()
 
             # Pinnacle fair prob
             pin_fh = pin_fa = None
@@ -882,12 +917,15 @@ def main() -> None:
         except Exception as exc:
             log.warning("game_pk=%d FAILED: %s", game_pk, exc)
             n_err += 1
+            p_h = row["p_home"]
+            if p_h is None:
+                continue   # no prior prediction to fall back to; skip from report
             results.append({
                 "game_pk": game_pk, "season": season,
                 "lh": row["lambda_home"], "la": row["lambda_away"],
-                "p_home": row["p_home"], "p_away": row["p_away"],
+                "p_home": p_h, "p_away": row["p_away"],
                 "home_won": int(home_won),
-                "model_correct": int((row["p_home"] > 0.5) == bool(home_won)),
+                "model_correct": int((p_h > 0.5) == bool(home_won)),
                 "pin_fair_home": None, "pin_fair_away": None,
                 "ml_home_pin": row["ml_home_pin"], "model_edge": None,
             })

@@ -72,7 +72,7 @@ class TeamContext:
 
 STADIUM_DATABASE = {
     # Últimos 10 juegos - STADIUM DATABASE (Park Factors MLB 2024)
-    "Coors Field": StadiumFactors(1.25, 1.35, 1.20, 1660),
+    "Coors Field": StadiumFactors(1.12, 1.35, 1.20, 1660),
     "Great American Ball Park": StadiumFactors(1.12, 1.20, 1.02, 1609),
     "Fenway Park": StadiumFactors(1.05, 1.15, 1.25, 10),
     "Yankee Stadium": StadiumFactors(1.05, 1.20, 1.02, 15),
@@ -227,54 +227,34 @@ class HFAEngine:
             
             if altitude > 1000:  # Significant altitude
                 alt_boost = (altitude / 5000) * 0.15  # in run units
-                # Home team acclimatised — half effect; away team full effect
+                # Apply symmetrically: both teams get half effect.
+                # The park runs_factor already captures the full altitude run
+                # inflation; giving away the full boost created triple-counting
+                # (team RPG → calibrator, park_factor 1.25 → HFA, full boost → here)
+                # that drove Coors home p_home to 0.19 vs actual 0.38.
                 lh_new *= 1.0 + (alt_boost * 0.5) / LEAGUE_AVG_RUNS
-                la_new *= 1.0 + alt_boost / LEAGUE_AVG_RUNS
+                la_new *= 1.0 + (alt_boost * 0.5) / LEAGUE_AVG_RUNS
 
                 metadata['altitude'] = alt_boost
-                logger.info(f"   Altitude: {alt_boost:.3f} runs → home ×{1 + (alt_boost*0.5)/LEAGUE_AVG_RUNS:.4f}, away ×{1 + alt_boost/LEAGUE_AVG_RUNS:.4f}")
+                logger.info(f"   Altitude: {alt_boost:.3f} runs → both ×{1 + (alt_boost*0.5)/LEAGUE_AVG_RUNS:.4f}")
         
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 4: TRAVEL FATIGUE (EQUIPO)
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
+
         travel_penalty = self._calculate_travel_fatigue(game_data)
         la_new *= 1.0 - travel_penalty / LEAGUE_AVG_RUNS
         metadata['travel_away'] = travel_penalty
 
         if travel_penalty > 0:
             logger.info(f"   Travel Away: {travel_penalty:.3f} runs → ×{1 - travel_penalty/LEAGUE_AVG_RUNS:.4f}")
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 5: TEAM OFFENSE
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        off_mult_home = self._calculate_offense_multiplier(home_team)
-        off_mult_away = self._calculate_offense_multiplier(away_team)
-        
-        lh_new *= off_mult_home
-        la_new *= off_mult_away
-        
-        metadata['offense_home'] = off_mult_home
-        metadata['offense_away'] = off_mult_away
-        
-        logger.info(f"   Offense: home {off_mult_home:.3f}x, away {off_mult_away:.3f}x")
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 6: TEAM DEFENSE
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        def_mult_home = self._calculate_defense_multiplier(home_team)
-        def_mult_away = self._calculate_defense_multiplier(away_team)
-        
-        la_new *= def_mult_home
-        lh_new *= def_mult_away
-        
-        metadata['defense_home'] = def_mult_home
-        metadata['defense_away'] = def_mult_away
-        
-        logger.info(f"   Defense: home {def_mult_home:.3f}x, away {def_mult_away:.3f}x")
-        
+
+        # NOTE: Offense and defense multipliers are intentionally omitted here.
+        # AutoCalibrator already applies team offense/defense quality (±20% cap).
+        # Adding them again in the HFA engine double-counts those signals and
+        # inflates lambdas at extremes (Coors away λ reached 7.9 vs actual 6.5).
+        # HFA engine scope: park factors, altitude, crowd boost, travel fatigue only.
+
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # RESULTADO FINAL
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -499,6 +499,116 @@ class MLBStatsAPI:
             print(f"⚠️ Error obteniendo F5 stats pitcher {pitcher_id}: {e}")
             return None
 
+    # ── 5-level pitcher fallback ──────────────────────────────────────────────
+
+    def _fetch_milb_stats(
+        self,
+        pitcher_id: int,
+        season: int,
+        sport_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch stats for a pitcher from a MiLB level (AAA=11, AA=12)."""
+        cache_file = CACHE_DIR / f"pitcher_{pitcher_id}_{season}_sport{sport_id}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < self.cache_ttl:
+            try:
+                with open(cache_file) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        url = f"{self.BASE_URL}/people/{pitcher_id}/stats"
+        params = {"stats": "season", "season": season, "group": "pitching", "sportId": sport_id}
+        try:
+            r = self.session.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            stats = self._parse_pitcher_stats(r.json())
+            if stats:
+                with open(cache_file, "w") as f:
+                    json.dump(stats, f)
+            return stats
+        except Exception:
+            return None
+
+    def get_pitcher_stats_full_fallback(
+        self,
+        pitcher_id: int,
+        season: int,
+        team_pitching: Optional[Dict[str, Any]] = None,
+        is_home: bool = True,
+        is_playoff: bool = False,
+    ) -> Tuple[Dict[str, Any], str]:
+        """
+        5-level fallback hierarchy for pitcher stats. Never returns arbitrary defaults.
+
+        Priority:
+          1. Current MLB season (home/away split preferred, otherwise overall)
+          2. Previous MLB season overall
+          3. Triple-A (AAA, sportId=11) current season
+          4. Double-A (AA, sportId=12) current season
+          5. Team staff ERA/WHIP (from team_pitching dict, or bare league averages)
+
+        Returns (stats_dict, source_label).  stats_dict always has 'era', 'whip',
+        'fip', and is_fallback=True on tiers 3-5.
+        """
+        from config import LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP
+
+        # ── tier 1: current MLB season ────────────────────────────────────────
+        mlb_stats, source = self.get_pitcher_stats_with_fallback(
+            pitcher_id, season, is_playoff=is_playoff, is_home=is_home
+        )
+        if mlb_stats and mlb_stats.get("innings_pitched", 0) >= 5.0:
+            return mlb_stats, source or "mlb_current"
+
+        # partial current-season stats (< 5 IP) — keep as candidate, but look further
+        partial = mlb_stats
+
+        # ── tier 2: previous MLB season ──────────────────────────────────────
+        prev_stats = self.get_pitcher_stats(pitcher_id, season=season - 1)
+        if prev_stats and prev_stats.get("innings_pitched", 0) >= 20.0:
+            prev_stats["is_fallback"] = True
+            prev_stats["fallback_tier"] = "mlb_prev_season"
+            print(f"  ⚾ Pitcher {pitcher_id}: no current-season data → using {season-1} MLB season")
+            return prev_stats, "mlb_prev_season"
+
+        # ── tier 3: Triple-A current season ──────────────────────────────────
+        aaa = self._fetch_milb_stats(pitcher_id, season, sport_id=11)
+        if aaa and aaa.get("innings_pitched", 0) >= 10.0:
+            aaa["is_fallback"] = True
+            aaa["fallback_tier"] = "aaa_current"
+            print(f"  ⚾ Pitcher {pitcher_id}: no MLB data → using AAA {season}")
+            return aaa, "aaa_current"
+
+        # ── tier 4: Double-A current season ───────────────────────────────────
+        aa = self._fetch_milb_stats(pitcher_id, season, sport_id=12)
+        if aa and aa.get("innings_pitched", 0) >= 10.0:
+            aa["is_fallback"] = True
+            aa["fallback_tier"] = "aa_current"
+            print(f"  ⚾ Pitcher {pitcher_id}: no MLB/AAA data → using AA {season}")
+            return aa, "aa_current"
+
+        # ── partial current-season (< 5 IP) is better than nothing ───────────
+        if partial and partial.get("innings_pitched", 0) > 0:
+            partial["is_fallback"] = True
+            partial["fallback_tier"] = "mlb_current_partial"
+            return partial, "mlb_current_partial"
+
+        # ── tier 5: team staff ERA/WHIP ────────────────────────────────────────
+        if team_pitching and team_pitching.get("team_era", 0) > 0:
+            staff_era = float(team_pitching["team_era"])
+            staff_whip = float(team_pitching.get("team_whip", LEAGUE_AVG_WHIP))
+        else:
+            staff_era = LEAGUE_AVG_ERA
+            staff_whip = LEAGUE_AVG_WHIP
+        staff_stats = {
+            "era": staff_era,
+            "whip": staff_whip,
+            "fip": staff_era,          # best proxy without pitch-mix data
+            "innings_pitched": 0.0,
+            "is_fallback": True,
+            "fallback_tier": "team_staff_era",
+        }
+        print(f"  ⚾ Pitcher {pitcher_id}: no stats found at any level → team staff ERA {staff_era:.2f}")
+        return staff_stats, "team_staff_era"
+
     def get_team_recent_form(self, team_id: int, games: int = 10) -> Optional[Dict[str, Any]]:
         """{"wins": int, "losses": int, "win_pct": float, "streak": str, "last_10": "WLWL..."}"""
         cache_file = CACHE_DIR / f"team_form_{team_id}_{games}.json"
