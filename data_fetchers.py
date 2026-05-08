@@ -604,6 +604,7 @@ class MLBStatsAPI:
             is_tired = total_innings > 12.0  # umbral configurable
             result = {
                 "innings_last_n_days": round(total_innings, 1),
+                "ip_last_3_days": round(total_innings, 1),
                 "games_played": appearances,
                 "is_tired": is_tired,
                 "avg_innings_per_game": round(total_innings / appearances, 1) if appearances > 0 else 0.0
@@ -972,6 +973,50 @@ class MLBStatsAPI:
             print(f"⚠️ Error obteniendo pitching stats team {team_id}: {e}")
             return None
 
+    def get_bullpen_era(self, team_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
+        """Fetches bullpen ERA from the relief pitchers endpoint (pitcherType=R)."""
+        cache_file = CACHE_DIR / f"bullpen_era_{team_id}_{season}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
+            try:
+                with open(cache_file) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        try:
+            url = f"{self.BASE_URL}/teams/{team_id}/stats"
+            params = {
+                "stats": "season",
+                "season": season,
+                "group": "pitching",
+                "pitcherType": "R",
+                "sportId": 1,
+            }
+            r = self.session.get(url, params=params, timeout=8)
+            r.raise_for_status()
+            splits = r.json().get("stats", [{}])[0].get("splits", [{}])
+            if not splits:
+                return None
+            stat = splits[0].get("stat", {})
+            games = int(stat.get("gamesPlayed", 0))
+            if games < 5:
+                return None
+            era = _safe_float(stat.get("era"))
+            whip = _safe_float(stat.get("whip"))
+            if era <= 0:
+                return None
+            result = {
+                "era": round(era, 2),          # key the pitcher engine reads
+                "bullpen_era": round(era, 2),
+                "bullpen_whip": round(whip, 2) if whip > 0 else None,
+                "bullpen_games": games,
+            }
+            with open(cache_file, "w") as f:
+                json.dump(result, f)
+            return result
+        except Exception as e:
+            print(f"⚠️ Error obteniendo bullpen ERA team {team_id}: {e}")
+            return None
+
 
 # ==========================================================
 # 2) WEATHER API - OPENWEATHER (GRATIS)
@@ -1328,17 +1373,23 @@ class MLBDataIntegrator:
                     if away_runs:
                         enriched["away_team_runs"] = away_runs
 
-                # 3) Bullpen Workload
+                # 3) Bullpen Workload + ERA
                 if game.get("home_team_id"):
                     home_bullpen = self.mlb_api.get_bullpen_workload(game["home_team_id"], days=3)
                     if home_bullpen:
-                        enriched["home_bullpen"] = home_bullpen
+                        home_bp_era = self.mlb_api.get_bullpen_era(game["home_team_id"], season)
+                        if home_bp_era:
+                            home_bullpen.update(home_bp_era)
+                        enriched["bullpen_home"] = home_bullpen
                         if home_bullpen.get("is_tired"):
                             print(f"  ⚠️ {game['home_team']} bullpen CANSADO ({home_bullpen['innings_last_n_days']} IP)")
                 if game.get("away_team_id"):
                     away_bullpen = self.mlb_api.get_bullpen_workload(game["away_team_id"], days=3)
                     if away_bullpen:
-                        enriched["away_bullpen"] = away_bullpen
+                        away_bp_era = self.mlb_api.get_bullpen_era(game["away_team_id"], season)
+                        if away_bp_era:
+                            away_bullpen.update(away_bp_era)
+                        enriched["bullpen_away"] = away_bullpen
                         if away_bullpen.get("is_tired"):
                             print(f"  ⚠️ {game['away_team']} bullpen CANSADO ({away_bullpen['innings_last_n_days']} IP)")
 

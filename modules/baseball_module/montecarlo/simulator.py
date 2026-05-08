@@ -25,6 +25,8 @@ class MonteCarloLimits:
 
 LIMITS = MonteCarloLimits()
 
+F5_SCALE = 0.575  # ~57.5% of runs expected in first 5 innings
+
 def validate_inputs(lh, la, n_max, block, lambda_noise, early_stop_se, total_line):
     if not (LIMITS.MIN_LAMBDA <= lh <= LIMITS.MAX_LAMBDA):
         raise ValueError(f"λ_home={lh:.2f} fuera de rango")
@@ -67,7 +69,11 @@ def monte_carlo_advanced(
     wins_home_total = 0
     wins_away_total = 0
     ties_total = 0
-    
+
+    f5_wins_home_total = 0
+    f5_wins_away_total = 0
+    f5_ties_total = 0
+
     if store_samples:
         all_home, all_away, all_total = [], [], []
     
@@ -93,6 +99,13 @@ def monte_carlo_advanced(
         wins_home_total += int(np.sum(home_runs > away_runs))
         wins_away_total += int(np.sum(away_runs > home_runs))
         ties_total += int(np.sum(home_runs == away_runs))
+
+        if analyze_f5:
+            home_f5 = rng.poisson(lh_noise * F5_SCALE)
+            away_f5 = rng.poisson(la_noise * F5_SCALE)
+            f5_wins_home_total += int(np.sum(home_f5 > away_f5))
+            f5_wins_away_total += int(np.sum(away_f5 > home_f5))
+            f5_ties_total += int(np.sum(home_f5 == away_f5))
         
         if store_samples:
             all_home.append(home_runs)
@@ -163,19 +176,27 @@ def monte_carlo_advanced(
         "converged_early": sims_done < n_max,
     }
     
-    # Totales O/U
-    if total_line:
-        over = int(np.sum(final_total > total_line))
-        under = int(np.sum(final_total < total_line))
-        push = int(np.sum(final_total == total_line))
-        
+    # Totales O/U — use explicit line or auto-line when analyze_f5 requested
+    line_to_use = total_line if total_line else (round(mean_total * 2) / 2 if analyze_f5 else None)
+    if line_to_use:
+        over = int(np.sum(final_total > line_to_use))
+        under = int(np.sum(final_total < line_to_use))
+        push = int(np.sum(final_total == line_to_use))
+        n = len(final_total)
         results.update({
-            "p_over": float(over / len(final_total)),
-            "p_under": float(under / len(final_total)),
-            "p_push": float(push / len(final_total)),
-            "total_line": float(total_line),
+            "p_over": float(over / n),
+            "p_under": float(under / n),
+            "p_push": float(push / n),
+            "total_line": float(line_to_use),
         })
-    
+
+    if analyze_f5:
+        results.update({
+            "f5_home": round(f5_wins_home_total / sims_done, 4),
+            "f5_away": round(f5_wins_away_total / sims_done, 4),
+            "f5_draw": round(f5_ties_total / sims_done, 4),
+        })
+
     logger.info(f"✅ Completado: {sims_done:,} sims | P(Home)={p_home:.3f}")
     return results
 
