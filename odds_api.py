@@ -47,6 +47,8 @@ def get_best_odds_for_teams(home_team: str, away_team: str,
     if not all_games:
         return {}
 
+    _PINNACLE_KEY = "pinnaclesports"
+
     for game in all_games:
         g_home = game.get("home_team", "")
         g_away = game.get("away_team", "")
@@ -57,21 +59,32 @@ def get_best_odds_for_teams(home_team: str, away_team: str,
 
             best_home = 0.0
             best_away = 0.0
+            pin_home = None
+            pin_away = None
 
             for bookmaker in game.get("bookmakers", []):
+                is_pinnacle = bookmaker.get("key", "").lower() == _PINNACLE_KEY or \
+                              "pinnacle" in bookmaker.get("title", "").lower()
                 for market in bookmaker.get("markets", []):
                     if market["key"] == "h2h":
                         for outcome in market.get("outcomes", []):
+                            price = outcome["price"]
                             if outcome["name"] == g_home:
-                                best_home = max(best_home, outcome["price"])
+                                best_home = max(best_home, price)
+                                if is_pinnacle:
+                                    pin_home = price
                             elif outcome["name"] == g_away:
-                                best_away = max(best_away, outcome["price"])
+                                best_away = max(best_away, price)
+                                if is_pinnacle:
+                                    pin_away = price
 
             return {
                 "home_team": g_home,
                 "away_team": g_away,
                 "ml_home": best_home if best_home > 0 else None,
                 "ml_away": best_away if best_away > 0 else None,
+                "pin_home": pin_home,
+                "pin_away": pin_away,
                 "game_id": game.get("id"),
             }
 

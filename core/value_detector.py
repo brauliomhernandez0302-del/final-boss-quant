@@ -64,21 +64,25 @@ class GameOdds:
     # Full Game Moneyline
     ml_home: Optional[float] = None
     ml_away: Optional[float] = None
-    
+
+    # Pinnacle moneyline — used as the fair line reference for EV / edge
+    pin_home: Optional[float] = None
+    pin_away: Optional[float] = None
+
     # Full Game Totals
     total_line: Optional[float] = None
     total_over: Optional[float] = None
     total_under: Optional[float] = None
-    
+
     # Run Line (±1.5)
     runline_line: float = 1.5  # Estándar MLB
     runline_home: Optional[float] = None  # Home -1.5
     runline_away: Optional[float] = None  # Away +1.5
-    
+
     # First 5 Innings Moneyline
     f5_ml_home: Optional[float] = None
     f5_ml_away: Optional[float] = None
-    
+
     # First 5 Innings Totals
     f5_total_line: Optional[float] = None
     f5_total_over: Optional[float] = None
@@ -109,6 +113,17 @@ def remove_vig_shin(odds_list: List[float]) -> List[float]:
     z = margin / 2
     adjusted = [(imp - z * (1 - imp)) / (1 - z) for imp in implied]
     return adjusted
+
+def _pinnacle_fair_probs(pin_home: float, pin_away: float) -> Tuple[float, float]:
+    """
+    Devig a Pinnacle two-way moneyline with the multiplicative method.
+    Returns (fair_home, fair_away) — probabilities that sum to 1.0.
+    Pinnacle carries ~2-3% vig; removing it gives the sharpest available
+    fair-line reference for EV and edge calculations.
+    """
+    fair = remove_vig_multiplicative([pin_home, pin_away])
+    return fair[0], fair[1]
+
 
 def adjust_for_vig(odds_dict: Dict[str, float], method: str = 'multiplicative') -> Dict[str, float]:
     """Ajusta cuotas por overround."""
@@ -564,33 +579,58 @@ def evaluate_value_ultra(
     
     if odds.ml_home and odds.ml_away:
         logger.info("📊 Analizando Moneyline Full Game")
-        
+
         p_home = mc_result['p_home']
         p_away = mc_result['p_away']
-        
+
         se_home = math.sqrt(p_home * (1 - p_home) / n_sims)
         se_away = math.sqrt(p_away * (1 - p_away) / n_sims)
         margin_home = 1.96 * se_home
         margin_away = 1.96 * se_away
-        
+
         home_ci = (max(0, p_home - margin_home), min(1, p_home + margin_home))
         away_ci = (max(0, p_away - margin_away), min(1, p_away + margin_away))
-        
-        odds_dict = {'home': odds.ml_home, 'away': odds.ml_away}
-        true_implied = adjust_for_vig(odds_dict, method=vig_method)
+
+        # Overround from the bet odds we're actually taking
         overround = (1/odds.ml_home + 1/odds.ml_away - 1) * 100
-        
+
+        # Fair-line reference: Pinnacle devigged > consensus devigged
+        # Pinnacle carries ~2-3% vig vs 5-8% for softer books, making its
+        # devigged line the most accurate publicly available fair-probability.
+        if odds.pin_home and odds.pin_away:
+            fair_home, fair_away = _pinnacle_fair_probs(odds.pin_home, odds.pin_away)
+            pin_vig_pct = round((1/odds.pin_home + 1/odds.pin_away - 1) * 100, 2)
+            fair_source = "pinnacle"
+            logger.info(
+                f"   📌 Pinnacle fair line: {odds.pin_home}/{odds.pin_away} "
+                f"→ {fair_home:.4f}/{fair_away:.4f} (vig={pin_vig_pct:.1f}%)"
+            )
+        else:
+            devigged = adjust_for_vig({'home': odds.ml_home, 'away': odds.ml_away}, method=vig_method)
+            fair_home, fair_away = devigged['home'], devigged['away']
+            pin_vig_pct = None
+            fair_source = vig_method
+
         home_ml = analyze_market_generic(
             p_home, odds.ml_home, home_ci, overround,
-            true_implied['home'], fractional_kelly, "MONEYLINE HOME"
+            fair_home, fractional_kelly, "MONEYLINE HOME"
         )
-        
+
         away_ml = analyze_market_generic(
             p_away, odds.ml_away, away_ci, overround,
-            true_implied['away'], fractional_kelly, "MONEYLINE AWAY"
+            fair_away, fractional_kelly, "MONEYLINE AWAY"
         )
-        
-        all_markets['moneyline'] = {'home': home_ml, 'away': away_ml}
+
+        all_markets['moneyline'] = {
+            'home': home_ml,
+            'away': away_ml,
+            'fair_source': fair_source,
+            'pin_home': odds.pin_home,
+            'pin_away': odds.pin_away,
+            'pin_fair_home': round(fair_home, 4) if fair_source == 'pinnacle' else None,
+            'pin_fair_away': round(fair_away, 4) if fair_source == 'pinnacle' else None,
+            'pin_vig_pct': pin_vig_pct,
+        }
         
         if home_ml['tier_enum'] != ValueTier.NEGATIVE:
             all_bets.append({**home_ml, 'side': 'HOME', 'weighted': home_ml['ev'] * home_ml['confidence'] * home_ml['kelly'] * 100})
@@ -749,12 +789,19 @@ def evaluate_value_ultra(
     # OUTPUT FINAL
     # ==========================================================
     
+    # Determine the fair-source that was used (moneyline may not have run)
+    _ml = all_markets.get('moneyline', {})
+    _fair_source_used = _ml.get('fair_source', vig_method)
+
     result = {
         'metadata': {
             'n_simulations': n_sims,
             'converged_early': converged,
             'vig_method': vig_method,
             'fractional_kelly': fractional_kelly,
+            'fair_source': _fair_source_used,
+            'pin_home': odds.pin_home,
+            'pin_away': odds.pin_away,
         },
         'markets': all_markets,
         'global_recommendation': global_recommendation

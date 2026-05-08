@@ -431,6 +431,8 @@ def run_module(
             game_odds = GameOdds(
                 ml_home=market_odds['ml_home'],
                 ml_away=market_odds['ml_away'],
+                pin_home=market_odds.get('pin_home'),
+                pin_away=market_odds.get('pin_away'),
             )
             value_results = evaluate_value_ultra(
                 mc_result=mc_results,
