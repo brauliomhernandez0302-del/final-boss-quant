@@ -1,0 +1,130 @@
+{
+  "run_at": "2026-05-08T19:53:42.852027+00:00",
+  "total_games": 4859,
+  "seasons": [
+    2024,
+    2025
+  ],
+  "overall": {
+    "accuracy_pct": 58.55,
+    "brier_model": 0.24376,
+    "brier_random": 0.25,
+    "brier_vs_random_pct": 2.5,
+    "logloss_model": 0.68318
+  },
+  "vs_pinnacle": {
+    "n_games_with_pin": 4654,
+    "brier_pinnacle": 0.24051,
+    "brier_model_vs_pin_pct": -1.35,
+    "logloss_pinnacle": 0.67362,
+    "model_pin_agreement_pct": 77.44,
+    "edge_vs_pin": {
+      "mean": -1.695,
+      "std": 11.399,
+      "p10": -16.79,
+      "p25": -9.81,
+      "p50": -1.58,
+      "p75": 6.32,
+      "p90": 13.11
+    }
+  },
+  "calibration": {
+    "<40%": {
+      "n": 1240,
+      "predicted_win_pct": 29.9,
+      "actual_win_pct": 41.5
+    },
+    "40-45%": {
+      "n": 491,
+      "predicted_win_pct": 42.5,
+      "actual_win_pct": 46.0
+    },
+    "45-50%": {
+      "n": 528,
+      "predicted_win_pct": 47.5,
+      "actual_win_pct": 49.2
+    },
+    "50-55%": {
+      "n": 545,
+      "predicted_win_pct": 52.5,
+      "actual_win_pct": 52.5
+    },
+    "55-60%": {
+      "n": 499,
+      "predicted_win_pct": 57.4,
+      "actual_win_pct": 57.1
+    },
+    "60-70%": {
+      "n": 842,
+      "predicted_win_pct": 64.9,
+      "actual_win_pct": 62.6
+    },
+    ">70%": {
+      "n": 714,
+      "predicted_win_pct": 77.4,
+      "actual_win_pct": 68.3
+    }
+  },
+  "roi_simulation": {
+    "edge>=0%": {
+      "bets": 2099,
+      "staked": 2099.0,
+      "profit": 147.99,
+      "roi_pct": 7.05
+    },
+    "edge>=2%": {
+      "bets": 1810,
+      "staked": 1810.0,
+      "profit": 143.05,
+      "roi_pct": 7.9
+    },
+    "edge>=5%": {
+      "bets": 1353,
+      "staked": 1353.0,
+      "profit": 115.35,
+      "roi_pct": 8.53
+    },
+    "edge>=8%": {
+      "bets": 956,
+      "staked": 956.0,
+      "profit": 86.82,
+      "roi_pct": 9.08
+    },
+    "edge>=10%": {
+      "bets": 750,
+      "staked": 750.0,
+      "profit": 62.34,
+      "roi_pct": 8.31
+    }
+  },
+  "by_season": {
+    "2024": {
+      "n": 2429,
+      "accuracy_pct": 59.98,
+      "brier": 0.2421
+    },
+    "2025": {
+      "n": 2430,
+      "accuracy_pct": 57.12,
+      "brier": 0.24542
+    }
+  },
+  "lambda_distribution": {
+    "lh": {
+      "p10": 3.228,
+      "p25": 3.633,
+      "median": 4.207,
+      "p75": 4.896,
+      "p90": 5.624,
+      "mean": 4.34
+    },
+    "la": {
+      "p10": 3.141,
+      "p25": 3.536,
+      "median": 4.037,
+      "p75": 4.663,
+      "p90": 5.379,
+      "mean": 4.227
+    }
+  }
+}
