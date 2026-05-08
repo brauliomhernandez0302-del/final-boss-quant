@@ -55,6 +55,8 @@ def monte_carlo_advanced(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     store_samples: bool = True,
     analyze_f5: bool = False,
+    lh_f5: Optional[float] = None,
+    la_f5: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Simulación Monte Carlo avanzada CORREGIDA."""
     
@@ -101,8 +103,23 @@ def monte_carlo_advanced(
         ties_total += int(np.sum(home_runs == away_runs))
 
         if analyze_f5:
-            home_f5 = rng.poisson(lh_noise * F5_SCALE)
-            away_f5 = rng.poisson(la_noise * F5_SCALE)
+            # Use real per-pitcher F5 lambdas when available; else scale full-game noise
+            if lh_f5 is not None:
+                lh_f5_noise = np.clip(
+                    rng.normal(lh_f5, lambda_noise * max(lh_f5, 0.5), size=b),
+                    LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA
+                )
+            else:
+                lh_f5_noise = lh_noise * F5_SCALE
+            if la_f5 is not None:
+                la_f5_noise = np.clip(
+                    rng.normal(la_f5, lambda_noise * max(la_f5, 0.5), size=b),
+                    LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA
+                )
+            else:
+                la_f5_noise = la_noise * F5_SCALE
+            home_f5 = rng.poisson(lh_f5_noise)
+            away_f5 = rng.poisson(la_f5_noise)
             f5_wins_home_total += int(np.sum(home_f5 > away_f5))
             f5_wins_away_total += int(np.sum(away_f5 > home_f5))
             f5_ties_total += int(np.sum(home_f5 == away_f5))

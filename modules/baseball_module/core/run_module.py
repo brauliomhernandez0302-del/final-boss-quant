@@ -45,6 +45,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _compute_f5_lambda(pitcher_stats: Dict, bullpen_era: float = 4.20) -> Optional[float]:
+    """
+    Compute expected runs against this pitcher in the first 5 innings.
+
+    Uses the pitcher's real byInning F5 ERA plus average IPS to determine
+    how many of those 5 innings the starter vs the bullpen will cover.
+    Returns None when avg_innings_per_start is unavailable (caller falls
+    back to the F5_SCALE constant inside the simulator).
+    """
+    avg_ips = pitcher_stats.get('avg_innings_per_start')
+    if avg_ips is None:
+        return None
+    f5_era = pitcher_stats.get('f5_era') or pitcher_stats.get('era', 4.20)
+    starter_f5_ip = min(float(avg_ips), 5.0)
+    bullpen_f5_ip = 5.0 - starter_f5_ip
+    return round(starter_f5_ip * (f5_era / 9.0) + bullpen_f5_ip * (bullpen_era / 9.0), 3)
+
+
 def run_module(
     game_id: Optional[int] = None,
     lh_base: float = LEAGUE_AVG_RUNS,
@@ -231,6 +249,8 @@ def run_module(
             'era_last_5': home_ps.get('era_last_5', home_ps.get('era', 4.38)),
             'days_rest': home_ps.get('days_rest', 4),
             'last_pitch_count': home_ps.get('last_pitch_count', 90),
+            'avg_innings_per_start': home_ps.get('avg_innings_per_start'),
+            'f5_era': home_ps.get('f5_era'),
         }
         game_data['pitcher_away'] = {
             'name': pitcher_away,
@@ -241,6 +261,8 @@ def run_module(
             'era_last_5': away_ps.get('era_last_5', away_ps.get('era', 4.38)),
             'days_rest': away_ps.get('days_rest', 4),
             'last_pitch_count': away_ps.get('last_pitch_count', 90),
+            'avg_innings_per_start': away_ps.get('avg_innings_per_start'),
+            'f5_era': away_ps.get('f5_era'),
         }
         game_data['park'] = {'name': game_data.get('venue', 'Unknown')}
         # Lambdas base con media ponderada por equipo
@@ -344,11 +366,24 @@ def run_module(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         logger.info(f"\n🎲 PASO 5: Monte Carlo ({n_max:,} simulaciones)...")
 
+        # Real F5 lambdas: home runs depend on away pitcher; away runs on home pitcher.
+        # Bullpen ERA fills innings not covered by the starter (avg_ips < 5).
+        _home_bp_era = game_data.get('bullpen_home', {}).get('era', 4.20)
+        _away_bp_era = game_data.get('bullpen_away', {}).get('era', 4.20)
+        lh_f5 = _compute_f5_lambda(game_data.get('pitcher_away', {}), _away_bp_era)
+        la_f5 = _compute_f5_lambda(game_data.get('pitcher_home', {}), _home_bp_era)
+        if lh_f5 is not None:
+            logger.info(f"   F5 λ_h={lh_f5:.3f} (away pitcher avg_IPS={game_data['pitcher_away'].get('avg_innings_per_start','?')} f5_ERA={game_data['pitcher_away'].get('f5_era','?')})")
+        if la_f5 is not None:
+            logger.info(f"   F5 λ_a={la_f5:.3f} (home pitcher avg_IPS={game_data['pitcher_home'].get('avg_innings_per_start','?')} f5_ERA={game_data['pitcher_home'].get('f5_era','?')})")
+
         mc_results = monte_carlo_advanced(
             lh=lh,
             la=la,
             n_max=n_max,
-            analyze_f5=analyze_f5
+            analyze_f5=analyze_f5,
+            lh_f5=lh_f5,
+            la_f5=la_f5,
         )
 
         results['probabilities'] = mc_results

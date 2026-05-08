@@ -236,6 +236,9 @@ class MLBStatsAPI:
             fip = round((13 * hr + 3 * (bb + hbp) - 2 * so) / innings + FIP_CONSTANT, 2)
             fip = round(max(0.0, min(fip, 12.0)), 2)
 
+            gs = int(stat.get("gamesStarted", 0))
+            avg_ips = round(innings / gs, 2) if gs > 0 else None
+
             return {
                 "era": round(era, 2),
                 "whip": round(whip, 2),
@@ -251,7 +254,8 @@ class MLBStatsAPI:
                 "bb_per_9": round(bb_per_9, 2),
                 "hits_allowed": int(stat.get("hits", 0)),
                 "earned_runs": int(stat.get("earnedRuns", 0)),
-                "games_started": int(stat.get("gamesStarted", 0))
+                "games_started": gs,
+                "avg_innings_per_start": avg_ips,
             }
         except Exception:
             return None
@@ -423,6 +427,7 @@ class MLBStatsAPI:
             total_er = sum(int(s.get("stat", {}).get("earnedRuns", 0)) for s in recent)
             total_ip = sum(float(s.get("stat", {}).get("inningsPitched", 0)) for s in recent)
             era_last_n = round((total_er / total_ip * 9), 2) if total_ip > 0 else 4.50
+            avg_ips_recent = round(total_ip / len(recent), 2) if recent else None
             last_start = recent[0]
             last_date_str = last_start.get("date", "")
             last_pitch_count = int(last_start.get("stat", {}).get("numberOfPitches", 90))
@@ -434,12 +439,64 @@ class MLBStatsAPI:
                     days_rest = (dt.utcnow() - last_date).days
                 except Exception:
                     pass
-            result = {"era_last_5": era_last_n, "days_rest": days_rest, "last_pitch_count": last_pitch_count, "starts_analyzed": len(recent)}
+            result = {
+                "era_last_5": era_last_n,
+                "days_rest": days_rest,
+                "last_pitch_count": last_pitch_count,
+                "starts_analyzed": len(recent),
+                "avg_innings_per_start": avg_ips_recent,
+            }
             with open(cache_file, "w") as f2:
                 json.dump(result, f2)
             return result
         except Exception as e:
             print(f"Error game log pitcher {pitcher_id}: {e}")
+            return None
+
+    def get_pitcher_f5_stats(self, pitcher_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
+        """
+        Fetch per-inning aggregated stats and compute real F5 ERA (innings 1-5).
+        Returns {f5_era, f5_ip, f5_er} or None if insufficient data.
+        """
+        cache_file = CACHE_DIR / f"pitcher_f5_{pitcher_id}_{season}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
+            try:
+                with open(cache_file) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+
+        url = f"{self.BASE_URL}/people/{pitcher_id}/stats"
+        params = {"stats": "byInning", "group": "pitching", "season": season}
+        try:
+            r = self.session.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            splits = r.json().get("stats", [{}])[0].get("splits", [])
+            if not splits:
+                return None
+
+            f5_er = 0
+            f5_ip = 0.0
+            for split in splits:
+                inning = split.get("inning", 0)
+                if 1 <= inning <= 5:
+                    stat = split.get("stat", {})
+                    f5_er += int(stat.get("earnedRuns", 0))
+                    f5_ip += float(stat.get("inningsPitched", 0.0))
+
+            if f5_ip < 5.0:
+                return None
+
+            result = {
+                "f5_era": round(f5_er / f5_ip * 9, 2),
+                "f5_ip": round(f5_ip, 1),
+                "f5_er": f5_er,
+            }
+            with open(cache_file, "w") as f:
+                json.dump(result, f)
+            return result
+        except Exception as e:
+            print(f"⚠️ Error obteniendo F5 stats pitcher {pitcher_id}: {e}")
             return None
 
     def get_team_recent_form(self, team_id: int, games: int = 10) -> Optional[Dict[str, Any]]:
@@ -1302,14 +1359,18 @@ class MLBDataIntegrator:
                 key_valid = f"{side}_pitcher_valid"
                 if stats:
                     results[key_stats] = stats
-                    # Enriquecer con game log (era_last_5, days_rest, pitch_count)
                     pitcher_id = game.get(f"{side}_pitcher_id")
                     if pitcher_id:
                         game_log = self.mlb_api.get_pitcher_game_log(pitcher_id, season)
                         if game_log:
                             stats.update(game_log)
                             results[key_stats] = stats
-                            print(f"  ✅ {side.upper()} game log: ERA_L5={game_log.get('era_last_5','?')} rest={game_log.get('days_rest','?')}d")
+                            print(f"  ✅ {side.upper()} game log: ERA_L5={game_log.get('era_last_5','?')} rest={game_log.get('days_rest','?')}d avg_IPS={game_log.get('avg_innings_per_start','?')}")
+                        f5 = self.mlb_api.get_pitcher_f5_stats(pitcher_id, season)
+                        if f5:
+                            stats.update(f5)
+                            results[key_stats] = stats
+                            print(f"  ✅ {side.upper()} F5 ERA: {f5.get('f5_era','?')} ({f5.get('f5_ip','?')} IP in first 5)")
                     results[key_source] = source
                     results[key_valid] = True
                     print(f"  ✅ {side.upper()} pitcher: ERA {stats.get('era','?')} ({source})")
