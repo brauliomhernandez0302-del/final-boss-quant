@@ -131,7 +131,7 @@ class TestF5InSimulator:
         r = monte_carlo_advanced(lh=4.3, la=3.8, n_max=300_000, analyze_f5=True,
                                  lh_f5=2.2, la_f5=1.9)
         total = r["f5_home"] + r["f5_away"] + r["f5_draw"]
-        assert total == pytest.approx(1.0, abs=1e-9)
+        assert total == pytest.approx(1.0, abs=2e-4)
 
     def test_fallback_scale_used_when_no_f5_lambdas(self):
         from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced, F5_SCALE

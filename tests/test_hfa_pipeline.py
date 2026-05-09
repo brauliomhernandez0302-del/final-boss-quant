@@ -84,38 +84,31 @@ class TestHFAPipelineMultiplicative:
         assert la_t < la_n, "Heavy travel should reduce λ_away"
         assert abs(lh_t - lh_n) < 0.01, "λ_home should not be affected by away travel"
 
-    def test_offense_multiplier_direction(self):
-        # Give home team elite offense; away team weak offense.
+    def test_offense_multiplier_disabled_in_hfa(self):
+        # Offense multipliers are intentionally 1.0 in the HFA engine.
+        # AutoCalibrator applies team offense quality; adding it again here
+        # caused double-counting and inflated lambdas at extremes.
         game = _neutral_game("Yankee Stadium")
         game["home_team"] = {**_avg_team(), "woba": 0.380, "ops": 0.850, "wrc_plus": 130}
         game["away_team"] = {**_avg_team(), "woba": 0.270, "ops": 0.640, "wrc_plus": 75}
 
-        lh_out, la_out, meta = get_adjusted_lambdas(4.5, 4.5, game)
-        assert meta["offense_home"] > 1.0, "Elite home offense → mult > 1"
-        assert meta["offense_away"] < 1.0, "Weak away offense → mult < 1"
-        # λ_home should exceed a symmetric game
-        lh_sym, _, _ = get_adjusted_lambdas(4.5, 4.5, _neutral_game("Yankee Stadium"))
-        assert lh_out > lh_sym
+        _, _, meta = get_adjusted_lambdas(4.5, 4.5, game)
+        assert meta["offense_home"] == 1.0, "HFA engine must not apply offense adjustment"
+        assert meta["offense_away"] == 1.0, "HFA engine must not apply offense adjustment"
 
-    def test_defense_multiplier_wired_to_lambda_correctly(self):
-        # Home team elite defense → suppresses λ_away.
-        # Away team weak defense → inflates λ_home.
+    def test_defense_multiplier_disabled_in_hfa(self):
+        # Defense multipliers are intentionally 1.0 in the HFA engine.
+        # AutoCalibrator applies team defense quality; adding it again here
+        # caused double-counting and inflated lambdas at extremes.
         game = _neutral_game("Yankee Stadium")
         game["home_team"] = {**_avg_team(), "team_era": 3.00, "team_whip": 1.05,
                              "runs_allowed_per_game": 3.40}
         game["away_team"] = {**_avg_team(), "team_era": 5.50, "team_whip": 1.65,
                              "runs_allowed_per_game": 5.60}
 
-        lh_out, la_out, meta = get_adjusted_lambdas(4.5, 4.5, game)
-        # Home defense < 1 → reduces λ_away
-        assert meta["defense_home"] < 1.0
-        # Away defense > 1 → inflates λ_home
-        assert meta["defense_away"] > 1.0
-
-        # In a symmetric matchup, verify direction
-        lh_sym, la_sym, _ = get_adjusted_lambdas(4.5, 4.5, _neutral_game("Yankee Stadium"))
-        assert la_out < la_sym, "Elite home pitching should suppress away scoring vs average"
-        assert lh_out > lh_sym, "Weak away pitching should inflate home scoring vs average"
+        _, _, meta = get_adjusted_lambdas(4.5, 4.5, game)
+        assert meta["defense_home"] == 1.0, "HFA engine must not apply defense adjustment"
+        assert meta["defense_away"] == 1.0, "HFA engine must not apply defense adjustment"
 
     def test_each_step_is_multiplicative(self):
         # Run the engine and verify total change matches component product.
