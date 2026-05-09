@@ -36,6 +36,14 @@ from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced
 # Value Detection - ABSOLUTO
 from core.value_detector import evaluate_value_ultra
 
+# External enrichment (Savant + FanGraphs) — optional; pipeline continues without them
+try:
+    from modules.baseball_module.data_enrichment.savant_fetcher import SavantFetcher as _SavantFetcher
+    from modules.baseball_module.data_enrichment.fangraphs_fetcher import FanGraphsFetcher as _FGFetcher
+    _ENRICHMENT_AVAILABLE = True
+except ImportError:
+    _ENRICHMENT_AVAILABLE = False
+
 # Odds API
 try:
     from odds_api import get_best_odds_for_teams
@@ -45,16 +53,15 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── Platt calibration constants (fitted on 4 859-game backtest) ───────────
-_PLATT_A = 0.547
-_PLATT_B = 0.098
+_PLATT_A_FALLBACK = 0.547
+_PLATT_B_FALLBACK = 0.098
 
 
-def _platt(p: float) -> float:
-    """Shrink an over-confident probability toward calibrated range."""
+def _platt(p: float, a: float = _PLATT_A_FALLBACK, b: float = _PLATT_B_FALLBACK) -> float:
+    """Shrink an over-confident probability using Platt logistic scaling."""
     p = max(0.01, min(p, 0.99))
     logit = _log(p / (1.0 - p))
-    return 1.0 / (1.0 + _exp(-(_PLATT_A * logit + _PLATT_B)))
+    return 1.0 / (1.0 + _exp(-(a * logit + b)))
 
 
 def _compute_f5_lambda(pitcher_stats: Dict, bullpen_era: float = 4.20) -> Optional[float]:
@@ -291,6 +298,53 @@ def run_module(
             'whip_vs_opp': away_ps.get('whip_vs_opp'),
             'ip_vs_opp': away_ps.get('ip_vs_opp'),
         }
+
+        # ── Enrich pitchers with Savant + FanGraphs real data ────────────
+        if _ENRICHMENT_AVAILABLE:
+            try:
+                from config import DATA_DIR as _DATA_DIR
+                _cache = _DATA_DIR / ".cache"
+                _year = datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1
+                _savant = _SavantFetcher(cache_dir=_cache)
+                _fg     = _FGFetcher(cache_dir=_cache)
+
+                _sv_all = _savant.get_all_pitcher_stats(_year)
+                _fg_all = _fg.get_all_pitcher_stats(_year)
+
+                for _role, _pid_key in [("pitcher_home", "home_pitcher_id"),
+                                        ("pitcher_away", "away_pitcher_id")]:
+                    _mlbam = game_data.get(_pid_key)
+                    if not _mlbam:
+                        continue
+                    _mlbam = int(_mlbam)
+                    _sv = _sv_all.get(_mlbam, {})
+                    _fg_d = _fg_all.get(_mlbam, {})
+                    game_data[_role].update({
+                        # FanGraphs: real ERA estimators
+                        "xfip":         _fg_d.get("xfip"),
+                        "siera":        _fg_d.get("siera"),
+                        "war":          _fg_d.get("war"),
+                        "k_pct":        _fg_d.get("k_pct"),
+                        "bb_pct":       _fg_d.get("bb_pct"),
+                        "swstr_pct":    _fg_d.get("swstr_pct"),
+                        "hr_fb":        _fg_d.get("hr_fb"),
+                        # Baseball Savant: contact quality
+                        "est_woba":     _sv.get("est_woba"),
+                        "xera":         _sv.get("xera") or _fg_d.get("xera"),
+                        "brl_percent":  _sv.get("brl_percent"),
+                        "avg_hit_speed": _sv.get("avg_hit_speed"),
+                        "ev95percent":  _sv.get("ev95percent"),
+                    })
+                    logger.debug(
+                        f"   [enrichment] {_role}: "
+                        f"xFIP={game_data[_role].get('xfip')}, "
+                        f"SIERA={game_data[_role].get('siera')}, "
+                        f"xwOBA={game_data[_role].get('est_woba')}, "
+                        f"Brl%={game_data[_role].get('brl_percent')}"
+                    )
+            except Exception as _e:
+                logger.warning(f"   [enrichment] Savant/FG enrichment failed: {_e}")
+
         game_data['park'] = {'name': game_data.get('venue', 'Unknown')}
         # Lambdas base con media ponderada por equipo
         from data_fetchers import MLBDataIntegrator as _Int
@@ -303,8 +357,20 @@ def run_module(
         away_team_id = game_data.get('away_team_id')
         lh = _int.get_team_lambda(home_team, home_rpg, team_id=home_team_id)
         la = _int.get_team_lambda(away_team, away_rpg, team_id=away_team_id)
+
+        # ── Kalman-adjusted base lambdas ──────────────────────────────────
+        from datetime import datetime as _dt
+        _season = _dt.now().year if _dt.now().month >= 3 else _dt.now().year - 1
+        lh = _learning.get_kalman_lambda_adjustment(home_team, "offense_home", _season, lh)
+        la = _learning.get_kalman_lambda_adjustment(away_team, "offense_away", _season, la)
+
         results['lambdas_history']['base'] = {'lh': lh, 'la': la}
-        logger.info(f"   Lambda base: λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})")
+        logger.info(f"   Lambda base (Kalman): λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})")
+
+        # Stage factors tracker — populated per pipeline step for gradient descent
+        _stage_factors: Dict[str, float] = {}
+        _lh_pre_cal = lh
+        _la_pre_cal = la
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 1: CALIBRATION ENGINE
@@ -315,11 +381,9 @@ def run_module(
             calibrator = LambdaCalibrator(learning_engine=_learning)
             lh, la = calibrator.calibrate(lh, la, game_data)
 
-            results['lambdas_history']['calibration'] = {
-                'lh': lh,
-                'la': la
-            }
-
+            _stage_factors["home_calibration"] = lh / _lh_pre_cal if _lh_pre_cal else 1.0
+            _stage_factors["away_calibration"] = la / _la_pre_cal if _la_pre_cal else 1.0
+            results['lambdas_history']['calibration'] = {'lh': lh, 'la': la}
             logger.info(f"   ✅ Calibrated: λ_h={lh:.3f}, λ_a={la:.3f}")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -327,15 +391,13 @@ def run_module(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if use_hfa:
             logger.info("\n🏟️  PASO 2: HFA Engine (solo equipo)...")
-
+            _lh_pre = lh; _la_pre = la
             lh, la, hfa_meta = get_adjusted_lambdas(lh, la, game_data)
 
-            results['lambdas_history']['hfa'] = {
-                'lh': lh,
-                'la': la
-            }
+            _stage_factors["home_hfa"] = lh / _lh_pre if _lh_pre else 1.0
+            _stage_factors["away_hfa"] = la / _la_pre if _la_pre else 1.0
+            results['lambdas_history']['hfa'] = {'lh': lh, 'la': la}
             results['metadata']['hfa'] = hfa_meta
-
             logger.info(f"   ✅ HFA adjusted: λ_h={lh:.3f}, λ_a={la:.3f}")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -343,15 +405,13 @@ def run_module(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if use_pitcher:
             logger.info("\n⚾ PASO 3: Pitcher Engine (solo pitchers)...")
-
+            _lh_pre = lh; _la_pre = la
             lh, la, pitcher_meta = adjust_for_pitchers(lh, la, game_data)
 
-            results['lambdas_history']['pitcher'] = {
-                'lh': lh,
-                'la': la
-            }
+            _stage_factors["home_pitcher"] = lh / _lh_pre if _lh_pre else 1.0
+            _stage_factors["away_pitcher"] = la / _la_pre if _la_pre else 1.0
+            results['lambdas_history']['pitcher'] = {'lh': lh, 'la': la}
             results['metadata']['pitcher'] = pitcher_meta
-
             logger.info(f"   ✅ Pitcher adjusted: λ_h={lh:.3f}, λ_a={la:.3f}")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -359,12 +419,12 @@ def run_module(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if use_regression:
             logger.info("\n📈 PASO 4: Pitcher Regression...")
+            _lh_pre = lh; _la_pre = la
 
             factor_away, conf_away = calculate_pitcher_regression(
                 pitcher_stats=game_data.get('pitcher_away', {}),
                 opponent_stats=game_data.get('home_team', {})
             )
-
             factor_home, conf_home = calculate_pitcher_regression(
                 pitcher_stats=game_data.get('pitcher_home', {}),
                 opponent_stats=game_data.get('away_team', {})
@@ -373,17 +433,13 @@ def run_module(
             lh = lh * factor_away
             la = la * factor_home
 
-            results['lambdas_history']['regression'] = {
-                'lh': lh,
-                'la': la
-            }
+            _stage_factors["home_regression"] = lh / _lh_pre if _lh_pre else 1.0
+            _stage_factors["away_regression"] = la / _la_pre if _la_pre else 1.0
+            results['lambdas_history']['regression'] = {'lh': lh, 'la': la}
             results['metadata']['regression'] = {
-                'factor_away': factor_away,
-                'confidence_away': conf_away,
-                'factor_home': factor_home,
-                'confidence_home': conf_home
+                'factor_away': factor_away, 'confidence_away': conf_away,
+                'factor_home': factor_home, 'confidence_home': conf_home
             }
-
             logger.info(f"   Pitcher Away regression: {factor_away:.3f} (conf: {conf_away:.2f})")
             logger.info(f"   Pitcher Home regression: {factor_home:.3f} (conf: {conf_home:.2f})")
             logger.info(f"   ✅ Final: λ_h={lh:.3f}, λ_a={la:.3f}")
@@ -393,8 +449,6 @@ def run_module(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         logger.info(f"\n🎲 PASO 5: Monte Carlo ({n_max:,} simulaciones)...")
 
-        # Real F5 lambdas: home runs depend on away pitcher; away runs on home pitcher.
-        # Bullpen ERA fills innings not covered by the starter (avg_ips < 5).
         _home_bp_era = game_data.get('bullpen_home', {}).get('era', 4.20)
         _away_bp_era = game_data.get('bullpen_away', {}).get('era', 4.20)
         lh_f5 = _compute_f5_lambda(game_data.get('pitcher_away', {}), _away_bp_era)
@@ -404,9 +458,6 @@ def run_module(
         if la_f5 is not None:
             logger.info(f"   F5 λ_a={la_f5:.3f} (home pitcher avg_IPS={game_data['pitcher_home'].get('avg_innings_per_start','?')} f5_ERA={game_data['pitcher_home'].get('f5_era','?')})")
 
-        # Fix 5: clamp lambdas before simulation.
-        # lambda_sum < 5 produced systematic -13pp bias; values above 9 are
-        # physically implausible for a single team's expected runs.
         lh = max(3.0, min(lh, 7.0))
         la = max(3.0, min(la, 7.0))
 
@@ -419,15 +470,14 @@ def run_module(
             la_f5=la_f5,
         )
 
-        # Fix 1: Platt calibration — fitted on 4 859-game backtest.
-        # Poisson win-probability is over-confident at extreme lambda ratios;
-        # global logit slope = 0.534 (ideal = 1.0).
-        mc_results['p_home'] = round(_platt(mc_results['p_home']), 5)
-        mc_results['p_away'] = round(_platt(mc_results['p_away']), 5)
+        # Dynamic Platt calibration — refitted weekly from live outcomes
+        _pa, _pb = _learning.get_platt_params(_season)
+        mc_results['p_home'] = round(_platt(mc_results['p_home'], _pa, _pb), 5)
+        mc_results['p_away'] = round(_platt(mc_results['p_away'], _pa, _pb), 5)
 
         results['probabilities'] = mc_results
 
-        logger.info(f"   ✅ Simulaciones completadas")
+        logger.info(f"   ✅ Simulaciones completadas (Platt a={_pa:.3f} b={_pb:.3f})")
         logger.info(f"   Home Win: {mc_results.get('p_home', 0):.1%}")
         logger.info(f"   Away Win: {mc_results.get('p_away', 0):.1%}")
 
@@ -439,13 +489,15 @@ def run_module(
                 _learning.record_prediction(
                     game_pk=int(_gk),
                     game_date=_gd,
-                    season=datetime.now().year,
+                    season=_season,
                     home_team=home_team if isinstance(home_team, str) else home_team.get('name', ''),
                     away_team=away_team if isinstance(away_team, str) else away_team.get('name', ''),
                     lambda_home=lh,
                     lambda_away=la,
                     p_home=mc_results.get('p_home', 0.5),
                     p_away=mc_results.get('p_away', 0.5),
+                    venue=game_data.get('venue'),
+                    stage_factors=_stage_factors,
                 )
             except Exception:
                 pass

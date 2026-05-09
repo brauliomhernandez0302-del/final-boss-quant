@@ -1,34 +1,63 @@
 """
 Learning engine — records model predictions and actual outcomes,
-computes per-team lambda bias, and persists model state to SQLite.
+drives adaptive calibration through five mechanisms:
 
-Tables (both live in predictions_history.db):
-  game_outcomes  — one row per prediction; actual runs filled in post-game
-  ml_state       — key-value store for cached bias values and other state
+  1. Team bias            — mean(actual / predicted_λ) per team, per season
+  2. Multi-dim bias       — same metric sliced by home/away, month, and stadium
+  3. Kalman filter        — tracks each team's true run rate as a hidden state
+  4. Platt recalibration  — weekly logistic-regression fit on p_home → home_won
+  5. Pipeline weights     — gradient-descent scaling on each engine's λ adjustment
+
+Tables (all in predictions_history.db):
+  game_outcomes   — one row per prediction; actual runs filled in post-game
+  kalman_state    — Kalman filter state (x_est, p_est) per team/context/season
+  ml_state        — key-value store for biases, Platt params, pipeline weights
 """
 
 import json
 import logging
+import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_MLB_API_BASE = "https://statsapi.mlb.com/api/v1"
-_MIN_SAMPLES = 10          # min finished games before bias is applied
-_BIAS_CLAMP = 0.30         # max ±30% correction
-_BIAS_CACHE_HOURS = 6      # invalidate cached bias after this many hours
+_MLB_API_BASE   = "https://statsapi.mlb.com/api/v1"
+_MIN_SAMPLES    = 10
+_BIAS_CLAMP     = 0.30
+_BIAS_CACHE_HRS = 6
+
+# Kalman filter hyper-parameters
+_KF_Q = 0.025   # process noise variance (team quality changes ~0.16 R/G per game)
+_KF_R = 9.0     # observation noise variance (game-to-game σ ≈ 3 R/G)
+
+# Platt recalibration
+_PLATT_MIN_SAMPLES  = 50
+_PLATT_RECAL_DAYS   = 7
+_PLATT_A_DEFAULT    = 0.547
+_PLATT_B_DEFAULT    = 0.098
+
+# Pipeline gradient-descent weights — one per engine stage
+_STAGE_KEYS = ["calibration", "hfa", "pitcher", "regression", "learning_bias"]
+_LR         = 0.01    # gradient step size
+_MIN_WEIGHT = 0.30    # floor: never fully bypass a stage
+_MAX_WEIGHT = 1.50    # ceiling
 
 
 class LearningEngine:
     """
-    Closes the prediction loop:
-      1. record_prediction()       — called before the game
-      2. fetch_pending_outcomes()  — auto-fetches actual scores for past games
-      3. compute_team_bias()       — mean(actual / predicted_λ), cached in ml_state
-      4. LambdaCalibrator uses the bias as a final multiplicative correction
+    Adaptive calibration engine:
+      record_prediction()       → called before the game
+      fetch_pending_outcomes()  → auto-fetches actual scores for past games
+      update_outcome()          → fill in score + trigger all adaptive updates
+      compute_team_bias()       → per-team λ correction (cached)
+      compute_multidim_bias()   → correction sliced by home/away, month, venue
+      get_kalman_estimate()     → Kalman-filtered team run rate
+      get_platt_params()        → current (a, b) for probability shrinkage
+      recalibrate_platt()       → refit logistic regression from outcomes
+      get_pipeline_weights()    → learned stage weights for λ blending
     """
 
     def __init__(self, db_path: Path):
@@ -55,10 +84,13 @@ class LearningEngine:
                     season           INTEGER NOT NULL,
                     home_team        TEXT    NOT NULL,
                     away_team        TEXT    NOT NULL,
+                    venue            TEXT,
+                    month            INTEGER,
                     lambda_home      REAL,
                     lambda_away      REAL,
                     p_home           REAL,
                     p_away           REAL,
+                    stage_factors_json TEXT,
                     actual_home_runs INTEGER,
                     actual_away_runs INTEGER,
                     home_won         INTEGER,
@@ -73,6 +105,17 @@ class LearningEngine:
                     ON game_outcomes(game_date)
                     WHERE actual_home_runs IS NULL;
 
+                CREATE TABLE IF NOT EXISTS kalman_state (
+                    team       TEXT    NOT NULL,
+                    context    TEXT    NOT NULL,
+                    season     INTEGER NOT NULL,
+                    x_est      REAL    NOT NULL,
+                    p_est      REAL    NOT NULL,
+                    n_obs      INTEGER DEFAULT 0,
+                    updated_at TEXT    NOT NULL,
+                    PRIMARY KEY (team, context, season)
+                );
+
                 CREATE TABLE IF NOT EXISTS ml_state (
                     key          TEXT    NOT NULL,
                     scope        TEXT    NOT NULL,
@@ -83,6 +126,16 @@ class LearningEngine:
                     PRIMARY KEY (key, scope, season)
                 );
             """)
+            # Migrate: add columns silently if they don't exist yet
+            for col, typedef in [
+                ("venue", "TEXT"),
+                ("month", "INTEGER"),
+                ("stage_factors_json", "TEXT"),
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE game_outcomes ADD COLUMN {col} {typedef}")
+                except sqlite3.OperationalError:
+                    pass
 
     # ------------------------------------------------------------------
     # Prediction recording
@@ -99,24 +152,30 @@ class LearningEngine:
         lambda_away: float,
         p_home: float,
         p_away: float,
+        venue: Optional[str] = None,
+        stage_factors: Optional[Dict[str, Any]] = None,
     ) -> bool:
-        """
-        Insert a pre-game prediction row.
-        Returns True if a new row was created, False if game_pk already existed.
-        """
+        """Insert a pre-game prediction row. Returns True if newly inserted."""
+        month = None
+        try:
+            month = int(game_date[5:7]) if game_date else None
+        except (IndexError, ValueError):
+            pass
+
         with self._get_conn() as conn:
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO game_outcomes
-                    (game_pk, game_date, season, home_team, away_team,
-                     lambda_home, lambda_away, p_home, p_away)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (game_pk, game_date, season, home_team, away_team, venue, month,
+                     lambda_home, lambda_away, p_home, p_away, stage_factors_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (game_pk, game_date, season, home_team, away_team,
-                 lambda_home, lambda_away, p_home, p_away),
+                (game_pk, game_date, season, home_team, away_team, venue, month,
+                 lambda_home, lambda_away, p_home, p_away,
+                 json.dumps(stage_factors) if stage_factors else None),
             )
             inserted = cursor.rowcount == 1
-        logger.debug(f"   [learning] recorded prediction game_pk={game_pk}")
+        logger.debug(f"[learning] recorded prediction game_pk={game_pk} inserted={inserted}")
         return inserted
 
     # ------------------------------------------------------------------
@@ -124,15 +183,10 @@ class LearningEngine:
     # ------------------------------------------------------------------
 
     def fetch_pending_outcomes(self, lookback_days: int = 7) -> int:
-        """
-        For any game_outcome rows without actual runs whose game_date is in the past,
-        fetch the final score from MLB Stats API and fill it in.
-        Returns the number of rows updated.
-        """
-        import requests
+        import requests as _req
 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today  = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         with self._get_conn() as conn:
             pending = conn.execute(
@@ -150,11 +204,10 @@ class LearningEngine:
             return 0
 
         updated = 0
-        session = requests.Session()
+        session = _req.Session()
         for row in pending:
             try:
-                url = f"{_MLB_API_BASE}/game/{row['game_pk']}/linescore"
-                r = session.get(url, timeout=8)
+                r = session.get(f"{_MLB_API_BASE}/game/{row['game_pk']}/linescore", timeout=8)
                 r.raise_for_status()
                 data = r.json()
                 home_runs = data.get("teams", {}).get("home", {}).get("runs")
@@ -163,15 +216,12 @@ class LearningEngine:
                     continue
                 if self.update_outcome(row["game_pk"], int(home_runs), int(away_runs)):
                     updated += 1
-                    logger.info(
-                        f"   [learning] game {row['game_pk']} outcome: "
-                        f"{away_runs}–{home_runs}"
-                    )
+                    logger.info(f"[learning] game {row['game_pk']}: {away_runs}–{home_runs}")
             except Exception as exc:
-                logger.debug(f"   [learning] could not fetch {row['game_pk']}: {exc}")
+                logger.debug(f"[learning] could not fetch {row['game_pk']}: {exc}")
 
         if updated:
-            logger.info(f"   [learning] fetched {updated} outcome(s) from MLB API")
+            logger.info(f"[learning] fetched {updated} outcome(s)")
         return updated
 
     def update_outcome(
@@ -180,8 +230,9 @@ class LearningEngine:
         actual_home_runs: int,
         actual_away_runs: int,
     ) -> bool:
-        """Fill in actual runs for a finished game. Returns True if the row existed."""
+        """Fill in actual runs, trigger Kalman updates. Returns True if row existed."""
         home_won = 1 if actual_home_runs > actual_away_runs else 0
+
         with self._get_conn() as conn:
             cursor = conn.execute(
                 """
@@ -193,10 +244,40 @@ class LearningEngine:
                 """,
                 (actual_home_runs, actual_away_runs, home_won, game_pk),
             )
-            return cursor.rowcount > 0
+            existed = cursor.rowcount > 0
+
+        if existed:
+            self._post_outcome_update(game_pk, actual_home_runs, actual_away_runs)
+        return existed
+
+    def _post_outcome_update(
+        self,
+        game_pk: int,
+        home_runs: int,
+        away_runs: int,
+    ) -> None:
+        """Update Kalman states and maybe trigger Platt recalibration."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT home_team, away_team, season, lambda_home, lambda_away "
+                "FROM game_outcomes WHERE game_pk = ?",
+                (game_pk,),
+            ).fetchone()
+        if not row:
+            return
+
+        season = row["season"]
+        self.update_kalman(row["home_team"], "offense_home", season, float(home_runs))
+        self.update_kalman(row["away_team"], "offense_away", season, float(away_runs))
+        self.update_kalman(row["home_team"], "defense_home", season, float(away_runs))
+        self.update_kalman(row["away_team"], "defense_away", season, float(home_runs))
+
+        # Gradient-descent weight update
+        if row["lambda_home"] and row["lambda_away"]:
+            self._gradient_step(game_pk, home_runs, away_runs, season)
 
     # ------------------------------------------------------------------
-    # Bias computation
+    # Team bias (simple 1-D)
     # ------------------------------------------------------------------
 
     def compute_team_bias(
@@ -205,22 +286,11 @@ class LearningEngine:
         season: int,
         min_samples: int = _MIN_SAMPLES,
     ) -> float:
-        """
-        Returns mean(actual_runs / predicted_lambda) for the team over the season.
-
-        Interpretation:
-          1.0  — model is well-calibrated for this team
-          >1.0 — model under-predicts (team scores more than expected)
-          <1.0 — model over-predicts
-
-        Returns 1.0 (neutral) when fewer than min_samples finished games exist.
-        Bias is clamped to [1-_BIAS_CLAMP, 1+_BIAS_CLAMP] = [0.80, 1.20].
-        """
+        """mean(actual_runs / predicted_λ) for the team. Returns 1.0 when insufficient data."""
         cache_key = f"team_bias:{team}"
         cached = self.load_state(cache_key, "team_bias", season)
         if cached and cached.get("sample_count", 0) >= min_samples:
-            age_hours = self._hours_since(cached.get("updated_at", ""))
-            if age_hours < _BIAS_CACHE_HOURS:
+            if self._hours_since(cached.get("updated_at", "")) < _BIAS_CACHE_HRS:
                 return float(cached["bias"])
 
         with self._get_conn() as conn:
@@ -250,11 +320,342 @@ class LearningEngine:
         if not ratios:
             return 1.0
 
-        raw = sum(ratios) / len(ratios)
+        raw  = sum(ratios) / len(ratios)
         bias = max(1.0 - _BIAS_CLAMP, min(1.0 + _BIAS_CLAMP, raw))
         self.save_state(cache_key, "team_bias", {"bias": bias}, len(ratios), season)
-        logger.debug(f"   [learning] {team} bias={bias:.4f} (n={len(ratios)})")
+        logger.debug(f"[learning] {team} bias={bias:.4f} (n={len(ratios)})")
         return bias
+
+    # ------------------------------------------------------------------
+    # Multi-dimensional bias
+    # ------------------------------------------------------------------
+
+    def compute_multidim_bias(
+        self,
+        team: str,
+        season: int,
+        home_away: str = "home",       # "home" or "away"
+        month: Optional[int] = None,   # 3-10; None = season average
+        venue: Optional[str] = None,
+        min_samples: int = 8,
+    ) -> float:
+        """
+        Bias correction refined along up to three dimensions simultaneously.
+
+        Priority:
+          1. team × home_away × month (most specific)
+          2. team × home_away
+          3. simple team bias (fallback)
+        """
+        dims = [
+            (f"bias:{team}:{home_away}:m{month}", home_away, month),
+            (f"bias:{team}:{home_away}",           home_away, None),
+        ]
+        for scope_key, ha, mo in dims:
+            cached = self.load_state(scope_key, "multidim_bias", season)
+            if cached and cached.get("sample_count", 0) >= min_samples:
+                if self._hours_since(cached.get("updated_at", "")) < _BIAS_CACHE_HRS:
+                    return float(cached["bias"])
+            result = self._compute_multidim(team, season, ha, mo, min_samples)
+            if result is not None:
+                self.save_state(scope_key, "multidim_bias", {"bias": result[0]}, result[1], season)
+                return result[0]
+
+        # Final fallback: simple team bias
+        return self.compute_team_bias(team, season)
+
+    def _compute_multidim(
+        self,
+        team: str,
+        season: int,
+        home_away: str,
+        month: Optional[int],
+        min_samples: int,
+    ) -> Optional[Tuple[float, int]]:
+        is_home = (home_away == "home")
+        team_col    = "home_team" if is_home else "away_team"
+        lambda_col  = "lambda_home" if is_home else "lambda_away"
+        actual_col  = "actual_home_runs" if is_home else "actual_away_runs"
+
+        where = f"season = ? AND actual_home_runs IS NOT NULL AND {team_col} = ?"
+        params: List[Any] = [season, team]
+        if month is not None:
+            where += " AND month = ?"
+            params.append(month)
+
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT {lambda_col}, {actual_col} FROM game_outcomes WHERE {where}",
+                params,
+            ).fetchall()
+
+        if len(rows) < min_samples:
+            return None
+
+        ratios = [
+            r[actual_col] / r[lambda_col]
+            for r in rows
+            if r[lambda_col] and r[lambda_col] > 0
+        ]
+        if not ratios:
+            return None
+
+        raw  = sum(ratios) / len(ratios)
+        bias = max(1.0 - _BIAS_CLAMP, min(1.0 + _BIAS_CLAMP, raw))
+        return bias, len(ratios)
+
+    # ------------------------------------------------------------------
+    # Kalman filter
+    # ------------------------------------------------------------------
+
+    def get_kalman_estimate(
+        self,
+        team: str,
+        context: str,
+        season: int,
+    ) -> Optional[float]:
+        """Return Kalman-filtered estimate of team's expected runs for this context.
+
+        context: 'offense_home' | 'offense_away' | 'defense_home' | 'defense_away'
+        Returns None when no observations exist yet.
+        """
+        state = self._get_kalman_state(team, context, season)
+        return state["x_est"] if state else None
+
+    def update_kalman(
+        self,
+        team: str,
+        context: str,
+        season: int,
+        observed: float,
+    ) -> float:
+        """Kalman update step with new run observation. Returns updated estimate."""
+        state = self._get_kalman_state(team, context, season)
+
+        if state is None:
+            x_est = observed
+            p_est = _KF_R
+            n_obs = 1
+        else:
+            x_pred = state["x_est"]
+            p_pred = state["p_est"] + _KF_Q
+            K      = p_pred / (p_pred + _KF_R)
+            x_est  = x_pred + K * (observed - x_pred)
+            p_est  = (1.0 - K) * p_pred
+            n_obs  = state["n_obs"] + 1
+
+        self._save_kalman_state(team, context, season, x_est, p_est, n_obs)
+        return x_est
+
+    def _get_kalman_state(self, team: str, context: str, season: int) -> Optional[Dict]:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT x_est, p_est, n_obs FROM kalman_state "
+                "WHERE team = ? AND context = ? AND season = ?",
+                (team, context, season),
+            ).fetchone()
+        if not row:
+            return None
+        return {"x_est": row["x_est"], "p_est": row["p_est"], "n_obs": row["n_obs"]}
+
+    def _save_kalman_state(
+        self,
+        team: str,
+        context: str,
+        season: int,
+        x_est: float,
+        p_est: float,
+        n_obs: int,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO kalman_state (team, context, season, x_est, p_est, n_obs, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(team, context, season) DO UPDATE SET
+                    x_est = excluded.x_est,
+                    p_est = excluded.p_est,
+                    n_obs = excluded.n_obs,
+                    updated_at = excluded.updated_at
+                """,
+                (team, context, season, x_est, p_est, n_obs, now),
+            )
+
+    def get_kalman_lambda_adjustment(
+        self,
+        team: str,
+        context: str,
+        season: int,
+        model_lambda: float,
+        blend: float = 0.35,
+    ) -> float:
+        """
+        Return an adjusted λ blending the model estimate with the Kalman estimate.
+
+        blend=0.35 → 35% Kalman, 65% model. Returns model_lambda when fewer
+        than 10 Kalman observations exist (cold start).
+        """
+        state = self._get_kalman_state(team, context, season)
+        if not state or state["n_obs"] < 10:
+            return model_lambda
+        kalman_lam = state["x_est"]
+        # Soft blend; clip to prevent runaway Kalman estimates
+        result = (1.0 - blend) * model_lambda + blend * kalman_lam
+        return max(2.0, min(9.0, result))
+
+    # ------------------------------------------------------------------
+    # Platt recalibration
+    # ------------------------------------------------------------------
+
+    def get_platt_params(self, season: int) -> Tuple[float, float]:
+        """Return current (a, b) Platt logistic shrinkage coefficients."""
+        cached = self.load_state("platt_params", "calibration", season)
+        if cached:
+            last_recal = cached.get("updated_at", "")
+            age_days = self._hours_since(last_recal) / 24.0
+            if age_days < _PLATT_RECAL_DAYS:
+                return float(cached.get("a", _PLATT_A_DEFAULT)), float(cached.get("b", _PLATT_B_DEFAULT))
+        # Try to refit
+        try:
+            return self.recalibrate_platt(season)
+        except Exception as exc:
+            logger.warning(f"[learning] Platt recalibration failed: {exc}")
+            return _PLATT_A_DEFAULT, _PLATT_B_DEFAULT
+
+    def recalibrate_platt(self, season: int) -> Tuple[float, float]:
+        """
+        Refit logistic regression mapping raw p_home → home_won on this season's data.
+        Requires sklearn. Falls back to defaults if insufficient data.
+        """
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT p_home, home_won FROM game_outcomes
+                WHERE season = ? AND home_won IS NOT NULL AND p_home IS NOT NULL
+                """,
+                (season,),
+            ).fetchall()
+
+        n = len(rows)
+        if n < _PLATT_MIN_SAMPLES:
+            logger.info(f"[learning] Platt: only {n} samples (need {_PLATT_MIN_SAMPLES}), keeping defaults")
+            return _PLATT_A_DEFAULT, _PLATT_B_DEFAULT
+
+        try:
+            from sklearn.linear_model import LogisticRegression
+            import numpy as np
+
+            probs    = np.array([r["p_home"] for r in rows], dtype=float)
+            outcomes = np.array([r["home_won"] for r in rows], dtype=int)
+
+            # Clip to avoid log(0)
+            probs = np.clip(probs, 0.01, 0.99)
+            logits = np.log(probs / (1.0 - probs)).reshape(-1, 1)
+
+            lr = LogisticRegression(solver="lbfgs", max_iter=500, C=1e6)
+            lr.fit(logits, outcomes)
+            a = float(lr.coef_[0][0])
+            b = float(lr.intercept_[0])
+
+            self.save_state("platt_params", "calibration",
+                            {"a": a, "b": b, "n": n}, n, season)
+            logger.info(f"[learning] Platt recalibrated: a={a:.4f}, b={b:.4f} (n={n})")
+            return a, b
+
+        except ImportError:
+            # sklearn not available — use moment-matching on training set
+            return self._platt_moment_match(rows)
+
+    def _platt_moment_match(self, rows) -> Tuple[float, float]:
+        """Fallback: shrink toward 50% using empirical calibration error."""
+        import math
+        probs    = [max(0.01, min(0.99, r["p_home"])) for r in rows]
+        outcomes = [r["home_won"] for r in rows]
+        n        = len(rows)
+        obs_win  = sum(outcomes) / n
+        mean_p   = sum(probs) / n
+
+        if abs(mean_p - obs_win) < 0.005:
+            return _PLATT_A_DEFAULT, _PLATT_B_DEFAULT
+
+        # Scale logit space to match empirical win rate
+        logits   = [math.log(p / (1 - p)) for p in probs]
+        mean_logit = sum(logits) / n
+        target_logit = math.log(obs_win / (1 - obs_win)) if 0 < obs_win < 1 else 0.0
+        b = target_logit - mean_logit
+        a = _PLATT_A_DEFAULT
+        return a, float(b)
+
+    # ------------------------------------------------------------------
+    # Pipeline weights (gradient descent)
+    # ------------------------------------------------------------------
+
+    def get_pipeline_weights(self, season: int) -> Dict[str, float]:
+        """Return learned weight (0.30–1.50) for each pipeline stage."""
+        cached = self.load_state("pipeline_weights", "weights", season)
+        if cached:
+            return {k: float(cached.get(k, 1.0)) for k in _STAGE_KEYS}
+        return {k: 1.0 for k in _STAGE_KEYS}
+
+    def _gradient_step(
+        self,
+        game_pk: int,
+        actual_home: int,
+        actual_away: int,
+        season: int,
+    ) -> None:
+        """
+        One gradient-descent step on pipeline weights using Poisson log-likelihood.
+
+        Reads stored stage_factors_json to know each stage's contribution.
+        Skips silently if stage_factors are missing.
+        """
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT lambda_home, lambda_away, stage_factors_json FROM game_outcomes "
+                "WHERE game_pk = ?",
+                (game_pk,),
+            ).fetchone()
+
+        if not row or not row["stage_factors_json"]:
+            return
+
+        try:
+            factors = json.loads(row["stage_factors_json"])
+        except (json.JSONDecodeError, TypeError):
+            return
+
+        weights = self.get_pipeline_weights(season)
+        updated = dict(weights)
+
+        for role, lam_final, actual in [
+            ("home", row["lambda_home"], actual_home),
+            ("away", row["lambda_away"], actual_away),
+        ]:
+            if not lam_final or lam_final <= 0:
+                continue
+            # Poisson gradient: ∂NLL/∂λ = (λ - actual) / λ (normalised)
+            residual = (lam_final - actual) / max(lam_final, 0.5)
+
+            for stage in _STAGE_KEYS:
+                adj = factors.get(f"{role}_{stage}", 1.0)
+                if adj == 1.0:
+                    continue  # stage had no effect on this game
+                w = weights[stage]
+                # ∂λ/∂w_stage = λ_final * (adj - 1) / (1 + w*(adj-1))
+                denom = 1.0 + w * (adj - 1.0)
+                if abs(denom) < 1e-6:
+                    continue
+                grad = residual * (adj - 1.0) / denom
+                updated[stage] = updated[stage] - _LR * grad
+
+        # Clamp
+        for stage in _STAGE_KEYS:
+            updated[stage] = max(_MIN_WEIGHT, min(_MAX_WEIGHT, updated[stage]))
+
+        self.save_state("pipeline_weights", "weights", updated,
+                        sample_count=0, season=season)
 
     # ------------------------------------------------------------------
     # Generic state persistence
@@ -290,18 +691,15 @@ class LearningEngine:
     ) -> Optional[Dict[str, Any]]:
         with self._get_conn() as conn:
             row = conn.execute(
-                """
-                SELECT value_json, sample_count, updated_at
-                FROM ml_state
-                WHERE key = ? AND scope = ? AND season = ?
-                """,
+                "SELECT value_json, sample_count, updated_at "
+                "FROM ml_state WHERE key = ? AND scope = ? AND season = ?",
                 (key, scope, season),
             ).fetchone()
         if not row:
             return None
         data = json.loads(row["value_json"])
         data["sample_count"] = row["sample_count"]
-        data["updated_at"] = row["updated_at"]
+        data["updated_at"]   = row["updated_at"]
         return data
 
     # ------------------------------------------------------------------
@@ -314,6 +712,10 @@ class LearningEngine:
             return float("inf")
         try:
             dt = datetime.fromisoformat(iso_str)
-            return (datetime.now(timezone.utc) - dt).total_seconds() / 3600
-        except ValueError:
+            now = datetime.now(timezone.utc)
+            # Make both tz-aware or both tz-naive before subtracting
+            if dt.tzinfo is None:
+                now = now.replace(tzinfo=None)
+            return (now - dt).total_seconds() / 3600.0
+        except (ValueError, TypeError):
             return float("inf")

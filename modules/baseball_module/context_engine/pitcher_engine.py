@@ -237,32 +237,44 @@ class PitcherEngine:
     
     def _adjust_pitcher_quality(self, pitcher: Dict) -> float:
         """
-        Ajusta por calidad base del pitcher (ERA, FIP, xFIP).
-        
-        Returns:
-            Multiplicador (1.0 = average, <1.0 = elite, >1.0 = malo)
-        """
-        
-        era = pitcher.get('era', 4.50)
-        fip = pitcher.get('fip', era)  # falls back to ERA if FIP not fetched
+        Pitcher quality multiplier using a 5-source composite.
 
-        # xFIP requires fly-ball counts not available from the free API;
-        # use FIP (which we now compute from HR/BB/HBP/K) at higher weight.
-        composite = era * 0.40 + fip * 0.60
-        
-        # League average ≈ 4.20
-        league_avg = 4.20
-        
-        # Convertir a multiplicador
-        # ERA 3.00 (elite) → ~0.85x (menos runs)
-        # ERA 4.20 (average) → 1.00x
-        # ERA 5.50 (malo) → ~1.15x (más runs)
-        
-        multiplier = composite / league_avg
-        
-        # Clamp para evitar extremos
-        multiplier = np.clip(multiplier, 0.70, 1.30)
-        
+        ERA estimator hierarchy (most predictive first):
+          SIERA (FanGraphs real) > xFIP (FanGraphs real) > FIP > ERA
+
+        Contact quality overlay from Baseball Savant:
+          est_woba (xwOBA allowed)  — measures expected batting value per PA
+          brl_percent               — barrel rate allowed; predicts HR/XBH
+
+        League averages: ERA ≈ 4.20, xwOBA ≈ 0.320, barrel% ≈ 8.0
+        Output is clamped to [0.70, 1.30] to avoid extreme λ swings.
+        """
+        era = pitcher.get("era", 4.50)
+        fip = pitcher.get("fip", era)
+
+        # Real FanGraphs metrics — prefer SIERA (most predictive ERA estimator)
+        xfip  = pitcher.get("xfip")   or fip
+        siera = pitcher.get("siera")  or xfip
+
+        # SIERA 50%, xFIP 30%, ERA 20% — down-weight ERA (noisy, park-biased)
+        composite  = siera * 0.50 + xfip * 0.30 + era * 0.20
+        skill_mult = composite / 4.20
+
+        # xwOBA penalty: each 0.010 above league avg (0.320) ≈ +3% runs allowed
+        est_woba = pitcher.get("est_woba")
+        if est_woba is not None:
+            woba_mult = 1.0 + (float(est_woba) - 0.320) * 3.0
+        else:
+            woba_mult = 1.0
+
+        # Barrel% penalty: each 1 ppt above league avg (8%) ≈ +1.2% runs allowed
+        brl_pct = pitcher.get("brl_percent")
+        if brl_pct is not None:
+            brl_mult = 1.0 + max(0.0, float(brl_pct) - 8.0) * 0.012
+        else:
+            brl_mult = 1.0
+
+        multiplier = float(np.clip(skill_mult * woba_mult * brl_mult, 0.70, 1.30))
         return multiplier
     
     

@@ -64,6 +64,14 @@ from modules.baseball_module.core.run_module import _compute_f5_lambda
 from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
 from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced
 
+# External enrichment — Savant + FanGraphs (graceful degradation if unavailable)
+try:
+    from modules.baseball_module.data_enrichment.savant_fetcher import SavantFetcher
+    from modules.baseball_module.data_enrichment.fangraphs_fetcher import FanGraphsFetcher
+    _ENRICHMENT_AVAILABLE = True
+except ImportError:
+    _ENRICHMENT_AVAILABLE = False
+
 # ── paths ──────────────────────────────────────────────────────────────────
 DB_PATH = ROOT / "data" / "predictions_history.db"
 REPORT_DIR = ROOT / "data"
@@ -286,6 +294,8 @@ def build_game_data(
     api: MLBStatsAPI,
     integrator: MLBDataIntegrator,
     park_factors: ParkFactors,
+    savant_stats: Optional[Dict[int, Dict]] = None,
+    fg_stats: Optional[Dict[int, Dict]] = None,
 ) -> Tuple[Dict, float, float]:
     """
     Assemble game_data and (lh_base, la_base) from cached season-level stats.
@@ -359,11 +369,14 @@ def build_game_data(
     home_dict = _team_dict(home_name, home_off, home_pitch, home_rpg_api, True)
     away_dict = _team_dict(away_name, away_off, away_pitch, away_rpg_api, False)
 
-    def _pitcher_dict(name: str, ps: dict, team_pitch: dict) -> Dict:
+    def _pitcher_dict(name: str, ps: dict, team_pitch: dict,
+                      sv: dict = None, fg: dict = None) -> Dict:
         # Use team staff ERA as fallback so we never silently inject 4.38.
         team_era = float(team_pitch.get("team_era", LEAGUE_AVG_ERA)) if team_pitch else LEAGUE_AVG_ERA
         team_whip = float(team_pitch.get("team_whip", LEAGUE_AVG_WHIP)) if team_pitch else LEAGUE_AVG_WHIP
         era = ps.get("era", team_era)
+        sv  = sv or {}
+        fg  = fg or {}
         return {
             "name": name or "Unknown",
             "era": era,
@@ -375,6 +388,20 @@ def build_game_data(
             "last_pitch_count": ps.get("last_pitch_count", 90),
             "avg_innings_per_start": ps.get("avg_innings_per_start"),
             "f5_era": ps.get("f5_era"),
+            # FanGraphs real ERA estimators
+            "xfip":         fg.get("xfip"),
+            "siera":        fg.get("siera"),
+            "war":          fg.get("war"),
+            "k_pct":        fg.get("k_pct"),
+            "bb_pct":       fg.get("bb_pct"),
+            "swstr_pct":    fg.get("swstr_pct"),
+            "hr_fb":        fg.get("hr_fb"),
+            # Baseball Savant contact quality
+            "est_woba":     sv.get("est_woba"),
+            "xera":         sv.get("xera") or fg.get("xera"),
+            "brl_percent":  sv.get("brl_percent"),
+            "avg_hit_speed": sv.get("avg_hit_speed"),
+            "ev95percent":  sv.get("ev95percent"),
         }
 
     venue = TEAM_VENUES.get(home_name, "Unknown")
@@ -388,8 +415,16 @@ def build_game_data(
         "away_team_id": atid,
         "venue": venue,
         "park": {"name": venue},
-        "pitcher_home": _pitcher_dict(f"Home SP ({game_pk})", home_ps, home_pitch),
-        "pitcher_away": _pitcher_dict(f"Away SP ({game_pk})", away_ps, away_pitch),
+        "pitcher_home": _pitcher_dict(
+            f"Home SP ({game_pk})", home_ps, home_pitch,
+            sv=(savant_stats or {}).get(home_pitcher_id or 0, {}),
+            fg=(fg_stats or {}).get(home_pitcher_id or 0, {}),
+        ),
+        "pitcher_away": _pitcher_dict(
+            f"Away SP ({game_pk})", away_ps, away_pitch,
+            sv=(savant_stats or {}).get(away_pitcher_id or 0, {}),
+            fg=(fg_stats or {}).get(away_pitcher_id or 0, {}),
+        ),
         "home_pitcher_stats": home_ps,
         "away_pitcher_stats": away_ps,
         "bullpen_home": home_bp,
@@ -807,6 +842,20 @@ def main() -> None:
     cache = DiskCache(CACHE_DIR)
     learning = LearningEngine(db_path=DB_PATH)
 
+    # ── load Savant + FanGraphs data per season ──────────────────────────────
+    _enrich_cache_dir = ROOT / ".cache"
+    savant_by_season: Dict[int, Dict[int, Dict]] = {}
+    fg_by_season: Dict[int, Dict[int, Dict]] = {}
+    if _ENRICHMENT_AVAILABLE:
+        _sv_fetcher = SavantFetcher(cache_dir=_enrich_cache_dir)
+        _fg_fetcher = FanGraphsFetcher(cache_dir=_enrich_cache_dir)
+        for _yr in seasons:
+            log.info("Loading Savant + FanGraphs stats for season %d …", _yr)
+            savant_by_season[_yr] = _sv_fetcher.get_all_pitcher_stats(_yr)
+            fg_by_season[_yr]     = _fg_fetcher.get_all_pitcher_stats(_yr)
+            log.info("  Savant: %d pitchers | FG: %d pitchers",
+                     len(savant_by_season[_yr]), len(fg_by_season[_yr]))
+
     if args.no_cache:
         cache = DiskCache(CACHE_DIR, ttl=1)  # effectively bypasses old entries
 
@@ -882,6 +931,8 @@ def main() -> None:
                 starters["home_pitcher_id"],
                 starters["away_pitcher_id"],
                 api, integrator, park_factors,
+                savant_stats=savant_by_season.get(season),
+                fg_stats=fg_by_season.get(season),
             )
             pred = run_pipeline(game_data, lh, la, learning, N_MC)
 
@@ -963,6 +1014,34 @@ def main() -> None:
                 refreshed += 1
 
     log.info("  %d teams | %d non-neutral biases written to ml_state", len(teams), refreshed)
+
+    # ── step 4b: seed Kalman filter from historical outcomes ────────────────
+    log.info("Seeding Kalman filter states from historical outcomes …")
+    kalman_rows = conn.execute(
+        """
+        SELECT home_team, away_team, season,
+               actual_home_runs, actual_away_runs
+        FROM game_outcomes
+        WHERE actual_home_runs IS NOT NULL
+        ORDER BY game_date ASC
+        """
+    ).fetchall()
+    for kr in kalman_rows:
+        s = kr["season"]
+        learning.update_kalman(kr["home_team"], "offense_home", s, float(kr["actual_home_runs"]))
+        learning.update_kalman(kr["away_team"], "offense_away", s, float(kr["actual_away_runs"]))
+        learning.update_kalman(kr["home_team"], "defense_home", s, float(kr["actual_away_runs"]))
+        learning.update_kalman(kr["away_team"], "defense_away", s, float(kr["actual_home_runs"]))
+    log.info("  Kalman: %d game observations replayed", len(kalman_rows))
+
+    # ── step 4c: Platt recalibration per season ─────────────────────────────
+    log.info("Running Platt recalibration per season …")
+    for season in seasons:
+        try:
+            a, b = learning.recalibrate_platt(season)
+            log.info("  Season %d: Platt a=%.4f b=%.4f", season, a, b)
+        except Exception as exc:
+            log.warning("  Platt failed for season %d: %s", season, exc)
 
     # ── step 5: report ─────────────────────────────────────────────────────
     generate_report(results, REPORT_DIR)

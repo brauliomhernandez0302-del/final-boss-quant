@@ -136,13 +136,37 @@ class TestPitcherQualityMultiplier:
         mult = engine._adjust_pitcher_quality({"era": 6.00, "fip": 6.00})
         assert mult > 1.0
 
-    def test_composite_weights_era_40_fip_60(self):
+    def test_composite_weights_siera50_xfip30_era20(self):
+        # When xFIP and SIERA are absent, both fall back to FIP, which falls
+        # back to ERA.  So composite = ERA*0.50 + ERA*0.30 + ERA*0.20 = ERA.
         engine = _engine()
-        era, fip = 3.00, 4.20
-        composite = era * 0.40 + fip * 0.60
+        era = 3.00
+        composite = era * 0.50 + era * 0.30 + era * 0.20   # all three = ERA
         expected = float(np.clip(composite / 4.20, 0.70, 1.30))
-        result = engine._adjust_pitcher_quality({"era": era, "fip": fip})
+        result = engine._adjust_pitcher_quality({"era": era})
         assert result == pytest.approx(expected, abs=1e-6)
+
+    def test_real_xfip_siera_used_when_available(self):
+        # Real xFIP/SIERA from FanGraphs should dominate ERA in the composite.
+        engine = _engine()
+        # Lucky pitcher: great ERA but average xFIP/SIERA
+        mult_lucky   = engine._adjust_pitcher_quality({"era": 2.00, "xfip": 4.20, "siera": 4.20})
+        mult_genuine = engine._adjust_pitcher_quality({"era": 2.00, "xfip": 2.00, "siera": 2.00})
+        assert mult_lucky > mult_genuine, "Real xFIP/SIERA should override a lucky ERA"
+
+    def test_xwoba_penalty_increases_lambda(self):
+        # Pitcher allowing high xwOBA (0.360 vs 0.320 avg) should give mult > 1.0
+        engine = _engine()
+        result_high = engine._adjust_pitcher_quality({"era": 4.20, "est_woba": 0.360})
+        result_avg  = engine._adjust_pitcher_quality({"era": 4.20, "est_woba": 0.320})
+        assert result_high > result_avg
+
+    def test_barrel_rate_penalty_increases_lambda(self):
+        # Pitcher allowing high barrel% (14% vs 8% avg) should give mult > 1.0
+        engine = _engine()
+        result_high = engine._adjust_pitcher_quality({"era": 4.20, "brl_percent": 14.0})
+        result_avg  = engine._adjust_pitcher_quality({"era": 4.20, "brl_percent": 8.0})
+        assert result_high > result_avg
 
     def test_clamped_at_0_70_minimum(self):
         engine = _engine()
