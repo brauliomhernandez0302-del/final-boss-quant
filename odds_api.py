@@ -4,8 +4,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Prefer env variable; fall back to the hardcoded key for backwards compatibility
-API_KEY = os.getenv("ODDS_API_KEY", "4198abca7014f3c2c2a8ad036209e15b")
+API_KEY = os.getenv("ODDS_API_KEY")
+if not API_KEY:
+    raise EnvironmentError(
+        "ODDS_API_KEY is not set. Add it to your .env file or environment variables."
+    )
 
 BASE_URL = "https://api.the-odds-api.com/v4"
 

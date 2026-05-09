@@ -18,7 +18,7 @@ import logging
 from typing import Dict, Any, List, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
-from scipy.stats import norm
+from scipy.stats import norm, skellam, poisson
 import config as _cfg
 from core.utils import calculate_ev
 
@@ -369,18 +369,23 @@ def analyze_runline(
             home_ci = (max(0, p_home_cover - margin_home), min(1, p_home_cover + margin_home))
             away_ci = (max(0, p_away_cover - margin_away), min(1, p_away_cover + margin_away))
     else:
-        # Fallback sin samples (aproximación usando distribución)
-        logger.warning("⚠️ Sin samples para Run Line, usando aproximación")
-        mean_diff = mc_result['mean_home'] - mc_result['mean_away']
-        std_diff = math.sqrt(mc_result['mean_home'] + mc_result['mean_away'])  # Poisson variance
-        
-        p_home_cover = 1 - norm.cdf(1.5, loc=mean_diff, scale=std_diff)
-        p_away_cover = norm.cdf(1.5, loc=mean_diff, scale=std_diff)
-        
-        se = std_diff / math.sqrt(n_sims)
+        # Fallback sin samples: use Skellam distribution (difference of two independent
+        # Poisson variables) which is exact for integer run differentials.
+        # P(home-away >= 2) = 1 - P(D <= 1)  where D ~ Skellam(lh, la)
+        logger.warning("⚠️ Sin samples para Run Line, usando Skellam CDF")
+        lh = mc_result.get('mean_home', 4.5)
+        la = mc_result.get('mean_away', 4.5)
+        lh = max(lh, 0.01)
+        la = max(la, 0.01)
+
+        p_home_cover = float(1 - skellam.cdf(1, lh, la))
+        p_away_cover = float(skellam.cdf(1, lh, la))
+
+        # CI via normal approximation on Skellam variance (lh + la)
+        se = math.sqrt((lh + la) / n_sims)
         margin = 1.96 * se
-        home_ci = (max(0, p_home_cover - margin), min(1, p_home_cover + margin))
-        away_ci = (max(0, p_away_cover - margin), min(1, p_away_cover + margin))
+        home_ci = (max(0.0, p_home_cover - margin), min(1.0, p_home_cover + margin))
+        away_ci = (max(0.0, p_away_cover - margin), min(1.0, p_away_cover + margin))
     
     # Ajuste vig
     odds_dict = {'home': runline_home, 'away': runline_away}
@@ -502,16 +507,24 @@ def analyze_first5(
         mean_total = mc_f5['mean_total']
         std_total = mc_f5['std_total']
         
-        p_over = 1 - norm.cdf(f5_odds.f5_total_line, loc=mean_total, scale=std_total)
-        p_under = norm.cdf(f5_odds.f5_total_line, loc=mean_total, scale=std_total)
-        
-        # IC aproximado
-        se = (norm.pdf((f5_odds.f5_total_line - mean_total) / std_total) * 
-              math.sqrt(std_total**2 / n_sims))
+        # Poisson CDF: total runs ~ Poisson(lh_f5 + la_f5).
+        # For a half-point line (e.g. 4.5): no push, over and under are complementary.
+        # For an integer line (e.g. 4.0): push at total==4; over/under don't sum to 1.
+        lam_total = max(mean_total, 0.01)
+        line_val = f5_odds.f5_total_line
+        line_floor = int(math.floor(line_val))
+        is_integer_line = (line_val == line_floor)
+
+        p_over = float(1 - poisson.cdf(line_floor, lam_total))
+        p_under = float(
+            poisson.cdf(line_floor - 1, lam_total) if is_integer_line
+            else poisson.cdf(line_floor, lam_total)
+        )
+
+        se = math.sqrt(p_over * (1 - p_over) / max(n_sims, 1))
         margin = 1.96 * se
-        
-        over_ci = (max(0, p_over - margin), min(1, p_over + margin))
-        under_ci = (max(0, p_under - margin), min(1, p_under + margin))
+        over_ci = (max(0.0, p_over - margin), min(1.0, p_over + margin))
+        under_ci = (max(0.0, p_under - margin), min(1.0, p_under + margin))
         
         odds_dict = {'over': f5_odds.f5_total_over, 'under': f5_odds.f5_total_under}
         true_implied = adjust_for_vig(odds_dict, method=vig_method)
@@ -666,13 +679,22 @@ def evaluate_value_ultra(
                 over_ci = (max(0, p_over - 1.96*se_over), min(1, p_over + 1.96*se_over))
                 under_ci = (max(0, p_under - 1.96*se_under), min(1, p_under + 1.96*se_under))
         else:
-            p_over = 1 - norm.cdf(odds.total_line, loc=mean_total, scale=std_total)
-            p_under = norm.cdf(odds.total_line, loc=mean_total, scale=std_total)
-            
-            se = norm.pdf((odds.total_line - mean_total) / std_total) * math.sqrt(std_total**2 / n_sims)
+            # No samples path: use Poisson CDF (total runs ~ Poisson(lh + la))
+            lam_total = max(mean_total, 0.01)
+            line_val = odds.total_line
+            line_floor = int(math.floor(line_val))
+            is_integer_line = (line_val == line_floor)
+
+            p_over = float(1 - poisson.cdf(line_floor, lam_total))
+            p_under = float(
+                poisson.cdf(line_floor - 1, lam_total) if is_integer_line
+                else poisson.cdf(line_floor, lam_total)
+            )
+
+            se = math.sqrt(p_over * (1 - p_over) / max(n_sims, 1))
             margin = 1.96 * se
-            over_ci = (max(0, p_over - margin), min(1, p_over + margin))
-            under_ci = (max(0, p_under - margin), min(1, p_under + margin))
+            over_ci = (max(0.0, p_over - margin), min(1.0, p_over + margin))
+            under_ci = (max(0.0, p_under - margin), min(1.0, p_under + margin))
         
         odds_dict = {'over': odds.total_over, 'under': odds.total_under}
         true_implied = adjust_for_vig(odds_dict, method=vig_method)

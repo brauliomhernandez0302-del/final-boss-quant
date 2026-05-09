@@ -299,31 +299,25 @@ class PitcherEngine:
     ) -> float:
         """
         Ajusta por matchup histórico pitcher vs este equipo.
+        era_vs_opp is populated by data_fetchers via the MLB Stats API vsTeam endpoint.
         """
-        
-        # Obtener opponent team
-        if is_home:
-            opp_team = game_data.get('away_team', {})
-        else:
-            opp_team = game_data.get('home_team', {})
-        
-        # ERA vs este equipo (career)
-        era_vs_team = pitcher.get(f"era_vs_{opp_team.get('abbr', '')}", None)
-        
+        era_vs_team = pitcher.get("era_vs_opp")
         if era_vs_team is None:
-            return 1.0  # Sin datos de matchup
-        
+            return 1.0
+
         season_era = pitcher.get('era', 4.50)
-        
-        # Si ERA vs team >> season ERA → malo matchup
-        # Si ERA vs team << season ERA → buen matchup
-        
+        ip_vs_opp = pitcher.get('ip_vs_opp', 0)
+
+        # Shrink toward season ERA when sample is small (< 15 IP)
+        if ip_vs_opp and ip_vs_opp < 15:
+            weight = ip_vs_opp / 15.0
+            era_vs_team = era_vs_team * weight + season_era * (1 - weight)
+
         diff = era_vs_team - season_era
-        
         matchup_mult = 1.0 + (diff * 0.06)
         matchup_mult = np.clip(matchup_mult, 0.85, 1.15)
-        
-        return matchup_mult
+
+        return float(matchup_mult)
     
     
     def _adjust_pitcher_fatigue(self, pitcher: Dict) -> float:

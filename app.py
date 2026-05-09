@@ -1390,11 +1390,11 @@ def render_history(sport: str, settings: Dict[str, float]) -> None:
 # ============================================================
 
 
-def render_sidebar(sport_name: str) -> Dict[str, float]:
+def render_sidebar(sport_name: str = "MLB") -> Dict[str, float]:
     """Renderiza el sidebar y retorna la configuración."""
     with st.sidebar:
         st.header("📊 Estadísticas Generales")
-        stats = db.get_stats(sport_name)
+        stats = db.get_stats(sport_name or "MLB")
 
         c1, c2 = st.columns(2)
         with c1:
@@ -1456,24 +1456,10 @@ def render_sidebar(sport_name: str) -> Dict[str, float]:
 # ============================================================
 
 
-def main() -> None:
-    """Función principal de la aplicación."""
-    st.set_page_config(
-        page_title=CONFIG.APP_NAME,
-        page_icon=CONFIG.PAGE_ICON,
-        layout="wide",
-        initial_sidebar_state="expanded",
-    )
-
-    UIComponents.apply_theme()
-    UIComponents.render_header()
-    st.markdown("---")
-    UIComponents.render_status_bar()
-
-    # Cargar odds
+def _render_analysis_tab(settings: Dict[str, Any]) -> None:
+    """Content for the main Analysis tab."""
     odds_df = load_odds_data()
 
-    # Métricas generales
     c1, c2, c3 = st.columns(3)
     with c1:
         st.metric("📦 Eventos Totales", len(odds_df))
@@ -1487,11 +1473,9 @@ def main() -> None:
     with c3:
         if st.button("🔄 Recargar Datos"):
             st.cache_data.clear()
-            st.rerun()  # ← CORRECTO (no experimental_rerun)
+            st.rerun()
 
     st.markdown("---")
-
-    # Selector de deporte
     st.subheader("🎯 Selecciona el Deporte")
 
     sport_options = {cfg.display_name: name for name, cfg in SPORT_CONFIGS.items()}
@@ -1499,10 +1483,6 @@ def main() -> None:
     sport_name = sport_options[selected_display]
     sport_config = SPORT_CONFIGS[sport_name]
 
-    # Sidebar
-    settings = render_sidebar(sport_name)
-
-    # Filtrar odds
     sport_df = filter_odds_by_sport(odds_df, sport_config.keywords)
     st.info(f"🔍 **{sport_name}**: {len(sport_df)} eventos encontrados")
 
@@ -1511,8 +1491,6 @@ def main() -> None:
             st.dataframe(sport_df.head(20), use_container_width=True)
 
     st.markdown("---")
-
-    # Análisis
     st.subheader(f"{sport_config.icon} Análisis de {sport_name}")
 
     if not sport_config.enabled:
@@ -1573,10 +1551,38 @@ def main() -> None:
                     st.exception(e)
 
     st.markdown("---")
-
-    # Historial
     if st.session_state.get("show_history", False):
         render_history(sport_name, settings)
+
+
+def main() -> None:
+    """Función principal de la aplicación."""
+    st.set_page_config(
+        page_title=CONFIG.APP_NAME,
+        page_icon=CONFIG.PAGE_ICON,
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+
+    UIComponents.apply_theme()
+    UIComponents.render_header()
+    st.markdown("---")
+    UIComponents.render_status_bar()
+
+    settings = render_sidebar("")
+
+    tab_analysis, tab_track = st.tabs(["Análisis", "Track Record"])
+
+    with tab_analysis:
+        _render_analysis_tab(settings)
+
+    with tab_track:
+        try:
+            from track_record.ui import render_track_record
+            render_track_record()
+        except Exception as e:
+            st.error(f"Track Record no disponible: {e}")
+            logger.exception("Error cargando track record")
 
     UIComponents.render_footer()
 

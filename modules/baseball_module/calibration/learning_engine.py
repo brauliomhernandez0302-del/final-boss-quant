@@ -10,7 +10,7 @@ Tables (both live in predictions_history.db):
 import json
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -131,8 +131,8 @@ class LearningEngine:
         """
         import requests
 
-        cutoff = (datetime.utcnow() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         with self._get_conn() as conn:
             pending = conn.execute(
@@ -268,7 +268,7 @@ class LearningEngine:
         sample_count: int,
         season: int,
     ) -> None:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         with self._get_conn() as conn:
             conn.execute(
                 """
@@ -314,6 +314,6 @@ class LearningEngine:
             return float("inf")
         try:
             dt = datetime.fromisoformat(iso_str)
-            return (datetime.utcnow() - dt).total_seconds() / 3600
+            return (datetime.now(timezone.utc) - dt).total_seconds() / 3600
         except ValueError:
             return float("inf")

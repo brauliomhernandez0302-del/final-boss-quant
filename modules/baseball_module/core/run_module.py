@@ -272,6 +272,9 @@ def run_module(
             'last_pitch_count': home_ps.get('last_pitch_count', 90),
             'avg_innings_per_start': home_ps.get('avg_innings_per_start'),
             'f5_era': home_ps.get('f5_era'),
+            'era_vs_opp': home_ps.get('era_vs_opp'),
+            'whip_vs_opp': home_ps.get('whip_vs_opp'),
+            'ip_vs_opp': home_ps.get('ip_vs_opp'),
         }
         game_data['pitcher_away'] = {
             'name': pitcher_away,
@@ -284,6 +287,9 @@ def run_module(
             'last_pitch_count': away_ps.get('last_pitch_count', 90),
             'avg_innings_per_start': away_ps.get('avg_innings_per_start'),
             'f5_era': away_ps.get('f5_era'),
+            'era_vs_opp': away_ps.get('era_vs_opp'),
+            'whip_vs_opp': away_ps.get('whip_vs_opp'),
+            'ip_vs_opp': away_ps.get('ip_vs_opp'),
         }
         game_data['park'] = {'name': game_data.get('venue', 'Unknown')}
         # Lambdas base con media ponderada por equipo

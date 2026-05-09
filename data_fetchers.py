@@ -18,6 +18,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 load_dotenv()
 
 
+def _current_mlb_season() -> int:
+    """Return the current MLB season year. Season starts in March."""
+    now = datetime.now()
+    return now.year if now.month >= 3 else now.year - 1
+
+
 def _safe_float(value, default: float = 0.0) -> float:
     """Convert value to float, returning default on any failure."""
     try:
@@ -179,8 +185,10 @@ class MLBStatsAPI:
     # -------------------------
     # PITCHER STATS (compat + fallback)
     # -------------------------
-    def get_pitcher_stats(self, pitcher_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
+    def get_pitcher_stats(self, pitcher_id: int, season: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Stats de temporada (overall). Mantiene compatibilidad con tu método original."""
+        if season is None:
+            season = _current_mlb_season()
         cache_file = CACHE_DIR / f"pitcher_{pitcher_id}_{season}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < self.cache_ttl:
             try:
@@ -453,11 +461,13 @@ class MLBStatsAPI:
             print(f"Error game log pitcher {pitcher_id}: {e}")
             return None
 
-    def get_pitcher_f5_stats(self, pitcher_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
+    def get_pitcher_f5_stats(self, pitcher_id: int, season: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """
         Fetch per-inning aggregated stats and compute real F5 ERA (innings 1-5).
         Returns {f5_era, f5_ip, f5_er} or None if insufficient data.
         """
+        if season is None:
+            season = _current_mlb_season()
         cache_file = CACHE_DIR / f"pitcher_f5_{pitcher_id}_{season}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
             try:
@@ -786,8 +796,10 @@ class MLBStatsAPI:
     # ==========================================================
     # FEATURE 4 - H2H HISTÓRICO
     # ==========================================================
-    def get_head_to_head(self, team1_id: int, team2_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
+    def get_head_to_head(self, team1_id: int, team2_id: int, season: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """{"team1_wins": int, "team2_wins": int, "total_games": int, "avg_total_runs": float, "has_history": bool}"""
+        if season is None:
+            season = _current_mlb_season()
         cache_key = f"h2h_{min(team1_id, team2_id)}_{max(team1_id, team2_id)}_{season}"
         cache_file = CACHE_DIR / f"{cache_key}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 7200:
@@ -845,16 +857,97 @@ class MLBStatsAPI:
     # ==========================================================
     # FEATURE 5 - PITCHER VS TEAM (placeholder)
     # ==========================================================
-    def get_pitcher_vs_team(self, pitcher_id: int, team_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
-        """Devuelve None por ahora (requiere game logs detallados)."""
-        # TODO: implementar con endpoint de game logs si está disponible públicamente
-        return None
+    def get_pitcher_vs_team(self, pitcher_id: int, team_id: int, season: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """
+        Pitcher career stats vs a specific team via the vsTeam stat type.
+
+        Tries current season first; if fewer than 3 IP found, falls back to
+        the previous season so rookies and early-season starters still get
+        a signal.  Returns None only when there is genuinely no data.
+
+        Return shape:
+            {era, whip, ip, games, strikeouts, walks, k_per_9,
+             bb_per_9, season_used, sample_size}
+        """
+        if season is None:
+            season = _current_mlb_season()
+
+        def _fetch_season(yr: int) -> Optional[Dict[str, Any]]:
+            cache_file = CACHE_DIR / f"pitcher_vs_team_{pitcher_id}_{team_id}_{yr}.json"
+            if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 7200:
+                try:
+                    with open(cache_file) as f:
+                        return json.load(f)
+                except Exception:
+                    pass
+
+            url = f"{self.BASE_URL}/people/{pitcher_id}/stats"
+            params = {
+                "stats": "vsTeam",
+                "opposingTeamId": team_id,
+                "group": "pitching",
+                "season": yr,
+            }
+            try:
+                r = self.session.get(url, params=params, timeout=10)
+                r.raise_for_status()
+                splits = r.json().get("stats", [{}])[0].get("splits", [])
+                if not splits:
+                    return None
+                stat = splits[0].get("stat", {})
+                ip_raw = stat.get("inningsPitched", "0")
+                try:
+                    ip = float(ip_raw)
+                except (ValueError, TypeError):
+                    ip = 0.0
+                if ip < 3.0:
+                    return None
+
+                er = int(stat.get("earnedRuns", 0))
+                bb = int(stat.get("baseOnBalls", 0))
+                so = int(stat.get("strikeOuts", 0))
+                h  = int(stat.get("hits", 0))
+                games = int(stat.get("gamesPlayed", len(splits)))
+
+                era  = round(er / ip * 9, 2) if ip > 0 else 4.50
+                whip = round((h + bb) / ip, 3) if ip > 0 else 1.30
+                k9   = round(so / ip * 9, 2) if ip > 0 else 0.0
+                bb9  = round(bb / ip * 9, 2) if ip > 0 else 0.0
+
+                result = {
+                    "era": era,
+                    "whip": whip,
+                    "ip": ip,
+                    "games": games,
+                    "strikeouts": so,
+                    "walks": bb,
+                    "k_per_9": k9,
+                    "bb_per_9": bb9,
+                    "season_used": yr,
+                    "sample_size": "small" if ip < 15 else "medium" if ip < 40 else "large",
+                }
+                with open(cache_file, "w") as f:
+                    json.dump(result, f)
+                return result
+            except Exception as e:
+                print(f"⚠️ get_pitcher_vs_team({pitcher_id}, {team_id}, {yr}): {e}")
+                return None
+
+        # Try current season, fall back to previous if insufficient data
+        data = _fetch_season(season)
+        if data is None:
+            data = _fetch_season(season - 1)
+            if data is not None:
+                data["season_used"] = season - 1
+        return data
 
     # ==========================================================
     # FEATURE 6 - STANDINGS STATUS
     # ==========================================================
-    def get_standings_status(self, team_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
+    def get_standings_status(self, team_id: int, season: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """{"status": "clinched|eliminated|in_race", "games_back": float, "clinched": bool, "eliminated": bool, "win_pct": float}"""
+        if season is None:
+            season = _current_mlb_season()
         cache_key = f"standings_{team_id}_{season}"
         cache_file = CACHE_DIR / f"{cache_key}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
@@ -906,8 +999,10 @@ class MLBStatsAPI:
     # ==========================================================
     # FEATURE 6b - TEAM OFFENSIVE STATS (wOBA, OPS)
     # ==========================================================
-    def get_team_offensive_stats(self, team_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
+    def get_team_offensive_stats(self, team_id: int, season: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Fetches wOBA (computed from components) and OPS from the team hitting endpoint."""
+        if season is None:
+            season = _current_mlb_season()
         cache_file = CACHE_DIR / f"team_offense_{team_id}_{season}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
             try:
@@ -1100,8 +1195,10 @@ class MLBStatsAPI:
     # ==========================================================
     # FEATURE 9 - TEAM PITCHING / DEFENSE STATS
     # ==========================================================
-    def get_team_pitching_stats(self, team_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
+    def get_team_pitching_stats(self, team_id: int, season: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Fetches team ERA, WHIP, and runs-allowed-per-game from the pitching stats endpoint."""
+        if season is None:
+            season = _current_mlb_season()
         cache_file = CACHE_DIR / f"team_pitching_{team_id}_{season}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
             try:
@@ -1140,8 +1237,10 @@ class MLBStatsAPI:
             print(f"⚠️ Error obteniendo pitching stats team {team_id}: {e}")
             return None
 
-    def get_bullpen_era(self, team_id: int, season: int = 2026) -> Optional[Dict[str, Any]]:
+    def get_bullpen_era(self, team_id: int, season: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Fetches bullpen ERA from the relief pitchers endpoint (pitcherType=R)."""
+        if season is None:
+            season = _current_mlb_season()
         cache_file = CACHE_DIR / f"bullpen_era_{team_id}_{season}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
             try:
@@ -1300,39 +1399,6 @@ class MLBDataIntegrator:
         self.mlb_api = MLBStatsAPI()
         self.weather_api = WeatherAPI()
         self.park_factors = ParkFactors()
-# RPG 2025 por equipo (temporada completa - ancla estadística)
-        self.team_rpg_2025 = {
-            "Athletics": 4.525,
-            "Pittsburgh Pirates": 3.599,
-            "San Diego Padres": 4.333,
-            "Seattle Mariners": 4.728,
-            "San Francisco Giants": 4.352,
-            "St. Louis Cardinals": 4.253,
-            "Tampa Bay Rays": 4.407,
-            "Texas Rangers": 4.222,
-            "Toronto Blue Jays": 4.926,
-            "Minnesota Twins": 4.185,
-            "Philadelphia Phillies": 4.802,
-            "Atlanta Braves": 4.469,
-            "Chicago White Sox": 3.994,
-            "Miami Marlins": 4.377,
-            "New York Yankees": 5.241,
-            "Milwaukee Brewers": 4.975,
-            "Los Angeles Angels": 4.154,
-            "Arizona Diamondbacks": 4.883,
-            "Baltimore Orioles": 4.179,
-            "Boston Red Sox": 4.852,
-            "Chicago Cubs": 4.895,
-            "Cincinnati Reds": 4.420,
-            "Cleveland Guardians": 3.969,
-            "Colorado Rockies": 3.685,
-            "Detroit Tigers": 4.679,
-            "Houston Astros": 4.235,
-            "Kansas City Royals": 4.019,
-            "Los Angeles Dodgers": 5.093,
-            "Washington Nationals": 4.241,
-            "New York Mets": 4.728,
-        }
         self.league_avg_rpg = 4.38
         self._rpg_cache = {}
 
@@ -1455,6 +1521,10 @@ class MLBDataIntegrator:
                 )
             return (None, None)
 
+        # Opposing team IDs needed for pitcher-vs-team lookup
+        home_opp_team_id = game.get("away_team_id")   # home pitcher faces away lineup
+        away_opp_team_id = game.get("home_team_id")   # away pitcher faces home lineup
+
         results = {}
         with ThreadPoolExecutor(max_workers=2) as ex:
             futures = {
@@ -1470,6 +1540,7 @@ class MLBDataIntegrator:
                 if stats:
                     results[key_stats] = stats
                     pitcher_id = game.get(f"{side}_pitcher_id")
+                    opp_team_id = home_opp_team_id if side == "home" else away_opp_team_id
                     if pitcher_id:
                         game_log = self.mlb_api.get_pitcher_game_log(pitcher_id, season)
                         if game_log:
@@ -1481,6 +1552,21 @@ class MLBDataIntegrator:
                             stats.update(f5)
                             results[key_stats] = stats
                             print(f"  ✅ {side.upper()} F5 ERA: {f5.get('f5_era','?')} ({f5.get('f5_ip','?')} IP in first 5)")
+                        if opp_team_id:
+                            pvt = self.mlb_api.get_pitcher_vs_team(pitcher_id, opp_team_id, season)
+                            if pvt:
+                                stats["era_vs_opp"] = pvt["era"]
+                                stats["whip_vs_opp"] = pvt["whip"]
+                                stats["ip_vs_opp"] = pvt["ip"]
+                                stats["k9_vs_opp"] = pvt["k_per_9"]
+                                stats["pvt_season"] = pvt["season_used"]
+                                stats["pvt_sample"] = pvt["sample_size"]
+                                results[key_stats] = stats
+                                print(
+                                    f"  ✅ {side.upper()} vs opp: ERA={pvt['era']} "
+                                    f"WHIP={pvt['whip']} ({pvt['ip']} IP, {pvt['sample_size']}, "
+                                    f"season={pvt['season_used']})"
+                                )
                     results[key_source] = source
                     results[key_valid] = True
                     print(f"  ✅ {side.upper()} pitcher: ERA {stats.get('era','?')} ({source})")
@@ -1489,10 +1575,12 @@ class MLBDataIntegrator:
                     print(f"  ❌ {side.upper()} pitcher: sin stats válidas")
         return results
 
-    def get_complete_game_data(self, date: Optional[str] = None, season: int = 2026) -> List[Dict[str, Any]]:
+    def get_complete_game_data(self, date: Optional[str] = None, season: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Obtiene data COMPLETA con TODAS las features.
         """
+        if season is None:
+            season = _current_mlb_season()
         print("🔍 Obteniendo data completa de juegos MLB...")
         games = self.mlb_api.get_todays_games(date)
         if not games:
