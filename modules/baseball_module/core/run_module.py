@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 
 # Data fetching
-from data_fetchers import MLBStatsAPI
+from data_fetchers import MLBStatsAPI, _current_mlb_season
 from config import MLB_SIMULATIONS, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP
 
 # Calibration - ABSOLUTO
@@ -299,17 +299,19 @@ def run_module(
             'ip_vs_opp': away_ps.get('ip_vs_opp'),
         }
 
+        # Resolve MLB season once — used for enrichment, Kalman, Platt, and record_prediction
+        _season = _current_mlb_season()
+
         # ── Enrich pitchers with Savant + FanGraphs real data ────────────
         if _ENRICHMENT_AVAILABLE:
             try:
                 from config import DATA_DIR as _DATA_DIR
                 _cache = _DATA_DIR / ".cache"
-                _year = datetime.now().year if datetime.now().month >= 3 else datetime.now().year - 1
                 _savant = _SavantFetcher(cache_dir=_cache)
                 _fg     = _FGFetcher(cache_dir=_cache)
 
-                _sv_all = _savant.get_all_pitcher_stats(_year)
-                _fg_all = _fg.get_all_pitcher_stats(_year)
+                _sv_all = _savant.get_all_pitcher_stats(_season)
+                _fg_all = _fg.get_all_pitcher_stats(_season)
 
                 for _role, _pid_key in [("pitcher_home", "home_pitcher_id"),
                                         ("pitcher_away", "away_pitcher_id")]:
@@ -359,8 +361,6 @@ def run_module(
         la = _int.get_team_lambda(away_team, away_rpg, team_id=away_team_id)
 
         # ── Kalman-adjusted base lambdas ──────────────────────────────────
-        from datetime import datetime as _dt
-        _season = _dt.now().year if _dt.now().month >= 3 else _dt.now().year - 1
         lh = _learning.get_kalman_lambda_adjustment(home_team, "offense_home", _season, lh)
         la = _learning.get_kalman_lambda_adjustment(away_team, "offense_away", _season, la)
 
