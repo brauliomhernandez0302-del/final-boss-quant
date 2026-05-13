@@ -277,7 +277,7 @@ def _default_team_dict(name: str, rpg: float = LEAGUE_AVG_RUNS) -> Dict:
         "runs_allowed_per_game": LEAGUE_AVG_RUNS,
         "last_10": "5-5", "streak": "",
         "rest_days": 1, "wins": 81, "losses": 81,
-        "home_record": "40-41", "away_record": "40-41",
+        "home_record": "42-39", "away_record": "39-42",
         "home_runs_per_game": rpg, "away_runs_per_game": rpg,
         "miles_traveled": 0, "time_zones_crossed": 0,
     }
@@ -495,8 +495,14 @@ def run_pipeline(
 
     # Fix 1: Platt calibration — shrinks over-confident extremes.
     # Fitted on 4 859-game backtest: logit-slope=0.534 (should be 1.0).
-    p_home_cal = round(_platt(mc["p_home"]), 5)
-    p_away_cal = round(_platt(mc["p_away"]), 5)
+    # Renormalize so p_home + p_away = 1.0 exactly; applying Platt independently
+    # with a non-zero intercept (b=0.098) inflates the sum to ~1.049, creating a
+    # phantom +4.8% edge against any fair market that sums to 1.0.
+    _p_home_raw = _platt(mc["p_home"])
+    _p_away_raw = _platt(mc["p_away"])
+    _platt_total = _p_home_raw + _p_away_raw
+    p_home_cal = round(_p_home_raw / _platt_total, 5)
+    p_away_cal = round(_p_away_raw / _platt_total, 5)
 
     return {
         "lh": round(lh, 4),
@@ -629,27 +635,53 @@ def generate_report(
                 break
 
     # ── ROI simulation (flat 1-unit at Pinnacle odds) ──────────────────────
+    # Bets the side with the highest positive edge per game (home or away).
+    # Games where either Pinnacle line exceeds 4.0 decimal (+300 American) are
+    # filtered out — they indicate emergency/position-player pitcher situations
+    # the model cannot price, and produced phantom 15–41% edges in the audit.
+    _EXTREME_ODDS_THRESHOLD = 4.0
+    n_extreme_filtered = sum(
+        1 for r in pin_rows
+        if (r.get("ml_home_pin") or 0) > _EXTREME_ODDS_THRESHOLD
+        or (r.get("ml_away_pin") or 0) > _EXTREME_ODDS_THRESHOLD
+    )
+    bettable_rows = [
+        r for r in pin_rows
+        if (r.get("ml_home_pin") or 0) <= _EXTREME_ODDS_THRESHOLD
+        and (r.get("ml_away_pin") or 0) <= _EXTREME_ODDS_THRESHOLD
+        and r.get("ml_home_pin") and r.get("ml_away_pin")
+    ]
+
     thresholds = [0.00, 0.02, 0.05, 0.08, 0.10]
     roi_table: Dict[float, Dict] = {}
     for thr in thresholds:
         bets = staked = profit = 0
-        for r in pin_rows:
-            edge = r["model_edge"]
-            if edge is None or edge < thr:
+        for r in bettable_rows:
+            edge_home = r.get("model_edge")
+            edge_away = r.get("model_edge_away")
+
+            # Pick the side with the larger positive edge; skip if neither clears thr
+            if (edge_home or -1) >= (edge_away or -1) and (edge_home or -1) >= thr:
+                best_edge = edge_home
+                odds = r["ml_home_pin"]
+                won = bool(r["home_won"])
+            elif (edge_away or -1) >= thr:
+                best_edge = edge_away
+                odds = r["ml_away_pin"]
+                won = not bool(r["home_won"])
+            else:
                 continue
-            # bet home at Pinnacle closing odds
-            odds = r["ml_home_pin"]
-            if not odds:
-                continue
+
             bets += 1
             staked += 1.0
-            profit += (odds - 1) if r["home_won"] else -1.0
+            profit += (odds - 1) if won else -1.0
 
         roi_table[thr] = {
             "bets": bets,
             "staked": round(staked, 2),
             "profit": round(profit, 4),
             "roi_pct": round(profit / staked * 100, 2) if staked > 0 else 0.0,
+            "n_extreme_filtered": n_extreme_filtered,
         }
 
     # ── season breakdown ────────────────────────────────────────────────────
@@ -775,7 +807,9 @@ def generate_report(
         print(f"  {label:10s}  {c['n']:>6d}  {c['predicted_win_pct']:>7.1f}%  "
               f"{c['actual_win_pct']:>7.1f}%  {diff:>+6.1f}%")
 
-    print(f"\n  ROI SIMULATION (flat 1-unit bet on model home favourites @ Pinnacle)")
+    _n_filt = next(iter(report["roi_simulation"].values()), {}).get("n_extreme_filtered", 0)
+    print(f"\n  ROI SIMULATION (flat 1-unit, best-edge side @ Pinnacle)")
+    print(f"  Extreme-odds games filtered (pin>4.0): {_n_filt}")
     print(f"  {'Edge threshold':16s}  {'Bets':>6s}  {'Profit':>8s}  {'ROI':>8s}")
     for label, rt in report["roi_simulation"].items():
         if rt["bets"] == 0:
@@ -880,7 +914,8 @@ def main() -> None:
                    lambda_home AS lh, lambda_away AS la,
                    p_home, p_away,
                    actual_home_runs, actual_away_runs, home_won,
-                   ml_home_pin, ml_away_pin
+                   ml_home_pin, ml_away_pin,
+                   market_prob_home, market_prob_away
             FROM game_outcomes {where}
             AND backtest_run_at IS NOT NULL
             {order} {limit}
@@ -892,14 +927,16 @@ def main() -> None:
             if r["ml_home_pin"] and r["ml_away_pin"]:
                 pin_fh, pin_fa = _devig(r["ml_home_pin"], r["ml_away_pin"])
             results.append({
-                "game_pk": r["game_pk"], "season": r["season"],
-                "lh": r["lh"], "la": r["la"],
-                "p_home": r["p_home"], "p_away": r["p_away"],
-                "home_won": r["home_won"],
-                "model_correct": int((r["p_home"] > 0.5) == bool(r["home_won"])),
-                "pin_fair_home": pin_fh, "pin_fair_away": pin_fa,
-                "ml_home_pin": r["ml_home_pin"],
-                "model_edge": (r["p_home"] - pin_fh) if pin_fh else None,
+                "game_pk":         r["game_pk"], "season": r["season"],
+                "lh":              r["lh"], "la": r["la"],
+                "p_home":          r["p_home"], "p_away": r["p_away"],
+                "home_won":        r["home_won"],
+                "model_correct":   int((r["p_home"] > 0.5) == bool(r["home_won"])),
+                "pin_fair_home":   pin_fh, "pin_fair_away": pin_fa,
+                "ml_home_pin":     r["ml_home_pin"],
+                "ml_away_pin":     r["ml_away_pin"],
+                "model_edge":      (r["p_home"] - pin_fh) if pin_fh else None,
+                "model_edge_away": (r["p_away"] - pin_fa) if pin_fa else None,
             })
         generate_report(results, REPORT_DIR)
         conn.close()
@@ -950,18 +987,20 @@ def main() -> None:
                 pin_fh, pin_fa = _devig(row["ml_home_pin"], row["ml_away_pin"])
 
             results.append({
-                "game_pk":       game_pk,
-                "season":        season,
-                "lh":            pred["lh"],
-                "la":            pred["la"],
-                "p_home":        pred["p_home"],
-                "p_away":        pred["p_away"],
-                "home_won":      int(home_won),
-                "model_correct": int((pred["p_home"] > 0.5) == bool(home_won)),
-                "pin_fair_home": pin_fh,
-                "pin_fair_away": pin_fa,
-                "ml_home_pin":   row["ml_home_pin"],
-                "model_edge":    (pred["p_home"] - pin_fh) if pin_fh else None,
+                "game_pk":        game_pk,
+                "season":         season,
+                "lh":             pred["lh"],
+                "la":             pred["la"],
+                "p_home":         pred["p_home"],
+                "p_away":         pred["p_away"],
+                "home_won":       int(home_won),
+                "model_correct":  int((pred["p_home"] > 0.5) == bool(home_won)),
+                "pin_fair_home":  pin_fh,
+                "pin_fair_away":  pin_fa,
+                "ml_home_pin":    row["ml_home_pin"],
+                "ml_away_pin":    row["ml_away_pin"],
+                "model_edge":     (pred["p_home"] - pin_fh) if pin_fh else None,
+                "model_edge_away": (pred["p_away"] - pin_fa) if pin_fa else None,
             })
             n_ok += 1
 
@@ -972,13 +1011,16 @@ def main() -> None:
             if p_h is None:
                 continue   # no prior prediction to fall back to; skip from report
             results.append({
-                "game_pk": game_pk, "season": season,
-                "lh": row["lambda_home"], "la": row["lambda_away"],
-                "p_home": p_h, "p_away": row["p_away"],
-                "home_won": int(home_won),
-                "model_correct": int((p_h > 0.5) == bool(home_won)),
-                "pin_fair_home": None, "pin_fair_away": None,
-                "ml_home_pin": row["ml_home_pin"], "model_edge": None,
+                "game_pk":         game_pk, "season": season,
+                "lh":              row["lambda_home"], "la": row["lambda_away"],
+                "p_home":          p_h, "p_away": row["p_away"],
+                "home_won":        int(home_won),
+                "model_correct":   int((p_h > 0.5) == bool(home_won)),
+                "pin_fair_home":   None, "pin_fair_away": None,
+                "ml_home_pin":     row["ml_home_pin"],
+                "ml_away_pin":     row["ml_away_pin"],
+                "model_edge":      None,
+                "model_edge_away": None,
             })
 
         # progress log every 250 games

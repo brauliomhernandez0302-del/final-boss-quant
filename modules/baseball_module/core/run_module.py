@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 # Data fetching
 from data_fetchers import MLBStatsAPI, _current_mlb_season
-from config import MLB_SIMULATIONS, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP
+from config import MLB_SIMULATIONS, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP, LEAGUE_AVG_ERA
 
 # Calibration - ABSOLUTO
 from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
@@ -48,7 +48,7 @@ except ImportError:
 try:
     from odds_api import get_best_odds_for_teams
 except ImportError:
-    get_odds = None
+    get_best_odds_for_teams = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -269,35 +269,48 @@ def run_module(
         _away_era = away_ps.get('era', _away_team_era)
 
         game_data['pitcher_home'] = {
-            'name': pitcher_home,
-            'era': _home_era,
-            'fip': home_ps.get('fip', _home_era),
-            'whip': home_ps.get('whip', _home_team_whip),
-            'k_per_9': home_ps.get('k_per_9', 8.5),
-            'era_last_5': home_ps.get('era_last_5', _home_era),
-            'days_rest': home_ps.get('days_rest', 4),
-            'last_pitch_count': home_ps.get('last_pitch_count', 90),
+            'name':                  pitcher_home,
+            'era':                   _home_era,
+            'fip':                   home_ps.get('fip', _home_era),
+            'whip':                  home_ps.get('whip', _home_team_whip),
+            'k_per_9':               home_ps.get('k_per_9', 8.5),
+            'era_last_5':            home_ps.get('era_last_5', _home_era),
+            'era_trend':             home_ps.get('era_trend'),
+            'k9_trend':              home_ps.get('k9_trend'),
+            'quality_start_pct':     home_ps.get('quality_start_pct'),
+            'days_rest':             home_ps.get('days_rest', 4),
+            'last_pitch_count':      home_ps.get('last_pitch_count', 90),
             'avg_innings_per_start': home_ps.get('avg_innings_per_start'),
-            'f5_era': home_ps.get('f5_era'),
-            'era_vs_opp': home_ps.get('era_vs_opp'),
-            'whip_vs_opp': home_ps.get('whip_vs_opp'),
-            'ip_vs_opp': home_ps.get('ip_vs_opp'),
+            'f5_era':                home_ps.get('f5_era'),
+            'era_vs_opp':            home_ps.get('era_vs_opp'),
+            'whip_vs_opp':           home_ps.get('whip_vs_opp'),
+            'ip_vs_opp':             home_ps.get('ip_vs_opp'),
+            # Platoon splits + opposing lineup handedness
+            'platoon_splits':        home_ps.get('platoon_splits'),
         }
         game_data['pitcher_away'] = {
-            'name': pitcher_away,
-            'era': _away_era,
-            'fip': away_ps.get('fip', _away_era),
-            'whip': away_ps.get('whip', _away_team_whip),
-            'k_per_9': away_ps.get('k_per_9', 8.5),
-            'era_last_5': away_ps.get('era_last_5', _away_era),
-            'days_rest': away_ps.get('days_rest', 4),
-            'last_pitch_count': away_ps.get('last_pitch_count', 90),
+            'name':                  pitcher_away,
+            'era':                   _away_era,
+            'fip':                   away_ps.get('fip', _away_era),
+            'whip':                  away_ps.get('whip', _away_team_whip),
+            'k_per_9':               away_ps.get('k_per_9', 8.5),
+            'era_last_5':            away_ps.get('era_last_5', _away_era),
+            'era_trend':             away_ps.get('era_trend'),
+            'k9_trend':              away_ps.get('k9_trend'),
+            'quality_start_pct':     away_ps.get('quality_start_pct'),
+            'days_rest':             away_ps.get('days_rest', 4),
+            'last_pitch_count':      away_ps.get('last_pitch_count', 90),
             'avg_innings_per_start': away_ps.get('avg_innings_per_start'),
-            'f5_era': away_ps.get('f5_era'),
-            'era_vs_opp': away_ps.get('era_vs_opp'),
-            'whip_vs_opp': away_ps.get('whip_vs_opp'),
-            'ip_vs_opp': away_ps.get('ip_vs_opp'),
+            'f5_era':                away_ps.get('f5_era'),
+            'era_vs_opp':            away_ps.get('era_vs_opp'),
+            'whip_vs_opp':           away_ps.get('whip_vs_opp'),
+            'ip_vs_opp':             away_ps.get('ip_vs_opp'),
+            # Platoon splits + opposing lineup handedness
+            'platoon_splits':        away_ps.get('platoon_splits'),
         }
+        # Propagate lineup LHB% to top-level game_data for pitcher engine
+        game_data.setdefault('home_lineup_lhb_pct', game_data.get('home_lineup_lhb_pct', 0.45))
+        game_data.setdefault('away_lineup_lhb_pct', game_data.get('away_lineup_lhb_pct', 0.45))
 
         # Resolve MLB season once — used for enrichment, Kalman, Platt, and record_prediction
         _season = _current_mlb_season()
@@ -329,7 +342,11 @@ def run_module(
                         "k_pct":        _fg_d.get("k_pct"),
                         "bb_pct":       _fg_d.get("bb_pct"),
                         "swstr_pct":    _fg_d.get("swstr_pct"),
-                        "hr_fb":        _fg_d.get("hr_fb"),
+                        # Luck indicators for pitchers_regression — key must match
+                        "babip":        _fg_d.get("babip"),
+                        "lob_pct":      _fg_d.get("lob_pct"),
+                        "hr_fb_pct":    _fg_d.get("hr_fb"),   # FG stores as hr_fb
+                        "innings_pitched": _fg_d.get("ip"),
                         # Baseball Savant: contact quality
                         "est_woba":     _sv.get("est_woba"),
                         "xera":         _sv.get("xera") or _fg_d.get("xera"),
@@ -367,10 +384,23 @@ def run_module(
         results['lambdas_history']['base'] = {'lh': lh, 'la': la}
         logger.info(f"   Lambda base (Kalman): λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})")
 
-        # Stage factors tracker — populated per pipeline step for gradient descent
+        # Stage factors tracker — populated per pipeline step for gradient descent.
+        # Stores RAW engine ratios (weight=1.0 equivalent) so _gradient_step can
+        # reconstruct the relationship between stage adjustment and prediction error.
         _stage_factors: Dict[str, float] = {}
         _lh_pre_cal = lh
         _la_pre_cal = la
+
+        # Learned pipeline weights — scale each stage's adjustment.
+        # Formula: λ_out = λ_in × (1 + w × (raw_ratio − 1))
+        # w=1.0 → full engine adjustment; w=0.5 → half; w=1.5 → amplified.
+        # Defaults to 1.0 for all stages until gradient descent has enough data.
+        _weights = _learning.get_pipeline_weights(_season)
+        logger.info(
+            f"   Pipeline weights — cal:{_weights['calibration']:.3f} "
+            f"hfa:{_weights['hfa']:.3f} pit:{_weights['pitcher']:.3f} "
+            f"reg:{_weights['regression']:.3f}"
+        )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 1: CALIBRATION ENGINE
@@ -379,12 +409,16 @@ def run_module(
             logger.info("\n🎯 PASO 1: Calibration Engine...")
 
             calibrator = LambdaCalibrator(learning_engine=_learning)
-            lh, la = calibrator.calibrate(lh, la, game_data)
-
-            _stage_factors["home_calibration"] = lh / _lh_pre_cal if _lh_pre_cal else 1.0
-            _stage_factors["away_calibration"] = la / _la_pre_cal if _la_pre_cal else 1.0
+            lh_cal, la_cal = calibrator.calibrate(lh, la, game_data)
+            _raw_h_cal = lh_cal / _lh_pre_cal if _lh_pre_cal else 1.0
+            _raw_a_cal = la_cal / _la_pre_cal if _la_pre_cal else 1.0
+            _w_cal = _weights.get("calibration", 1.0)
+            lh = _lh_pre_cal * (1.0 + _w_cal * (_raw_h_cal - 1.0))
+            la = _la_pre_cal * (1.0 + _w_cal * (_raw_a_cal - 1.0))
+            _stage_factors["home_calibration"] = _raw_h_cal
+            _stage_factors["away_calibration"] = _raw_a_cal
             results['lambdas_history']['calibration'] = {'lh': lh, 'la': la}
-            logger.info(f"   ✅ Calibrated: λ_h={lh:.3f}, λ_a={la:.3f}")
+            logger.info(f"   ✅ Calibrated: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_cal:.3f})")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 2: HFA ENGINE
@@ -392,13 +426,17 @@ def run_module(
         if use_hfa:
             logger.info("\n🏟️  PASO 2: HFA Engine (solo equipo)...")
             _lh_pre = lh; _la_pre = la
-            lh, la, hfa_meta = get_adjusted_lambdas(lh, la, game_data)
-
-            _stage_factors["home_hfa"] = lh / _lh_pre if _lh_pre else 1.0
-            _stage_factors["away_hfa"] = la / _la_pre if _la_pre else 1.0
+            lh_hfa, la_hfa, hfa_meta = get_adjusted_lambdas(lh, la, game_data)
+            _raw_h_hfa = lh_hfa / _lh_pre if _lh_pre else 1.0
+            _raw_a_hfa = la_hfa / _la_pre if _la_pre else 1.0
+            _w_hfa = _weights.get("hfa", 1.0)
+            lh = _lh_pre * (1.0 + _w_hfa * (_raw_h_hfa - 1.0))
+            la = _la_pre * (1.0 + _w_hfa * (_raw_a_hfa - 1.0))
+            _stage_factors["home_hfa"] = _raw_h_hfa
+            _stage_factors["away_hfa"] = _raw_a_hfa
             results['lambdas_history']['hfa'] = {'lh': lh, 'la': la}
             results['metadata']['hfa'] = hfa_meta
-            logger.info(f"   ✅ HFA adjusted: λ_h={lh:.3f}, λ_a={la:.3f}")
+            logger.info(f"   ✅ HFA adjusted: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_hfa:.3f})")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 3: PITCHER ENGINE
@@ -406,13 +444,17 @@ def run_module(
         if use_pitcher:
             logger.info("\n⚾ PASO 3: Pitcher Engine (solo pitchers)...")
             _lh_pre = lh; _la_pre = la
-            lh, la, pitcher_meta = adjust_for_pitchers(lh, la, game_data)
-
-            _stage_factors["home_pitcher"] = lh / _lh_pre if _lh_pre else 1.0
-            _stage_factors["away_pitcher"] = la / _la_pre if _la_pre else 1.0
+            lh_pit, la_pit, pitcher_meta = adjust_for_pitchers(lh, la, game_data)
+            _raw_h_pit = lh_pit / _lh_pre if _lh_pre else 1.0
+            _raw_a_pit = la_pit / _la_pre if _la_pre else 1.0
+            _w_pit = _weights.get("pitcher", 1.0)
+            lh = _lh_pre * (1.0 + _w_pit * (_raw_h_pit - 1.0))
+            la = _la_pre * (1.0 + _w_pit * (_raw_a_pit - 1.0))
+            _stage_factors["home_pitcher"] = _raw_h_pit
+            _stage_factors["away_pitcher"] = _raw_a_pit
             results['lambdas_history']['pitcher'] = {'lh': lh, 'la': la}
             results['metadata']['pitcher'] = pitcher_meta
-            logger.info(f"   ✅ Pitcher adjusted: λ_h={lh:.3f}, λ_a={la:.3f}")
+            logger.info(f"   ✅ Pitcher adjusted: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_pit:.3f})")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 4: PITCHER REGRESSION
@@ -430,11 +472,11 @@ def run_module(
                 opponent_stats=game_data.get('away_team', {})
             )
 
-            lh = lh * factor_away
-            la = la * factor_home
-
-            _stage_factors["home_regression"] = lh / _lh_pre if _lh_pre else 1.0
-            _stage_factors["away_regression"] = la / _la_pre if _la_pre else 1.0
+            _w_reg = _weights.get("regression", 1.0)
+            lh = _lh_pre * (1.0 + _w_reg * (factor_away - 1.0))
+            la = _la_pre * (1.0 + _w_reg * (factor_home - 1.0))
+            _stage_factors["home_regression"] = factor_away
+            _stage_factors["away_regression"] = factor_home
             results['lambdas_history']['regression'] = {'lh': lh, 'la': la}
             results['metadata']['regression'] = {
                 'factor_away': factor_away, 'confidence_away': conf_away,
@@ -442,7 +484,28 @@ def run_module(
             }
             logger.info(f"   Pitcher Away regression: {factor_away:.3f} (conf: {conf_away:.2f})")
             logger.info(f"   Pitcher Home regression: {factor_home:.3f} (conf: {conf_home:.2f})")
-            logger.info(f"   ✅ Final: λ_h={lh:.3f}, λ_a={la:.3f}")
+            logger.info(f"   ✅ Final: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_reg:.3f})")
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # PASO 4b: UMPIRE ZONE ADJUSTMENT (symmetric, ±4% max)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        umpire_stats = game_data.get('umpire_stats')
+        if umpire_stats and umpire_stats.get('games_worked', 0) >= 4:
+            _lh_pre = lh; _la_pre = la
+            zone_factor = float(umpire_stats.get('zone_factor', 1.0))
+            lh = lh * zone_factor
+            la = la * zone_factor
+            results['lambdas_history']['umpire'] = {'lh': lh, 'la': la}
+            _stage_factors['home_umpire'] = lh / _lh_pre if _lh_pre else 1.0
+            _stage_factors['away_umpire'] = la / _la_pre if _la_pre else 1.0
+            logger.info(
+                f"\n⚖️  PASO 4b: Umpire zone adjustment: "
+                f"{game_data.get('hp_umpire_name', 'Unknown')} "
+                f"zone_factor={zone_factor:.3f} "
+                f"(strike%={umpire_stats.get('strike_pct', 0):.1%}, "
+                f"{umpire_stats.get('games_worked', 0)} games) "
+                f"→ λ_h={lh:.3f}, λ_a={la:.3f}"
+            )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 5: MONTE CARLO SIMULATION
@@ -470,10 +533,16 @@ def run_module(
             la_f5=la_f5,
         )
 
-        # Dynamic Platt calibration — refitted weekly from live outcomes
+        # Dynamic Platt calibration — refitted weekly from live outcomes.
+        # Renormalize after Platt so p_home + p_away = 1.0 exactly; applying
+        # Platt independently with b≠0 inflates their sum to ~1.049, creating a
+        # phantom edge against any fair market that sums to 1.0.
         _pa, _pb = _learning.get_platt_params(_season)
-        mc_results['p_home'] = round(_platt(mc_results['p_home'], _pa, _pb), 5)
-        mc_results['p_away'] = round(_platt(mc_results['p_away'], _pa, _pb), 5)
+        _p_home_raw = _platt(mc_results['p_home'], _pa, _pb)
+        _p_away_raw = _platt(mc_results['p_away'], _pa, _pb)
+        _platt_total = _p_home_raw + _p_away_raw
+        mc_results['p_home'] = round(_p_home_raw / _platt_total, 5)
+        mc_results['p_away'] = round(_p_away_raw / _platt_total, 5)
 
         results['probabilities'] = mc_results
 

@@ -36,8 +36,8 @@ _KF_R = 9.0     # observation noise variance (game-to-game σ ≈ 3 R/G)
 # Platt recalibration
 _PLATT_MIN_SAMPLES  = 50
 _PLATT_RECAL_DAYS   = 7
-_PLATT_A_DEFAULT    = 0.547
-_PLATT_B_DEFAULT    = 0.098
+_PLATT_A_DEFAULT    = 1.0
+_PLATT_B_DEFAULT    = 0.0
 
 # Pipeline gradient-descent weights — one per engine stage
 _STAGE_KEYS = ["calibration", "hfa", "pitcher", "regression", "learning_bias"]
@@ -325,6 +325,43 @@ class LearningEngine:
         self.save_state(cache_key, "team_bias", {"bias": bias}, len(ratios), season)
         logger.debug(f"[learning] {team} bias={bias:.4f} (n={len(ratios)})")
         return bias
+
+    def compute_team_bias_kalman_adjusted(
+        self,
+        team: str,
+        season: int,
+        context: str,
+    ) -> float:
+        """Team bias dampened by Kalman's fractional coverage to prevent double-correction.
+
+        Both Kalman and team bias draw from the same actual-vs-predicted history.
+        When Kalman is active it already corrects `blend` (35%) of the model error;
+        applying the raw bias on top overcorrects that share of the signal.
+
+        Dampening formula: adjusted = 1 + (1 − blend) × (raw_bias − 1)
+
+        Example — team scores 3.5 R/G, model says 4.5 (raw_bias = 0.778):
+          Kalman (blend=0.35): 0.65×4.5 + 0.35×3.5 = 4.15  (−7.8%)
+          Old bias on 4.15:    4.15 × 0.778 = 3.23          (−22% extra → total −28%)
+          Dampened bias:       1 + 0.65×(0.778−1) = 0.856
+          New bias on 4.15:    4.15 × 0.856 = 3.55          (−14% → total −21% ≈ correct)
+        """
+        raw_bias = self.compute_team_bias(team, season)
+        if raw_bias == 1.0:
+            return 1.0
+
+        state = self._get_kalman_state(team, context, season)
+        if not state or state["n_obs"] < 10:
+            return raw_bias  # Kalman cold-start: no overlap to remove
+
+        # blend must stay in sync with get_kalman_lambda_adjustment
+        _KALMAN_BLEND = 0.35
+        dampened = 1.0 + (1.0 - _KALMAN_BLEND) * (raw_bias - 1.0)
+        logger.debug(
+            "[learning] %s bias Kalman-adjusted: raw=%.4f → dampened=%.4f (n_obs=%d)",
+            team, raw_bias, dampened, state["n_obs"],
+        )
+        return max(1.0 - _BIAS_CLAMP, min(1.0 + _BIAS_CLAMP, dampened))
 
     # ------------------------------------------------------------------
     # Multi-dimensional bias

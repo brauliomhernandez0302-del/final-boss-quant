@@ -1,0 +1,141 @@
+{
+  "run_at": "2026-05-13T02:19:13.999208+00:00",
+  "total_games": 5422,
+  "seasons": [
+    2024,
+    2025,
+    2026
+  ],
+  "overall": {
+    "accuracy_pct": 57.8,
+    "brier_model": 0.24266,
+    "brier_random": 0.25,
+    "brier_vs_random_pct": 2.93,
+    "logloss_model": 0.67839
+  },
+  "vs_pinnacle": {
+    "n_games_with_pin": 4654,
+    "brier_pinnacle": 0.24051,
+    "brier_model_vs_pin_pct": -0.9,
+    "logloss_pinnacle": 0.67362,
+    "model_pin_agreement_pct": 71.49,
+    "edge_vs_pin": {
+      "mean": -4.254,
+      "std": 7.718,
+      "p10": -13.8,
+      "p25": -9.55,
+      "p50": -4.24,
+      "p75": 0.76,
+      "p90": 5.37
+    }
+  },
+  "calibration": {
+    "<40%": {
+      "n": 1077,
+      "predicted_win_pct": 34.4,
+      "actual_win_pct": 41.3
+    },
+    "40-45%": {
+      "n": 859,
+      "predicted_win_pct": 42.5,
+      "actual_win_pct": 46.8
+    },
+    "45-50%": {
+      "n": 1010,
+      "predicted_win_pct": 47.6,
+      "actual_win_pct": 49.7
+    },
+    "50-55%": {
+      "n": 921,
+      "predicted_win_pct": 52.5,
+      "actual_win_pct": 57.7
+    },
+    "55-60%": {
+      "n": 712,
+      "predicted_win_pct": 57.4,
+      "actual_win_pct": 61.8
+    },
+    "60-70%": {
+      "n": 721,
+      "predicted_win_pct": 64.1,
+      "actual_win_pct": 66.4
+    },
+    ">70%": {
+      "n": 122,
+      "predicted_win_pct": 72.7,
+      "actual_win_pct": 71.3
+    }
+  },
+  "roi_simulation": {
+    "edge>=0%": {
+      "bets": 4631,
+      "staked": 4631.0,
+      "profit": 80.59,
+      "roi_pct": 1.74,
+      "n_extreme_filtered": 23
+    },
+    "edge>=2%": {
+      "bets": 3794,
+      "staked": 3794.0,
+      "profit": 102.18,
+      "roi_pct": 2.69,
+      "n_extreme_filtered": 23
+    },
+    "edge>=5%": {
+      "bets": 2625,
+      "staked": 2625.0,
+      "profit": 187.16,
+      "roi_pct": 7.13,
+      "n_extreme_filtered": 23
+    },
+    "edge>=8%": {
+      "bets": 1705,
+      "staked": 1705.0,
+      "profit": 138.92,
+      "roi_pct": 8.15,
+      "n_extreme_filtered": 23
+    },
+    "edge>=10%": {
+      "bets": 1193,
+      "staked": 1193.0,
+      "profit": 144.18,
+      "roi_pct": 12.09,
+      "n_extreme_filtered": 23
+    }
+  },
+  "by_season": {
+    "2024": {
+      "n": 2429,
+      "accuracy_pct": 58.75,
+      "brier": 0.24155
+    },
+    "2025": {
+      "n": 2430,
+      "accuracy_pct": 56.83,
+      "brier": 0.24423
+    },
+    "2026": {
+      "n": 563,
+      "accuracy_pct": 57.9,
+      "brier": 0.24071
+    }
+  },
+  "lambda_distribution": {
+    "lh": {
+      "p10": 3.091,
+      "p25": 3.485,
+      "median": 4.028,
+      "p75": 4.745,
+      "p90": 5.598,
+      "mean": 4.214
+    },
+    "la": {
+      "p10": 3.112,
+      "p25": 3.581,
+      "median": 4.157,
+      "p75": 4.968,
+      "p90": 5.876,
+      "mean": 4.358
+    }
+  }
+}

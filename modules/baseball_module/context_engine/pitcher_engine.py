@@ -49,13 +49,14 @@ class PitcherEngine:
         
         # Pesos para cada factor (ajustables)
         self.weights = {
-            'pitcher_quality': 0.30,      # Calidad base del pitcher
-            'pitcher_form': 0.20,         # Forma reciente
+            'pitcher_quality': 0.25,      # Calidad base del pitcher (reduced; platoon refines it)
+            'pitcher_form': 0.20,         # Forma reciente + tendencia
             'pitcher_matchup': 0.15,      # Vs este equipo
+            'pitcher_platoon': 0.08,      # Splits vs LHB/RHB × lineup composition
             'pitcher_fatigue': 0.10,      # Cansancio/days rest
             'park_for_pitcher': 0.10,     # Park effect en pitchers
             'travel_pitcher': 0.05,       # Viaje del pitcher
-            'bullpen_quality': 0.10       # Calidad del bullpen
+            'bullpen_quality': 0.07       # Calidad del bullpen (reduced)
         }
         
         # Park factors para PITCHERS (diferente a bateadores)
@@ -179,53 +180,56 @@ class PitcherEngine:
         """
         
         result = {
-            'pitcher_name': pitcher.get('name', 'Unknown'),
-            'quality_mult': 1.0,
-            'form_mult': 1.0,
-            'matchup_mult': 1.0,
-            'fatigue_mult': 1.0,
-            'park_mult': 1.0,
-            'travel_mult': 1.0,
-            'bullpen_mult': 1.0,
-            'total_multiplier': 1.0
+            'pitcher_name':   pitcher.get('name', 'Unknown'),
+            'quality_mult':   1.0,
+            'form_mult':      1.0,
+            'matchup_mult':   1.0,
+            'platoon_mult':   1.0,
+            'fatigue_mult':   1.0,
+            'park_mult':      1.0,
+            'travel_mult':    1.0,
+            'bullpen_mult':   1.0,
+            'total_multiplier': 1.0,
         }
-        
-        # 1. PITCHER QUALITY (ERA, FIP, xFIP)
+
+        # 1. PITCHER QUALITY (ERA, FIP, xFIP, SIERA, xwOBA, barrel%)
         result['quality_mult'] = self._adjust_pitcher_quality(pitcher)
-        
-        # 2. PITCHER FORM (últimos 5-10 starts)
+
+        # 2. PITCHER FORM (era_last_5 level + trend slope + quality_start_pct)
         result['form_mult'] = self._adjust_pitcher_form(pitcher)
-        
+
         # 3. PITCHER VS TEAM MATCHUP
         result['matchup_mult'] = self._adjust_pitcher_matchup(
             pitcher, game_data, is_home
         )
-        
-        # 4. PITCHER FATIGUE (days rest, pitch count)
+
+        # 4. PLATOON SPLITS × LINEUP HANDEDNESS
+        result['platoon_mult'] = self._adjust_pitcher_platoon(
+            pitcher, game_data, is_home
+        )
+
+        # 5. PITCHER FATIGUE (days rest, pitch count)
         result['fatigue_mult'] = self._adjust_pitcher_fatigue(pitcher)
-        
-        # 5. PARK FACTORS FOR PITCHER
+
+        # 6. PARK FACTORS FOR PITCHER
         result['park_mult'] = self._adjust_park_for_pitcher(
             pitcher, game_data, is_home
         )
-        
-        # 6. TRAVEL FATIGUE OF PITCHER
+
+        # 7. TRAVEL FATIGUE OF PITCHER
         result['travel_mult'] = self._adjust_pitcher_travel(
             pitcher, game_data, is_home
         )
-        
-        # 7. BULLPEN QUALITY
-        result['bullpen_mult'] = self._adjust_bullpen(
-            game_data, is_home
-        )
-        
+
+        # 8. BULLPEN QUALITY
+        result['bullpen_mult'] = self._adjust_bullpen(game_data, is_home)
+
         # Combine via delta formula: 1.0 + Σ((factor - 1.0) × weight)
-        # Neutral factors (1.0) always yield total_multiplier == 1.0,
-        # regardless of whether weights happen to sum to 1.0.
         result['total_multiplier'] = 1.0 + (
             (result['quality_mult']  - 1.0) * self.weights['pitcher_quality'] +
             (result['form_mult']     - 1.0) * self.weights['pitcher_form'] +
             (result['matchup_mult']  - 1.0) * self.weights['pitcher_matchup'] +
+            (result['platoon_mult']  - 1.0) * self.weights['pitcher_platoon'] +
             (result['fatigue_mult']  - 1.0) * self.weights['pitcher_fatigue'] +
             (result['park_mult']     - 1.0) * self.weights['park_for_pitcher'] +
             (result['travel_mult']   - 1.0) * self.weights['travel_pitcher'] +
@@ -280,27 +284,80 @@ class PitcherEngine:
     
     def _adjust_pitcher_form(self, pitcher: Dict) -> float:
         """
-        Ajusta por forma reciente (últimos 5-10 starts).
+        Adjust for recent form using three signals:
+
+        1. ERA level  — era_last_5 vs season ERA (how does recent compare overall?)
+        2. ERA trend  — slope of per-start ERA, oldest→newest (getting better/worse?)
+        3. QS%        — fraction of recent starts that were quality starts (≥6 IP ≤3 ER)
+
+        All three push in the same direction so no signal cancels another.
+        Clamped to [0.85, 1.15] to match the other factor limits.
         """
-        
         recent_era = pitcher.get('era_last_5', pitcher.get('era', 4.50))
         season_era = pitcher.get('era', 4.50)
-        
-        # Si recent ERA mucho mejor/peor que season, ajustar
-        diff = recent_era - season_era
-        
-        # Hot: recent_era 2.50, season 3.50 → diff = -1.00
-        # Cold: recent_era 5.50, season 4.00 → diff = +1.50
-        
-        # Convertir diff a multiplicador
-        # -1.00 ERA diff → ~0.92x (mejor forma)
-        # +1.00 ERA diff → ~1.08x (peor forma)
-        
-        form_adjustment = 1.0 + (diff * 0.08)
-        
-        form_adjustment = np.clip(form_adjustment, 0.85, 1.15)
-        
-        return form_adjustment
+
+        # Level: positive diff = pitcher ERA worse recently = more opponent runs
+        level_diff = recent_era - season_era
+        level_adj  = 1.0 + (level_diff * 0.06)
+
+        # Trend: negative slope = ERA dropping (improving) → opponent scores less
+        era_trend  = pitcher.get('era_trend', 0.0)
+        trend_adj  = 1.0 + (era_trend * 0.03)
+
+        # Quality-start %: higher = pitcher dominant = less opponent scoring
+        qs_pct    = pitcher.get('quality_start_pct', 0.50)
+        qs_adj    = 1.0 - (qs_pct - 0.50) * 0.06  # neutral at 50%, ±3% at extremes
+
+        form_adj = level_adj * trend_adj * qs_adj
+        return float(np.clip(form_adj, 0.85, 1.15))
+
+    def _adjust_pitcher_platoon(
+        self, pitcher: Dict, game_data: Dict, is_home: bool
+    ) -> float:
+        """
+        Adjust for the platoon mismatch between the pitcher's L/R splits
+        and the opposing lineup's actual handedness composition.
+
+        Data flow:
+          pitcher['platoon_splits'] = {'vs_lhb': {ip, whip, ...},
+                                       'vs_rhb': {ip, whip, ...}}
+          game_data['home_lineup_lhb_pct'] / 'away_lineup_lhb_pct'  (0–1)
+
+        Home pitcher faces the away lineup (away_lineup_lhb_pct).
+        Away pitcher faces the home lineup (home_lineup_lhb_pct).
+
+        A pitcher with a large WHIP differential between splits will be
+        penalised/rewarded based on how many of that type are in today's lineup.
+        Returns 1.0 when data is insufficient.
+        """
+        platoon = pitcher.get('platoon_splits')
+        if not platoon:
+            return 1.0
+
+        vs_lhb = platoon.get('vs_lhb') or {}
+        vs_rhb = platoon.get('vs_rhb') or {}
+        if not vs_lhb or not vs_rhb:
+            return 1.0
+
+        # Fraction of LHB in the *opposing* lineup
+        if is_home:
+            opp_lhb_pct = float(game_data.get('away_lineup_lhb_pct', 0.45))
+        else:
+            opp_lhb_pct = float(game_data.get('home_lineup_lhb_pct', 0.45))
+        opp_rhb_pct = 1.0 - opp_lhb_pct
+
+        # Lineup-composition-weighted WHIP
+        lhb_whip = float(vs_lhb.get('whip', 1.30))
+        rhb_whip = float(vs_rhb.get('whip', 1.30))
+        lineup_whip = opp_lhb_pct * lhb_whip + opp_rhb_pct * rhb_whip
+
+        overall_whip = float(pitcher.get('whip', 1.30))
+        if overall_whip <= 0:
+            return 1.0
+
+        # lineup_whip > overall_whip → today's lineup is harder for this pitcher
+        platoon_mult = lineup_whip / overall_whip
+        return float(np.clip(platoon_mult, 0.93, 1.07))
     
     
     def _adjust_pitcher_matchup(

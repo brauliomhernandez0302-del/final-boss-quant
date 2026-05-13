@@ -87,7 +87,7 @@ class MLBStatsAPI:
         params = {
             "sportId": 1,
             "date": date,
-            "hydrate": "probablePitcher,team,seriesStatus"
+            "hydrate": "probablePitcher,lineups,officials,team,seriesStatus"
         }
 
         try:
@@ -160,6 +160,29 @@ class MLBStatsAPI:
                     "games_in_series": game.get("gamesInSeries", 7)
                 }
 
+            # Lineups (populated same-day; None for future games)
+            raw_lineups = game.get("lineups") or {}
+            def _parse_players(players):
+                return [
+                    {
+                        "id": p.get("id"),
+                        "name": p.get("fullName"),
+                        "position": (p.get("primaryPosition") or {}).get("abbreviation"),
+                    }
+                    for p in players if p.get("id")
+                ]
+            home_lineup = _parse_players(raw_lineups.get("homePlayers") or [])
+            away_lineup = _parse_players(raw_lineups.get("awayPlayers") or [])
+
+            # Home plate umpire (populated for in-progress / Final games)
+            hp_umpire_id = None
+            hp_umpire_name = None
+            for off in (game.get("officials") or []):
+                if off.get("officialType") == "Home Plate":
+                    hp_umpire_id   = (off.get("official") or {}).get("id")
+                    hp_umpire_name = (off.get("official") or {}).get("fullName")
+                    break
+
             return {
                 "game_pk": game.get("gamePk"),
                 "game_date": game.get("gameDate"),
@@ -176,7 +199,11 @@ class MLBStatsAPI:
                 "game_context": game_context,
                 "is_playoff": is_playoff,
                 "series_info": series_info,
-                "status": (game.get("status") or {}).get("detailedState")
+                "status": (game.get("status") or {}).get("detailedState"),
+                "home_lineup": home_lineup,
+                "away_lineup": away_lineup,
+                "hp_umpire_id": hp_umpire_id,
+                "hp_umpire_name": hp_umpire_name,
             }
         except Exception as e:
             print(f"⚠️ Error parseando juego: {e}")
@@ -454,6 +481,39 @@ class MLBStatsAPI:
                 "starts_analyzed": len(recent),
                 "avg_innings_per_start": avg_ips_recent,
             }
+
+            # ── Trend metrics (oldest→newest) ──────────────────────────
+            chrono = list(reversed(recent))
+            _metrics = []
+            for _s in chrono:
+                _st = _s.get("stat", {})
+                _ip = float(_st.get("inningsPitched", 0))
+                _er = int(_st.get("earnedRuns", 0))
+                _so = int(_st.get("strikeOuts", 0))
+                _bb = int(_st.get("baseOnBalls", 0))
+                if _ip > 0:
+                    _metrics.append({
+                        "era": _er / _ip * 9,
+                        "k9": _so / _ip * 9,
+                        "bb9": _bb / _ip * 9,
+                        "qs": 1 if _ip >= 6 and _er <= 3 else 0,
+                    })
+            if len(_metrics) >= 2:
+                def _slope(vals):
+                    n = len(vals)
+                    xbar = (n - 1) / 2.0
+                    ybar = sum(vals) / n
+                    num = sum((i - xbar) * (vals[i] - ybar) for i in range(n))
+                    den = sum((i - xbar) ** 2 for i in range(n))
+                    return num / den if den else 0.0
+                result["era_trend"] = round(_slope([m["era"] for m in _metrics]), 3)
+                result["k9_trend"]  = round(_slope([m["k9"]  for m in _metrics]), 3)
+                result["bb9_trend"] = round(_slope([m["bb9"] for m in _metrics]), 3)
+                result["quality_start_pct"] = round(
+                    sum(m["qs"] for m in _metrics) / len(_metrics), 2
+                )
+            # ───────────────────────────────────────────────────────────
+
             with open(cache_file, "w") as f2:
                 json.dump(result, f2)
             return result
@@ -1283,6 +1343,272 @@ class MLBStatsAPI:
             print(f"⚠️ Error obteniendo bullpen ERA team {team_id}: {e}")
             return None
 
+    # ==========================================================
+    # FEATURE: PITCHER PLATOON SPLITS (vs LHB / vs RHB)
+    # ==========================================================
+    def get_pitcher_platoon_splits(
+        self, pitcher_id: int, season: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch pitcher splits vs left-handed batters (vl) and right-handed (vr).
+
+        Uses the statSplits endpoint with sitCodes=vl,vr.
+        Returns {'vs_lhb': {ip, k_per_9, bb_per_9, hr_per_9, whip, ops},
+                 'vs_rhb': same}  or None if insufficient data (< 5 IP per split).
+        """
+        cache_file = CACHE_DIR / f"platoon_{pitcher_id}_{season}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < self.cache_ttl:
+            try:
+                with open(cache_file) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+
+        url = f"{self.BASE_URL}/people/{pitcher_id}/stats"
+        params = {
+            "stats": "statSplits",
+            "group": "pitching",
+            "season": season,
+            "sitCodes": "vl,vr",
+        }
+        try:
+            r = self.session.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            splits = r.json().get("stats", [{}])[0].get("splits", [])
+        except Exception as e:
+            print(f"⚠️ platoon splits pitcher {pitcher_id}: {e}")
+            return None
+
+        result: Dict[str, Any] = {}
+        for s in splits:
+            code = (s.get("split") or {}).get("code")
+            if code not in ("vl", "vr"):
+                continue
+            stat = s.get("stat", {})
+            ip_raw = stat.get("inningsPitched", "0") or "0"
+            try:
+                ip = float(ip_raw)
+            except (ValueError, TypeError):
+                ip = 0.0
+            if ip < 5.0:
+                continue
+
+            so  = int(stat.get("strikeOuts", 0))
+            bb  = int(stat.get("baseOnBalls", 0))
+            hr  = int(stat.get("homeRuns", 0))
+            h   = int(stat.get("hits", 0))
+
+            key = "vs_lhb" if code == "vl" else "vs_rhb"
+            result[key] = {
+                "ip":       round(ip, 1),
+                "k_per_9":  round(so / ip * 9, 2) if ip > 0 else 0.0,
+                "bb_per_9": round(bb / ip * 9, 2) if ip > 0 else 0.0,
+                "hr_per_9": round(hr / ip * 9, 2) if ip > 0 else 0.0,
+                "whip":     round((h + bb) / ip, 3) if ip > 0 else 1.30,
+                "ops":      _safe_float(stat.get("ops")),
+            }
+
+        if not result:
+            return None
+
+        try:
+            with open(cache_file, "w") as f:
+                json.dump(result, f)
+        except Exception:
+            pass
+        return result
+
+    # ==========================================================
+    # FEATURE: BATTER HANDEDNESS BATCH FETCH
+    # ==========================================================
+    def get_batter_handedness_batch(
+        self, player_ids: List[int]
+    ) -> Dict[int, str]:
+        """
+        Batch-fetch bat side (L/R/S) for a list of player IDs.
+
+        Uses /people?personIds=... endpoint.  Results cached indefinitely
+        (handedness doesn't change).  Returns {player_id: 'L'|'R'|'S'}.
+        """
+        if not player_ids:
+            return {}
+
+        result: Dict[int, str] = {}
+        uncached: List[int] = []
+
+        for pid in player_ids:
+            cache_file = CACHE_DIR / f"hand_{pid}.json"
+            if cache_file.exists():
+                try:
+                    result[pid] = json.load(open(cache_file))["s"]
+                    continue
+                except Exception:
+                    pass
+            uncached.append(pid)
+
+        if uncached:
+            ids_str = ",".join(str(i) for i in uncached)
+            url = f"{self.BASE_URL}/people"
+            try:
+                r = self.session.get(url, params={"personIds": ids_str}, timeout=15)
+                r.raise_for_status()
+                for person in r.json().get("people", []):
+                    pid  = person.get("id")
+                    side = (person.get("batSide") or {}).get("code", "R")
+                    if pid:
+                        result[pid] = side
+                        cache_file = CACHE_DIR / f"hand_{pid}.json"
+                        try:
+                            with open(cache_file, "w") as f:
+                                json.dump({"s": side}, f)
+                        except Exception:
+                            pass
+            except Exception as e:
+                print(f"⚠️ batch handedness fetch failed: {e}")
+                for pid in uncached:
+                    result.setdefault(pid, "R")
+
+        return result
+
+    # ==========================================================
+    # FEATURE: HOME PLATE UMPIRE ZONE STATS
+    # ==========================================================
+    def get_umpire_historical_stats(
+        self, umpire_id: int, lookback_days: int = 21
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Build a zone-tendency profile for an umpire from recent completed games.
+
+        Scans lookback_days of the schedule for games where umpire_id was the
+        HP umpire, then aggregates ball/strike counts from each boxscore.
+
+        Returns:
+          {games_worked, strike_pct, k_rate, rpg, zone_factor}
+
+        zone_factor: 1.0 = average zone.
+          < 1.0  = pitcher-friendly (high strike%, depresses scoring).
+          > 1.0  = hitter-friendly (low strike%, inflates scoring).
+        Capped at ±4%.  Cached 3 days.
+        """
+        cache_file = CACHE_DIR / f"umpire_{umpire_id}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 86400 * 3:
+            try:
+                with open(cache_file) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+
+        LEAGUE_STRIKE_PCT = 0.635
+
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=lookback_days)
+
+        # One schedule request for the whole range with officials hydrated
+        try:
+            r = self.session.get(
+                f"{self.BASE_URL}/schedule",
+                params={
+                    "sportId": 1,
+                    "startDate": start_date.strftime("%Y-%m-%d"),
+                    "endDate":   end_date.strftime("%Y-%m-%d"),
+                    "hydrate":   "officials",
+                },
+                timeout=15,
+            )
+            r.raise_for_status()
+            sched_data = r.json()
+        except Exception as e:
+            print(f"⚠️ umpire schedule scan failed: {e}")
+            return None
+
+        # Identify game_pks where this ump was home plate ump
+        hp_game_pks: List[int] = []
+        for date_item in sched_data.get("dates", []):
+            for game in date_item.get("games", []):
+                if (game.get("status") or {}).get("abstractGameState") != "Final":
+                    continue
+                for off in (game.get("officials") or []):
+                    if (off.get("officialType") == "Home Plate" and
+                            (off.get("official") or {}).get("id") == umpire_id):
+                        pk = game.get("gamePk")
+                        if pk:
+                            hp_game_pks.append(pk)
+                        break
+
+        if not hp_game_pks:
+            result = {
+                "games_worked": 0,
+                "zone_factor": 1.0,
+                "strike_pct": LEAGUE_STRIKE_PCT,
+            }
+            with open(cache_file, "w") as f:
+                json.dump(result, f)
+            return result
+
+        # Aggregate ball/strike stats from each boxscore (cap at 15 games)
+        total_strikes = 0
+        total_pitches = 0
+        total_k = 0
+        total_bf = 0
+        total_runs = 0
+        games_counted = 0
+
+        for game_pk in hp_game_pks[:15]:
+            try:
+                r2 = self.session.get(
+                    f"{self.BASE_URL}/game/{game_pk}/boxscore",
+                    timeout=8,
+                )
+                r2.raise_for_status()
+                bs = r2.json()
+                for side in ("home", "away"):
+                    ps = (
+                        bs.get("teams", {})
+                          .get(side, {})
+                          .get("teamStats", {})
+                          .get("pitching", {})
+                    )
+                    s = int(ps.get("strikes", 0))
+                    b = int(ps.get("balls",   0))
+                    total_strikes += s
+                    total_pitches += s + b
+                    total_k    += int(ps.get("strikeOuts",   0))
+                    total_bf   += int(ps.get("battersFaced", 0))
+                    total_runs += int(ps.get("runs",         0))
+                games_counted += 1
+            except Exception:
+                continue
+            time.sleep(0.1)
+
+        if games_counted == 0 or total_pitches == 0:
+            result = {
+                "games_worked": 0,
+                "zone_factor": 1.0,
+                "strike_pct": LEAGUE_STRIKE_PCT,
+            }
+            with open(cache_file, "w") as f:
+                json.dump(result, f)
+            return result
+
+        strike_pct = total_strikes / total_pitches
+        k_rate     = total_k / total_bf if total_bf > 0 else 0.225
+        rpg        = total_runs / games_counted
+
+        # Pitcher-friendly (high strike%) → lower scoring → zone_factor < 1.0
+        zone_factor = round(1.0 - (strike_pct - LEAGUE_STRIKE_PCT) * 0.60, 4)
+        zone_factor = max(0.96, min(zone_factor, 1.04))
+
+        result = {
+            "games_worked": games_counted,
+            "strike_pct":   round(strike_pct, 4),
+            "k_rate":       round(k_rate, 4),
+            "rpg":          round(rpg, 2),
+            "zone_factor":  zone_factor,
+        }
+        with open(cache_file, "w") as f:
+            json.dump(result, f)
+        return result
+
 
 # ==========================================================
 # 2) WEATHER API - OPENWEATHER (GRATIS)
@@ -1371,7 +1697,7 @@ class ParkFactors:
         "Fenway Park": {"runs": 1.05, "hr": 1.10, "type": "neutral"},
         "Yankee Stadium": {"runs": 1.08, "hr": 1.15, "type": "hitter"},
         "Camden Yards": {"runs": 1.07, "hr": 1.12, "type": "hitter"},
-        "Wrigley Field": {"runs": 1.03, "hr": 1.08, "type": "neutral"},
+        "Wrigley Field": {"runs": 0.97, "hr": 0.93, "type": "pitcher"},
         "Dodger Stadium": {"runs": 0.95, "hr": 0.92, "type": "pitcher"},
         "Petco Park": {"runs": 0.85, "hr": 0.80, "type": "pitcher"},
         "Oracle Park": {"runs": 0.88, "hr": 0.75, "type": "pitcher"},
@@ -1496,7 +1822,6 @@ class MLBDataIntegrator:
 
         return round(max(2.5, min(7.0, lambda_base)), 3)
 
-        return round(max(2.5, min(7.0, lambda_base)), 3)
     def _enrich_pitchers_concurrent(self, game: Dict[str, Any], season: int) -> Dict[str, Any]:
         """Enriquecer pitchers en paralelo con fallback."""
         is_playoff = game.get("is_playoff", False)
@@ -1546,12 +1871,29 @@ class MLBDataIntegrator:
                         if game_log:
                             stats.update(game_log)
                             results[key_stats] = stats
-                            print(f"  ✅ {side.upper()} game log: ERA_L5={game_log.get('era_last_5','?')} rest={game_log.get('days_rest','?')}d avg_IPS={game_log.get('avg_innings_per_start','?')}")
+                            trend_str = (
+                                f" trend={game_log.get('era_trend','?'):+.2f}"
+                                f" qs={game_log.get('quality_start_pct','?'):.0%}"
+                                if game_log.get('era_trend') is not None else ""
+                            )
+                            print(
+                                f"  ✅ {side.upper()} game log: ERA_L5={game_log.get('era_last_5','?')}"
+                                f" rest={game_log.get('days_rest','?')}d"
+                                f" avg_IPS={game_log.get('avg_innings_per_start','?')}{trend_str}"
+                            )
                         f5 = self.mlb_api.get_pitcher_f5_stats(pitcher_id, season)
                         if f5:
                             stats.update(f5)
                             results[key_stats] = stats
                             print(f"  ✅ {side.upper()} F5 ERA: {f5.get('f5_era','?')} ({f5.get('f5_ip','?')} IP in first 5)")
+                        # Platoon splits (vs LHB / vs RHB)
+                        platoon = self.mlb_api.get_pitcher_platoon_splits(pitcher_id, season)
+                        if platoon:
+                            stats["platoon_splits"] = platoon
+                            results[key_stats] = stats
+                            lhb_w = platoon.get("vs_lhb", {}).get("whip", "?")
+                            rhb_w = platoon.get("vs_rhb", {}).get("whip", "?")
+                            print(f"  ✅ {side.upper()} platoon: WHIP vs LHB={lhb_w} vs RHB={rhb_w}")
                         if opp_team_id:
                             pvt = self.mlb_api.get_pitcher_vs_team(pitcher_id, opp_team_id, season)
                             if pvt:
@@ -1718,6 +2060,43 @@ class MLBDataIntegrator:
                     if away_pitch:
                         enriched["away_pitching_stats"] = away_pitch
                         print(f"  ✅ {game['away_team']} pitching: ERA={away_pitch['team_era']} WHIP={away_pitch['team_whip']}")
+
+                # 9) Lineup handedness (LHB% per side — used for platoon split adjustment)
+                for _side, _lineup_key, _lhb_key in [
+                    ("home", "home_lineup", "home_lineup_lhb_pct"),
+                    ("away", "away_lineup", "away_lineup_lhb_pct"),
+                ]:
+                    lineup = enriched.get(_lineup_key) or []
+                    if lineup:
+                        pids = [p["id"] for p in lineup if p.get("id")]
+                        hand_map = self.mlb_api.get_batter_handedness_batch(pids)
+                        lhb_n = sum(
+                            1 for p in lineup
+                            if hand_map.get(p.get("id"), "R") in ("L", "S")
+                        )
+                        total_n = len(lineup)
+                        enriched[_lhb_key] = round(lhb_n / total_n, 3) if total_n else 0.45
+                        print(
+                            f"  ✅ {_side.upper()} lineup: "
+                            f"{lhb_n}L/{total_n - lhb_n}R "
+                            f"({enriched[_lhb_key]:.0%} LHB) — "
+                            f"{', '.join(p.get('name','?') for p in lineup[:3])}..."
+                        )
+                    else:
+                        enriched[_lhb_key] = 0.45  # league average fallback
+
+                # 10) Home plate umpire zone tendency
+                hp_ump_id = enriched.get("hp_umpire_id")
+                if hp_ump_id:
+                    ump_stats = self.mlb_api.get_umpire_historical_stats(hp_ump_id)
+                    if ump_stats and ump_stats.get("games_worked", 0) >= 4:
+                        enriched["umpire_stats"] = ump_stats
+                        print(
+                            f"  ⚖️  HP Ump {enriched.get('hp_umpire_name','?')}: "
+                            f"zone_factor={ump_stats['zone_factor']:.3f} "
+                            f"strike%={ump_stats['strike_pct']:.1%} "
+                            f"({ump_stats['games_worked']} games)"
+                        )
 
                 status_icon = "✅" if enriched["pitchers_valid"] else "⚠️"
                 status_msg = "Data completa" if enriched["pitchers_valid"] else "Data incompleta - NO APOSTAR"
