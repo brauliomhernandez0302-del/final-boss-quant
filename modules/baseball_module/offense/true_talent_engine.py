@@ -398,11 +398,15 @@ class TrueTalentOffenseEngine:
     """
 
     def __init__(self) -> None:
-        self._savant_exp:  Dict[int, dict] = {}
-        self._savant_ev:   Dict[int, dict] = {}
-        self._season_loaded: Optional[int] = None
+        self._savant_exp:     Dict[int, dict] = {}
+        self._savant_ev:      Dict[int, dict] = {}
+        self._savant_exp_pri: Dict[int, dict] = {}  # prior season — shared across calls
+        self._savant_ev_pri:  Dict[int, dict] = {}
+        self._season_loaded:  Optional[int] = None
+        self._prior_loaded:   Optional[int] = None
 
     def _ensure_savant_loaded(self, season: int) -> None:
+        prior_season = season - 1
         if self._season_loaded != season:
             self._savant_exp = {
                 int(k): v for k, v in _fetch_savant_expected(season).items()
@@ -414,6 +418,18 @@ class TrueTalentOffenseEngine:
             log.info(
                 "Savant season %d loaded: %d expected, %d exitvelo players",
                 season, len(self._savant_exp), len(self._savant_ev),
+            )
+        if self._prior_loaded != prior_season:
+            self._savant_exp_pri = {
+                int(k): v for k, v in _fetch_savant_expected(prior_season).items()
+            }
+            self._savant_ev_pri = {
+                int(k): v for k, v in _fetch_savant_exitvelo(prior_season).items()
+            }
+            self._prior_loaded = prior_season
+            log.info(
+                "Savant prior season %d loaded: %d expected, %d exitvelo players",
+                prior_season, len(self._savant_exp_pri), len(self._savant_ev_pri),
             )
 
     def get_lambda(
@@ -443,12 +459,10 @@ class TrueTalentOffenseEngine:
 
         # ── Prior season data (for blending) ──────────────────────────────
         hitting_pri = _fetch_team_hitting_stats(team_id, prior_season)
-        # Prior season Statcast (reload if needed without clobbering current)
-        savant_exp_pri = {int(k): v for k, v in _fetch_savant_expected(prior_season).items()}
-        savant_ev_pri  = {int(k): v for k, v in _fetch_savant_exitvelo(prior_season).items()}
         roster_pri  = _fetch_team_roster(team_id, prior_season)
+        # Prior-season Savant is cached in the instance by _ensure_savant_loaded.
         sc_pri      = _aggregate_statcast_for_team(
-            roster_pri, savant_exp_pri, savant_ev_pri
+            roster_pri, self._savant_exp_pri, self._savant_ev_pri
         )
 
         # ── Extract raw metrics ────────────────────────────────────────────

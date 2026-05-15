@@ -24,7 +24,7 @@ Data sources:
     (team-aggregate over all pitchers who appear in Savant; relievers
      dominate by volume once starters are at 25–30 starts)
 
-Pipeline position: PASO 4 — after Pitcher Engine, before Umpire.
+Pipeline position: PASO 6 — after Pitcher Engine, before Contextual.
 Convention (same as Pitcher Engine):
   Away bullpen suppresses home-team scoring → adjusts λ_home
   Home bullpen suppresses away-team scoring → adjusts λ_away
@@ -420,6 +420,9 @@ class BullpenEngine:
         return {
             "era":            round(era,            2),
             "era_reg":        round(era_reg,        3),
+            # Composite quality expressed as an ERA rate: quality_mult × LG_BP_ERA.
+            # Used by _compute_f5_lambda to estimate bullpen runs in F5 innings.
+            "effective_era":  round(quality_mult * _LG_BP_ERA, 3),
             "xwoba_ag":       round(xwoba_ag,       3),
             "xwoba_reg":      round(xwoba_reg,      3),
             "k_bb":           round(k_bb_reg,       3),

@@ -584,8 +584,18 @@ def run_module(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         logger.info(f"\n🎲 PASO 8: Monte Carlo ({n_max:,} simulaciones)...")
 
-        _home_bp_era = game_data.get('bullpen_home', {}).get('era', 4.20)
-        _away_bp_era = game_data.get('bullpen_away', {}).get('era', 4.20)
+        # Use BullpenEngine's composite effective_era (quality_mult × LG_BP_ERA),
+        # which already incorporates xwOBA, K-BB%, ERA, and barrel% signals.
+        # Falls back to raw ERA if BullpenEngine didn't run (no bullpen data).
+        _bp_meta = results['metadata'].get('bullpen', {})
+        _home_bp_era = (
+            _bp_meta.get('bullpen_home', {}).get('effective_era')
+            or game_data.get('bullpen_home', {}).get('era', 4.20)
+        )
+        _away_bp_era = (
+            _bp_meta.get('bullpen_away', {}).get('effective_era')
+            or game_data.get('bullpen_away', {}).get('era', 4.20)
+        )
         lh_f5 = _compute_f5_lambda(game_data.get('pitcher_away', {}), _away_bp_era)
         la_f5 = _compute_f5_lambda(game_data.get('pitcher_home', {}), _home_bp_era)
         if lh_f5 is not None:
