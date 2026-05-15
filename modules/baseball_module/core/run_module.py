@@ -10,11 +10,11 @@ Versión: G10 Ultra Pro + Selector de Partido + Juegos Hoy y Mañana
 
 import logging
 from math import log as _log, exp as _exp
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 
 # Data fetching
-from data_fetchers import MLBStatsAPI, _current_mlb_season
+from data_fetchers import MLBStatsAPI, MLBDataIntegrator, _current_mlb_season
 from config import MLB_SIMULATIONS, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP, LEAGUE_AVG_ERA
 
 # Calibration - ABSOLUTO
@@ -81,8 +81,8 @@ def _compute_f5_lambda(pitcher_stats: Dict, bullpen_era: float = 4.20) -> Option
 
 def run_module(
     game_id: Optional[int] = None,
-    lh_base: float = LEAGUE_AVG_RUNS,
-    la_base: float = 4.2,
+    lh_base: float = LEAGUE_AVG_RUNS,  # unused — lambda comes from get_team_lambda()
+    la_base: float = LEAGUE_AVG_RUNS,  # unused — lambda comes from get_team_lambda()
     use_calibration: bool = True,
     use_hfa: bool = True,
     use_pitcher: bool = True,
@@ -179,7 +179,6 @@ def run_module(
                 return results
         # ====================================================
 
-        from data_fetchers import MLBDataIntegrator
         _integrator = MLBDataIntegrator()
         today = datetime.now().strftime("%Y-%m-%d")
         tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -205,7 +204,7 @@ def run_module(
             'pitcher_home': pitcher_home,
             'pitcher_away': pitcher_away
         }
-# Normalizar game_data para los engines
+        # Normalizar game_data para los engines
         _home_off   = game_data.get('home_offensive_stats') or {}
         _away_off   = game_data.get('away_offensive_stats') or {}
         _home_pitch = game_data.get('home_pitching_stats') or {}
@@ -362,16 +361,14 @@ def run_module(
 
         game_data['park'] = {'name': game_data.get('venue', 'Unknown')}
         # Lambdas base con media ponderada por equipo
-        from data_fetchers import MLBDataIntegrator as _Int
-        _int = _Int()
         home_recent = game_data.get('home_team_runs', {})
         away_recent = game_data.get('away_team_runs', {})
         home_rpg = float(home_recent.get('runs_scored_avg', 0)) if isinstance(home_recent, dict) else 0
         away_rpg = float(away_recent.get('runs_scored_avg', 0)) if isinstance(away_recent, dict) else 0
         home_team_id = game_data.get('home_team_id')
         away_team_id = game_data.get('away_team_id')
-        lh = _int.get_team_lambda(home_team, home_rpg, team_id=home_team_id)
-        la = _int.get_team_lambda(away_team, away_rpg, team_id=away_team_id)
+        lh = _integrator.get_team_lambda(home_team, home_rpg, team_id=home_team_id)
+        la = _integrator.get_team_lambda(away_team, away_rpg, team_id=away_team_id)
 
         # ── Kalman-adjusted base lambdas ──────────────────────────────────
         lh = _learning.get_kalman_lambda_adjustment(home_team, "offense_home", _season, lh)
@@ -434,10 +431,10 @@ def run_module(
             logger.info(f"   ✅ HFA adjusted: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_hfa:.3f})")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 4: PITCHER ENGINE
+        # PASO 3: PITCHER ENGINE
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if use_pitcher:
-            logger.info("\n⚾ PASO 4: Pitcher Engine (solo pitchers)...")
+            logger.info("\n⚾ PASO 3: Pitcher Engine (solo pitchers)...")
             _lh_pre = lh; _la_pre = la
             lh_pit, la_pit, pitcher_meta = adjust_for_pitchers(lh, la, game_data)
             _raw_h_pit = lh_pit / _lh_pre if _lh_pre else 1.0
@@ -541,8 +538,8 @@ def run_module(
                     venue=game_data.get('venue'),
                     stage_factors=_stage_factors,
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[learning] record_prediction failed: {_e}")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 6: VALUE DETECTION
@@ -550,14 +547,15 @@ def run_module(
         logger.info("\n💰 PASO 6: Value Detection...")
 
         market_odds = None
-        try:
-            market_odds = get_best_odds_for_teams(
-                home_team=home_team,
-                away_team=away_team,
-                sport="baseball_mlb"
-            )
-        except Exception as e:
-            logger.warning(f"   ⚠️  No se pudieron obtener odds: {e}")
+        if get_best_odds_for_teams is not None:
+            try:
+                market_odds = get_best_odds_for_teams(
+                    home_team=home_team,
+                    away_team=away_team,
+                    sport="baseball_mlb"
+                )
+            except Exception as e:
+                logger.warning(f"   ⚠️  No se pudieron obtener odds: {e}")
 
         if market_odds and market_odds.get('ml_home') and market_odds.get('ml_away'):
             from core.value_detector import GameOdds
