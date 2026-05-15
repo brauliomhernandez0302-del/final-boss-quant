@@ -25,12 +25,7 @@ __pycache__/
 # Claude Code session state (not project source)
 .claude.json
 .claude.json.tmp.*
-.claude/history.jsonl
-.claude/sessions/
-.claude/shell-snapshots/
-.claude/backups/
-.claude/file-history/
-.claude/projects/
+.claude/
 
 # npm cache
 .npm/
