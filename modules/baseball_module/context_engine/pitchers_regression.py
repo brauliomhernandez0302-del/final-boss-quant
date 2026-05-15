@@ -1,15 +1,17 @@
 # ==========================================================
 # PITCHER REGRESSION ENGINE — LUCK INDICATORS ONLY
 # ==========================================================
-# Covers signals not in pitcher_engine.py:
-#   BABIP luck (balls-in-play fortune vs career baseline)
-#   LOB% luck (strand-rate fortune vs career baseline)
-#   HR/FB% luck (home-run-rate fortune vs career baseline)
+# NOT CONNECTED TO THE PIPELINE.
 #
-# Deliberately excluded (already handled by pitcher_engine.py):
-#   - ERA vs FIP / era_last_5 comparison  (dominating term, wrong direction)
-#   - days_rest / innings_last3 fatigue   (double-counted)
-#   - opponent_ops strength               (double-counted via platoon splits)
+# This engine requires per-start BABIP, LOB%, and HR/FB% to be
+# meaningful. Neither the MLB Stats API game log endpoint nor
+# Ball Don't Lie API (nor any other free API) provides these
+# metrics at per-start granularity. FanGraphs only publishes
+# season-to-date totals, making it impossible to distinguish
+# recent-start luck from season-level drift.
+#
+# Re-connect (run_module.py PASO 3) only if a per-start data
+# source becomes available.
 # ==========================================================
 
 from typing import Dict, Tuple

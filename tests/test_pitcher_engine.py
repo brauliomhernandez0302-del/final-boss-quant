@@ -48,10 +48,6 @@ def _game_data(home_pitcher=None, away_pitcher=None, park="Yankee Stadium"):
         "home_team": {**avg_team, "name": "HomeTeam"},
         "away_team": {**avg_team, "name": "AwayTeam"},
         "park": {"name": park},
-        "miles_traveled_away": 0,
-        "time_zones_crossed_away": 0,
-        "bullpen_home": {},
-        "bullpen_away": {},
     }
 
 
@@ -66,32 +62,25 @@ class TestDeltaFormula:
         assert adj["total_multiplier"] == pytest.approx(1.0, abs=0.05)
 
     def test_delta_formula_math(self):
-        # Build a scenario where only quality_mult differs and verify the delta.
+        # ERA=3.00, FIP=3.00 → primary=FIP → quality_mult = 3.00/4.20 ≈ 0.714
         engine = _engine()
         weights = engine.weights
-
-        # Supply a pitcher that produces a known quality_mult.
-        # ERA=3.00, FIP=3.00 → composite=3.00 → quality_mult = 3.00/4.20 ≈ 0.7143
         pitcher = _avg_pitcher(era=3.00, fip=3.00, era_last_5=3.00)
         adj = engine._calculate_pitcher_adjustment(
             pitcher, _game_data(), is_home=True
         )
-        q = adj["quality_mult"]
-        f = adj["form_mult"]
-        m = adj["matchup_mult"]
+        q  = adj["quality_mult"]
+        f  = adj["form_mult"]
+        m  = adj["matchup_mult"]
+        pl = adj["platoon_mult"]
         fg = adj["fatigue_mult"]
-        pk = adj["park_mult"]
-        tr = adj["travel_mult"]
-        bp = adj["bullpen_mult"]
 
         expected_total = 1.0 + (
             (q  - 1) * weights["pitcher_quality"] +
             (f  - 1) * weights["pitcher_form"] +
             (m  - 1) * weights["pitcher_matchup"] +
-            (fg - 1) * weights["pitcher_fatigue"] +
-            (pk - 1) * weights["park_for_pitcher"] +
-            (tr - 1) * weights["travel_pitcher"] +
-            (bp - 1) * weights["bullpen_quality"]
+            (pl - 1) * weights["pitcher_platoon"] +
+            (fg - 1) * weights["pitcher_fatigue"]
         )
         assert adj["total_multiplier"] == pytest.approx(expected_total, abs=1e-6)
 
@@ -136,13 +125,11 @@ class TestPitcherQualityMultiplier:
         mult = engine._adjust_pitcher_quality({"era": 6.00, "fip": 6.00})
         assert mult > 1.0
 
-    def test_composite_weights_siera50_xfip30_era20(self):
-        # When xFIP and SIERA are absent, both fall back to FIP, which falls
-        # back to ERA.  So composite = ERA*0.50 + ERA*0.30 + ERA*0.20 = ERA.
+    def test_era_only_fallback(self):
+        # When SIERA/xFIP/FIP all absent, ERA is the primary metric.
         engine = _engine()
         era = 3.00
-        composite = era * 0.50 + era * 0.30 + era * 0.20   # all three = ERA
-        expected = float(np.clip(composite / 4.20, 0.70, 1.30))
+        expected = float(np.clip(era / 4.20, 0.70, 1.30))
         result = engine._adjust_pitcher_quality({"era": era})
         assert result == pytest.approx(expected, abs=1e-6)
 
@@ -178,12 +165,12 @@ class TestPitcherQualityMultiplier:
         result = engine._adjust_pitcher_quality({"era": 10.0, "fip": 10.0})
         assert result == pytest.approx(1.30)
 
-    def test_fip_downweighs_lucky_era(self):
-        # ERA 2.00 (lucky) but FIP 4.20 (average) → composite closer to average.
+    def test_fip_overrides_lucky_era(self):
+        # FIP is the fallback over ERA: era=2.00 (lucky) + fip=4.20 → primary=4.20 → mult≈1.0
         engine = _engine()
         mult_lucky = engine._adjust_pitcher_quality({"era": 2.00, "fip": 4.20})
-        mult_true   = engine._adjust_pitcher_quality({"era": 2.00, "fip": 2.00})
-        assert mult_lucky > mult_true, "Blending FIP should temper a lucky low ERA"
+        mult_true  = engine._adjust_pitcher_quality({"era": 2.00, "fip": 2.00})
+        assert mult_lucky > mult_true, "FIP fallback should fully override a lucky ERA"
 
 
 class TestPitcherEngineDirectionality:
@@ -213,8 +200,7 @@ class TestPitcherEngineDirectionality:
         elite_p = _avg_pitcher(era=2.00, fip=2.00)
         _, la_elite, _ = self._run(avg_p, elite_p)
         _, la_avg,   _ = self._run(avg_p, avg_p)
-        # Away pitcher quality should not significantly change λ_away
-        # (bullpen is the only cross-over, and it's small)
+        # Away pitcher only directly affects λ_home, not λ_away.
         assert abs(la_elite - la_avg) < 0.3, "Away pitcher should not materially affect λ_away"
 
 

@@ -52,3 +52,14 @@ MLB_FALLBACK_GAME_ID = 746_929  # World Series 2024
 # ── UI limits ──────────────────────────────────────────────────────────────
 MAX_HISTORY_RECORDS = 200
 MAX_DISPLAY_RECORDS = 50
+
+# ── Pitcher engine weights ──────────────────────────────────────────────────
+# 5 signals only; park/travel/bullpen removed (double-counted or data-free).
+# Proportionally redistributed from the original 5-signal sum of 0.78.
+PITCHER_ENGINE_WEIGHTS = {
+    'pitcher_quality': 0.321,   # SIERA/xFIP/FIP/ERA composite + Savant overlays
+    'pitcher_form':    0.256,   # era_last_5 level, era_trend slope, QS%
+    'pitcher_matchup': 0.192,   # historical ERA vs this opponent
+    'pitcher_fatigue': 0.128,   # days rest + last pitch count
+    'pitcher_platoon': 0.103,   # L/R split × opposing lineup handedness
+}

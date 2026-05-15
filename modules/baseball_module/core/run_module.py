@@ -27,9 +27,6 @@ from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
 # Pitcher - ABSOLUTO
 from modules.baseball_module.context_engine.pitcher_engine import adjust_for_pitchers
 
-# Pitcher Regression - ABSOLUTO
-from modules.baseball_module.context_engine.pitchers_regression import calculate_pitcher_regression
-
 # Monte Carlo - ABSOLUTO
 from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced
 
@@ -89,7 +86,6 @@ def run_module(
     use_calibration: bool = True,
     use_hfa: bool = True,
     use_pitcher: bool = True,
-    use_regression: bool = True,
     analyze_f5: bool = True,
     n_max: int = MLB_SIMULATIONS
 ) -> Dict[str, Any]:
@@ -398,8 +394,7 @@ def run_module(
         _weights = _learning.get_pipeline_weights(_season)
         logger.info(
             f"   Pipeline weights — cal:{_weights['calibration']:.3f} "
-            f"hfa:{_weights['hfa']:.3f} pit:{_weights['pitcher']:.3f} "
-            f"reg:{_weights['regression']:.3f}"
+            f"hfa:{_weights['hfa']:.3f} pit:{_weights['pitcher']:.3f}"
         )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -439,10 +434,10 @@ def run_module(
             logger.info(f"   ✅ HFA adjusted: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_hfa:.3f})")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 3: PITCHER ENGINE
+        # PASO 4: PITCHER ENGINE
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if use_pitcher:
-            logger.info("\n⚾ PASO 3: Pitcher Engine (solo pitchers)...")
+            logger.info("\n⚾ PASO 4: Pitcher Engine (solo pitchers)...")
             _lh_pre = lh; _la_pre = la
             lh_pit, la_pit, pitcher_meta = adjust_for_pitchers(lh, la, game_data)
             _raw_h_pit = lh_pit / _lh_pre if _lh_pre else 1.0
@@ -455,36 +450,6 @@ def run_module(
             results['lambdas_history']['pitcher'] = {'lh': lh, 'la': la}
             results['metadata']['pitcher'] = pitcher_meta
             logger.info(f"   ✅ Pitcher adjusted: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_pit:.3f})")
-
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 4: PITCHER REGRESSION
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        if use_regression:
-            logger.info("\n📈 PASO 4: Pitcher Regression...")
-            _lh_pre = lh; _la_pre = la
-
-            factor_away, conf_away = calculate_pitcher_regression(
-                pitcher_stats=game_data.get('pitcher_away', {}),
-                opponent_stats=game_data.get('home_team', {})
-            )
-            factor_home, conf_home = calculate_pitcher_regression(
-                pitcher_stats=game_data.get('pitcher_home', {}),
-                opponent_stats=game_data.get('away_team', {})
-            )
-
-            _w_reg = _weights.get("regression", 1.0)
-            lh = _lh_pre * (1.0 + _w_reg * (factor_away - 1.0))
-            la = _la_pre * (1.0 + _w_reg * (factor_home - 1.0))
-            _stage_factors["home_regression"] = factor_away
-            _stage_factors["away_regression"] = factor_home
-            results['lambdas_history']['regression'] = {'lh': lh, 'la': la}
-            results['metadata']['regression'] = {
-                'factor_away': factor_away, 'confidence_away': conf_away,
-                'factor_home': factor_home, 'confidence_home': conf_home
-            }
-            logger.info(f"   Pitcher Away regression: {factor_away:.3f} (conf: {conf_away:.2f})")
-            logger.info(f"   Pitcher Home regression: {factor_home:.3f} (conf: {conf_home:.2f})")
-            logger.info(f"   ✅ Final: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_reg:.3f})")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 4b: UMPIRE ZONE ADJUSTMENT (symmetric, ±4% max)

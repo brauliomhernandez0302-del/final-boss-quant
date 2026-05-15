@@ -27,6 +27,7 @@ Versión: G13 Pro Focused
 import numpy as np
 from typing import Dict, Any, Tuple, Optional
 import logging
+from config import PITCHER_ENGINE_WEIGHTS
 
 logger = logging.getLogger(__name__)
 
@@ -46,47 +47,7 @@ class PitcherEngine:
     
     def __init__(self):
         self.name = "PitcherEngine G13 Pro Focused"
-        
-        # Pesos para cada factor (ajustables)
-        self.weights = {
-            'pitcher_quality': 0.25,      # Calidad base del pitcher (reduced; platoon refines it)
-            'pitcher_form': 0.20,         # Forma reciente + tendencia
-            'pitcher_matchup': 0.15,      # Vs este equipo
-            'pitcher_platoon': 0.08,      # Splits vs LHB/RHB × lineup composition
-            'pitcher_fatigue': 0.10,      # Cansancio/days rest
-            'park_for_pitcher': 0.10,     # Park effect en pitchers
-            'travel_pitcher': 0.05,       # Viaje del pitcher
-            'bullpen_quality': 0.07       # Calidad del bullpen (reduced)
-        }
-        
-        # Park factors para PITCHERS (diferente a bateadores)
-        # Valores: multiplicador de ERA (>1.0 = duro, <1.0 = fácil)
-        self.pitcher_park_factors = {
-            'Coors Field': 1.25,          # Altitude = pesadilla
-            'Great American Ball Park': 1.12,
-            'Yankee Stadium': 1.08,
-            'Fenway Park': 1.06,
-            'Rogers Centre': 1.05,
-            'Chase Field': 1.04,
-            'Camden Yards': 1.03,
-            'Citizens Bank Park': 1.02,
-            'Guaranteed Rate Field': 1.02,
-            'Minute Maid Park': 1.01,
-            
-            # Neutral
-            'Truist Park': 1.00,
-            'Busch Stadium': 1.00,
-            
-            # Pitcher friendly
-            'Oracle Park': 0.92,          # Grande, foul territory
-            'T-Mobile Park': 0.94,
-            'Dodger Stadium': 0.95,
-            'Petco Park': 0.93,
-            'Kauffman Stadium': 0.96,
-            'Comerica Park': 0.97,
-            'Marlins Park': 0.98,
-            'Tropicana Field': 0.98,
-        }
+        self.weights = dict(PITCHER_ENGINE_WEIGHTS)
     
     
     def adjust_for_pitchers(
@@ -180,19 +141,16 @@ class PitcherEngine:
         """
         
         result = {
-            'pitcher_name':   pitcher.get('name', 'Unknown'),
-            'quality_mult':   1.0,
-            'form_mult':      1.0,
-            'matchup_mult':   1.0,
-            'platoon_mult':   1.0,
-            'fatigue_mult':   1.0,
-            'park_mult':      1.0,
-            'travel_mult':    1.0,
-            'bullpen_mult':   1.0,
+            'pitcher_name':     pitcher.get('name', 'Unknown'),
+            'quality_mult':     1.0,
+            'form_mult':        1.0,
+            'matchup_mult':     1.0,
+            'platoon_mult':     1.0,
+            'fatigue_mult':     1.0,
             'total_multiplier': 1.0,
         }
 
-        # 1. PITCHER QUALITY (ERA, FIP, xFIP, SIERA, xwOBA, barrel%)
+        # 1. PITCHER QUALITY (SIERA → xFIP → FIP → ERA, + Savant overlays)
         result['quality_mult'] = self._adjust_pitcher_quality(pitcher)
 
         # 2. PITCHER FORM (era_last_5 level + trend slope + quality_start_pct)
@@ -211,29 +169,13 @@ class PitcherEngine:
         # 5. PITCHER FATIGUE (days rest, pitch count)
         result['fatigue_mult'] = self._adjust_pitcher_fatigue(pitcher)
 
-        # 6. PARK FACTORS FOR PITCHER
-        result['park_mult'] = self._adjust_park_for_pitcher(
-            pitcher, game_data, is_home
-        )
-
-        # 7. TRAVEL FATIGUE OF PITCHER
-        result['travel_mult'] = self._adjust_pitcher_travel(
-            pitcher, game_data, is_home
-        )
-
-        # 8. BULLPEN QUALITY
-        result['bullpen_mult'] = self._adjust_bullpen(game_data, is_home)
-
         # Combine via delta formula: 1.0 + Σ((factor - 1.0) × weight)
         result['total_multiplier'] = 1.0 + (
             (result['quality_mult']  - 1.0) * self.weights['pitcher_quality'] +
             (result['form_mult']     - 1.0) * self.weights['pitcher_form'] +
             (result['matchup_mult']  - 1.0) * self.weights['pitcher_matchup'] +
             (result['platoon_mult']  - 1.0) * self.weights['pitcher_platoon'] +
-            (result['fatigue_mult']  - 1.0) * self.weights['pitcher_fatigue'] +
-            (result['park_mult']     - 1.0) * self.weights['park_for_pitcher'] +
-            (result['travel_mult']   - 1.0) * self.weights['travel_pitcher'] +
-            (result['bullpen_mult']  - 1.0) * self.weights['bullpen_quality']
+            (result['fatigue_mult']  - 1.0) * self.weights['pitcher_fatigue']
         )
 
         return result
@@ -241,28 +183,30 @@ class PitcherEngine:
     
     def _adjust_pitcher_quality(self, pitcher: Dict) -> float:
         """
-        Pitcher quality multiplier using a 5-source composite.
+        Pitcher quality multiplier.
 
-        ERA estimator hierarchy (most predictive first):
-          SIERA (FanGraphs real) > xFIP (FanGraphs real) > FIP > ERA
+        ERA estimator fallback (most predictive → least):
+          SIERA → xFIP → FIP → ERA
 
         Contact quality overlay from Baseball Savant:
-          est_woba (xwOBA allowed)  — measures expected batting value per PA
+          est_woba (xwOBA allowed)  — expected batting value per PA
           brl_percent               — barrel rate allowed; predicts HR/XBH
 
         League averages: ERA ≈ 4.20, xwOBA ≈ 0.320, barrel% ≈ 8.0
-        Output is clamped to [0.70, 1.30] to avoid extreme λ swings.
+        Output clamped to [0.70, 1.30].
         """
-        era = pitcher.get("era", 4.50)
-        fip = pitcher.get("fip", era)
+        era   = pitcher.get("era", 4.50)
+        fip   = pitcher.get("fip")
+        xfip  = pitcher.get("xfip")
+        siera = pitcher.get("siera")
 
-        # Real FanGraphs metrics — prefer SIERA (most predictive ERA estimator)
-        xfip  = pitcher.get("xfip")   or fip
-        siera = pitcher.get("siera")  or xfip
-
-        # SIERA 50%, xFIP 30%, ERA 20% — down-weight ERA (noisy, park-biased)
-        composite  = siera * 0.50 + xfip * 0.30 + era * 0.20
-        skill_mult = composite / 4.20
+        primary = (
+            siera if siera is not None else
+            xfip  if xfip  is not None else
+            fip   if fip   is not None else
+            era
+        )
+        skill_mult = primary / 4.20
 
         # xwOBA penalty: each 0.010 above league avg (0.320) ≈ +3% runs allowed
         est_woba = pitcher.get("est_woba")
@@ -414,108 +358,6 @@ class PitcherEngine:
         return fatigue_mult
     
     
-    def _adjust_park_for_pitcher(
-        self,
-        pitcher: Dict,
-        game_data: Dict,
-        is_home: bool
-    ) -> float:
-        """
-        Ajusta por park factors ESPECÍFICOS PARA PITCHERS.
-        
-        NOTA: Esto es diferente al park factor para bateadores (HFA).
-        """
-        
-        park_name = game_data.get('park', {}).get('name', 'Unknown')
-        
-        # Obtener park factor para pitchers
-        park_mult = self.pitcher_park_factors.get(park_name, 1.0)
-        
-        # Si pitcher es away, juega en este park
-        # Si pitcher es home, ya está acostumbrado (mitad del efecto)
-        if is_home:
-            # Pitcher home ya conoce el park
-            park_mult = 1.0 + (park_mult - 1.0) * 0.5
-        
-        return park_mult
-    
-    
-    def _adjust_pitcher_travel(
-        self,
-        pitcher: Dict,
-        game_data: Dict,
-        is_home: bool
-    ) -> float:
-        """
-        Ajusta por travel fatigue DEL PITCHER.
-        
-        NOTA: Diferente al travel del equipo (HFA).
-        """
-        
-        if is_home:
-            return 1.0  # Pitcher home no viajó
-        
-        # Pitcher away viajó
-        miles_traveled = game_data.get('miles_traveled_away', 0)
-        time_zones_crossed = game_data.get('time_zones_crossed_away', 0)
-        
-        travel_mult = 1.0
-        
-        # Distance
-        if miles_traveled > 2000:  # Cross-country
-            travel_mult *= 1.04
-        elif miles_traveled > 1000:
-            travel_mult *= 1.02
-        
-        # Time zones (afecta sleep/circadian rhythm)
-        if time_zones_crossed >= 2:
-            travel_mult *= 1.03
-        elif time_zones_crossed == 1:
-            travel_mult *= 1.01
-        
-        travel_mult = np.clip(travel_mult, 1.0, 1.08)
-        
-        return travel_mult
-    
-    
-    def _adjust_bullpen(
-        self,
-        game_data: Dict,
-        is_home: bool
-    ) -> float:
-        """
-        Ajusta por calidad y disponibilidad del bullpen.
-        """
-        
-        if is_home:
-            bullpen = game_data.get('bullpen_home', {})
-        else:
-            bullpen = game_data.get('bullpen_away', {})
-        
-        # Bullpen ERA
-        bullpen_era = bullpen.get('era', 4.20)
-        league_avg_bullpen = 4.20
-        
-        # Workload reciente (innings últimos 3 días)
-        ip_last_3 = bullpen.get('ip_last_3_days', 3.0)
-        
-        # Closer disponible
-        closer_available = bullpen.get('closer_available', True)
-        
-        # Multiplicador base por ERA
-        bullpen_mult = bullpen_era / league_avg_bullpen
-        
-        # Ajustar por workload
-        if ip_last_3 > 6.0:  # Bullpen cansado
-            bullpen_mult *= 1.05
-        
-        # Ajustar por closer
-        if not closer_available:
-            bullpen_mult *= 1.03  # Sin closer = peor
-        
-        bullpen_mult = np.clip(bullpen_mult, 0.85, 1.15)
-        
-        return bullpen_mult
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
