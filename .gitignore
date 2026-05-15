@@ -22,6 +22,19 @@ __pycache__/
 .env
 .streamlit/secrets.toml
 
+# Claude Code session state (not project source)
+.claude.json
+.claude.json.tmp.*
+.claude/history.jsonl
+.claude/sessions/
+.claude/shell-snapshots/
+.claude/backups/
+.claude/file-history/
+.claude/projects/
+
+# npm cache
+.npm/
+
 # Sistema específico
 .aws/
 .azure/
