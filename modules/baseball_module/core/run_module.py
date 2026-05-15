@@ -44,7 +44,7 @@ except ImportError:
 # Odds API
 try:
     from odds_api import get_best_odds_for_teams
-except ImportError:
+except Exception:
     get_best_odds_for_teams = None
 
 logging.basicConfig(level=logging.INFO)

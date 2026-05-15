@@ -4,10 +4,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_KEY = os.getenv("ODDS_API_KEY")
+API_KEY = os.getenv("ODDS_API_KEY", "")
 if not API_KEY:
-    raise EnvironmentError(
-        "ODDS_API_KEY is not set. Add it to your .env file or environment variables."
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "ODDS_API_KEY not set — get_best_odds_for_teams will return {}"
     )
 
 BASE_URL = "https://api.the-odds-api.com/v4"
@@ -17,6 +18,8 @@ def get_odds(sport="soccer_epl", region="us", market="h2h"):
     """
     Obtiene las cuotas actuales para un deporte (por defecto Premier League)
     """
+    if not API_KEY:
+        return None
     url = f"{BASE_URL}/sports/{sport}/odds/?apiKey={API_KEY}&regions={region}&markets={market}"
     response = requests.get(url)
 
