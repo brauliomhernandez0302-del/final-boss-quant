@@ -21,11 +21,23 @@ from config import MLB_SIMULATIONS, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP, LEAGUE_AVG
 from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
 from modules.baseball_module.calibration.learning_engine import LearningEngine
 
-# HFA - ABSOLUTO
+# Park + Weather (symmetric) - ABSOLUTO
+from modules.baseball_module.hfa.park_weather_engine import adjust_for_park_and_weather
+
+# HFA (asymmetric: crowd + travel) - ABSOLUTO
 from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
 
 # Pitcher - ABSOLUTO
 from modules.baseball_module.context_engine.pitcher_engine import adjust_for_pitchers
+
+# Bullpen - ABSOLUTO
+from modules.baseball_module.context_engine.bullpen_engine import adjust_for_bullpen
+
+# Contextual (rest/B2B + umpire) - ABSOLUTO
+from modules.baseball_module.context_engine.contextual_engine import adjust_for_context
+
+# Defensive Efficiency - ABSOLUTO
+from modules.baseball_module.context_engine.defensive_efficiency_engine import adjust_for_defense
 
 # Monte Carlo - ABSOLUTO
 from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced
@@ -40,6 +52,13 @@ try:
     _ENRICHMENT_AVAILABLE = True
 except ImportError:
     _ENRICHMENT_AVAILABLE = False
+
+# True Talent Offense Engine — replaces get_team_lambda()
+try:
+    from modules.baseball_module.offense.true_talent_engine import get_true_talent_lambda as _get_tte_lambda
+    _TTE_AVAILABLE = True
+except ImportError:
+    _TTE_AVAILABLE = False
 
 # Odds — best prices lookup lives in odds_fetcher (same cache, no extra API call)
 try:
@@ -220,7 +239,7 @@ def run_module(
             'woba': _home_off.get('woba', 0.320),
             'ops': _home_off.get('ops', 0.735),
             'wrc_plus': _home_off.get('wrc_plus', 100.0),
-            # Defense (used by calibrator's _calculate_defense_multiplier on the opponent)
+            # Defense — used by DefensiveEfficiencyEngine (PASO 4)
             'runs_allowed_per_game': _home_pitch.get('runs_allowed_per_game', LEAGUE_AVG_RUNS),
             'team_era': _home_pitch.get('team_era', 4.15),
             'team_whip': _home_pitch.get('team_whip', 1.30),
@@ -367,8 +386,25 @@ def run_module(
         away_rpg = float(away_recent.get('runs_scored_avg', 0)) if isinstance(away_recent, dict) else 0
         home_team_id = game_data.get('home_team_id')
         away_team_id = game_data.get('away_team_id')
-        lh = _integrator.get_team_lambda(home_team, home_rpg, team_id=home_team_id)
-        la = _integrator.get_team_lambda(away_team, away_rpg, team_id=away_team_id)
+        # ── True Talent Offense Engine — park-neutral λ_base ─────────────
+        if _TTE_AVAILABLE and home_team_id and away_team_id:
+            lh, _tte_home_meta = _get_tte_lambda(home_team_id, home_team, _season)
+            la, _tte_away_meta = _get_tte_lambda(away_team_id, away_team, _season)
+            results['metadata']['tte_home'] = _tte_home_meta
+            results['metadata']['tte_away'] = _tte_away_meta
+            logger.info(
+                f"   TTE λ_base: {home_team}={lh:.3f} "
+                f"(xwOBA={_tte_home_meta['metrics']['xwoba_regressed']:.3f} "
+                f"wRC+={_tte_home_meta['metrics']['wrc_plus_approx']:.0f}) | "
+                f"{away_team}={la:.3f} "
+                f"(xwOBA={_tte_away_meta['metrics']['xwoba_regressed']:.3f} "
+                f"wRC+={_tte_away_meta['metrics']['wrc_plus_approx']:.0f})"
+            )
+        else:
+            # Fallback to legacy get_team_lambda when TTE unavailable or no team IDs
+            lh = _integrator.get_team_lambda(home_team, home_rpg, team_id=home_team_id)
+            la = _integrator.get_team_lambda(away_team, away_rpg, team_id=away_team_id)
+            logger.info(f"   λ_base (legacy): λ_h={lh:.3f}  λ_a={la:.3f}")
 
         # ── Kalman-adjusted base lambdas ──────────────────────────────────
         lh = _learning.get_kalman_lambda_adjustment(home_team, "offense_home", _season, lh)
@@ -398,10 +434,10 @@ def run_module(
         # PASO 1: CALIBRATION ENGINE
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if use_calibration:
-            logger.info("\n🎯 PASO 1: Calibration Engine...")
+            logger.info("\n🎯 PASO 1: Calibration Engine (form + season context)...")
 
             calibrator = LambdaCalibrator(learning_engine=_learning)
-            lh_cal, la_cal = calibrator.calibrate(lh, la, game_data)
+            lh_cal, la_cal = calibrator.calibrate(lh, la, game_data, tte_active=_TTE_AVAILABLE)
             _raw_h_cal = lh_cal / _lh_pre_cal if _lh_pre_cal else 1.0
             _raw_a_cal = la_cal / _la_pre_cal if _la_pre_cal else 1.0
             _w_cal = _weights.get("calibration", 1.0)
@@ -413,10 +449,26 @@ def run_module(
             logger.info(f"   ✅ Calibrated: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_cal:.3f})")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 2: HFA ENGINE
+        # PASO 2: PARK + WEATHER ENGINE (simétrico: ambos equipos)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        logger.info("\n🏟️  PASO 2: Park + Weather Engine...")
+        _lh_pre = lh; _la_pre = la
+        lh, la, park_meta = adjust_for_park_and_weather(lh, la, game_data)
+        results['lambdas_history']['park_weather'] = {'lh': lh, 'la': la}
+        results['metadata']['park_weather'] = park_meta
+        _stage_factors['home_park'] = lh / _lh_pre if _lh_pre else 1.0
+        _stage_factors['away_park'] = la / _la_pre if _la_pre else 1.0
+        logger.info(
+            f"   ✅ Park+Weather: park={park_meta['park_factor']:.3f}  "
+            f"weather={park_meta['weather_mult']:.3f}  "
+            f"λ_h={lh:.3f}  λ_a={la:.3f}"
+        )
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # PASO 3: HFA ENGINE (asimétrico: crowd home + travel away)
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if use_hfa:
-            logger.info("\n🏟️  PASO 2: HFA Engine (solo equipo)...")
+            logger.info("\n🏠 PASO 3: HFA Engine (crowd + travel)...")
             _lh_pre = lh; _la_pre = la
             lh_hfa, la_hfa, hfa_meta = get_adjusted_lambdas(lh, la, game_data)
             _raw_h_hfa = lh_hfa / _lh_pre if _lh_pre else 1.0
@@ -431,10 +483,29 @@ def run_module(
             logger.info(f"   ✅ HFA adjusted: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_hfa:.3f})")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 3: PITCHER ENGINE
+        # PASO 4: DEFENSIVE EFFICIENCY ENGINE (fielding puro)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        _def_home = game_data.get('defense_home') or {}
+        _def_away = game_data.get('defense_away') or {}
+        if _def_home or _def_away:
+            logger.info("\n🛡️  PASO 4: Defensive Efficiency Engine...")
+            _lh_pre = lh; _la_pre = la
+            lh, la, def_meta = adjust_for_defense(lh, la, game_data)
+            results['lambdas_history']['defense'] = {'lh': lh, 'la': la}
+            results['metadata']['defense'] = def_meta
+            _stage_factors['home_defense'] = lh / _lh_pre if _lh_pre else 1.0
+            _stage_factors['away_defense'] = la / _la_pre if _la_pre else 1.0
+            logger.info(
+                f"   ✅ Defense adjusted: λ_h={lh:.3f}  λ_a={la:.3f}  "
+                f"(home_def×λ_a={def_meta['home_mult_on_away']:.4f}  "
+                f"away_def×λ_h={def_meta['away_mult_on_home']:.4f})"
+            )
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # PASO 5: PITCHER ENGINE
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         if use_pitcher:
-            logger.info("\n⚾ PASO 3: Pitcher Engine (solo pitchers)...")
+            logger.info("\n⚾ PASO 5: Pitcher Engine (solo pitchers)...")
             _lh_pre = lh; _la_pre = la
             lh_pit, la_pit, pitcher_meta = adjust_for_pitchers(lh, la, game_data)
             _raw_h_pit = lh_pit / _lh_pre if _lh_pre else 1.0
@@ -449,30 +520,42 @@ def run_module(
             logger.info(f"   ✅ Pitcher adjusted: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_pit:.3f})")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 4b: UMPIRE ZONE ADJUSTMENT (symmetric, ±4% max)
+        # PASO 6: BULLPEN ENGINE
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        umpire_stats = game_data.get('umpire_stats')
-        if umpire_stats and umpire_stats.get('games_worked', 0) >= 4:
+        _bp_home = game_data.get('bullpen_home', {})
+        _bp_away = game_data.get('bullpen_away', {})
+        if _bp_home or _bp_away:
+            logger.info("\n🔥 PASO 6: Bullpen Engine...")
             _lh_pre = lh; _la_pre = la
-            zone_factor = float(umpire_stats.get('zone_factor', 1.0))
-            lh = lh * zone_factor
-            la = la * zone_factor
-            results['lambdas_history']['umpire'] = {'lh': lh, 'la': la}
-            _stage_factors['home_umpire'] = lh / _lh_pre if _lh_pre else 1.0
-            _stage_factors['away_umpire'] = la / _la_pre if _la_pre else 1.0
-            logger.info(
-                f"\n⚖️  PASO 4b: Umpire zone adjustment: "
-                f"{game_data.get('hp_umpire_name', 'Unknown')} "
-                f"zone_factor={zone_factor:.3f} "
-                f"(strike%={umpire_stats.get('strike_pct', 0):.1%}, "
-                f"{umpire_stats.get('games_worked', 0)} games) "
-                f"→ λ_h={lh:.3f}, λ_a={la:.3f}"
-            )
+            lh, la, bullpen_meta = adjust_for_bullpen(lh, la, game_data)
+            results['lambdas_history']['bullpen'] = {'lh': lh, 'la': la}
+            results['metadata']['bullpen'] = bullpen_meta
+            _stage_factors['home_bullpen'] = lh / _lh_pre if _lh_pre else 1.0
+            _stage_factors['away_bullpen'] = la / _la_pre if _la_pre else 1.0
+            logger.info(f"   ✅ Bullpen adjusted: λ_h={lh:.3f}, λ_a={la:.3f}")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 5: MONTE CARLO SIMULATION
+        # PASO 7: CONTEXTUAL ENGINE (B2B + rest + umpire)
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        logger.info(f"\n🎲 PASO 5: Monte Carlo ({n_max:,} simulaciones)...")
+        logger.info("\n🎯 PASO 7: Contextual Engine (rest + umpire)...")
+        _lh_pre = lh; _la_pre = la
+        lh, la, ctx_meta = adjust_for_context(lh, la, game_data)
+        results['lambdas_history']['contextual'] = {'lh': lh, 'la': la}
+        results['metadata']['contextual'] = ctx_meta
+        _stage_factors['home_context'] = lh / _lh_pre if _lh_pre else 1.0
+        _stage_factors['away_context'] = la / _la_pre if _la_pre else 1.0
+        _ump = ctx_meta['umpire']
+        logger.info(
+            f"   ✅ home_rest={ctx_meta['home_rest_reason']}(×{ctx_meta['home_rest_mult']:.3f})"
+            f"  away_rest={ctx_meta['away_rest_reason']}(×{ctx_meta['away_rest_mult']:.3f})"
+            f"  ump={_ump['name']}(×{_ump['factor']:.3f})"
+            f" → λ_h={lh:.3f}  λ_a={la:.3f}"
+        )
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # PASO 8: MONTE CARLO SIMULATION
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        logger.info(f"\n🎲 PASO 8: Monte Carlo ({n_max:,} simulaciones)...")
 
         _home_bp_era = game_data.get('bullpen_home', {}).get('era', 4.20)
         _away_bp_era = game_data.get('bullpen_away', {}).get('era', 4.20)

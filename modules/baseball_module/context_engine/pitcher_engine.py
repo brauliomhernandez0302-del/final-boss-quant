@@ -1,382 +1,354 @@
 """
-PITCHER ENGINE G13 PRO - VERSIÓN ENFOCADA
-===========================================
+PITCHER ENGINE — Starting-pitcher quality and game-context adjustments
+======================================================================
 
-Módulo especializado en ajustar lambdas SOLO por factores de PITCHERS.
+Adjusts λ_home / λ_away based on the STARTING PITCHER's characteristics.
+Bullpen adjustments are handled by a separate Bullpen Engine (not this file).
 
-Responsabilidades:
-✅ Pitcher quality (ERA, WHIP, FIP, xFIP, SIERA)
-✅ Pitcher recent form (últimos 5-10 starts)
-✅ Pitcher vs team matchup (histórico vs este lineup)
-✅ Pitcher fatigue (pitch count, days rest)
-✅ Park factors PARA PITCHERS (no para bateadores - eso es HFA)
-✅ Travel fatigue DEL PITCHER (no del equipo - eso es HFA)
-✅ Bullpen workload & quality
-✅ Closer availability
+Responsibilities:
+  Starter quality    — SIERA → xFIP → xERA → FIP → ERA composite
+                       + Statcast xwOBA allowed, barrel%, and K%-BB% overlays
+                       + Bayesian regression to mean based on innings pitched
+  Recent form        — era_last_5 level vs season, ERA slope trend, QS%
+  Matchup history    — era_vs_opp shrunk toward season ERA at < 15 IP
+  Platoon splits     — L/R WHIP split × opposing lineup handedness composition
+  Fatigue            — smooth gradient over days-rest and last-start pitch count
 
-NO toca:
-❌ Home advantage del equipo (eso es HFA)
-❌ Park factors para bateadores (eso es HFA)
-❌ Travel fatigue del equipo bateo/fielding (eso es HFA)
-❌ Offense/defense del equipo (eso es HFA)
-
-Autor: Braulio & Claude
-Versión: G13 Pro Focused
+Does NOT handle:
+  Home field advantage           — HFA Engine
+  Ballpark / park factor         — HFA Engine (or future Park Engine)
+  Team offense / defense         — True Talent Engine + AutoCalibrator
+  Bullpen quality / workload     — Bullpen Engine (separate)
+  Travel fatigue of position players — HFA Engine
 """
 
 import numpy as np
 from typing import Dict, Any, Tuple, Optional
 import logging
-from config import PITCHER_ENGINE_WEIGHTS
+from config import PITCHER_ENGINE_WEIGHTS, LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP
 
 logger = logging.getLogger(__name__)
+
+# League averages for normalisation (2024/2025 combined)
+_LG_ERA      = LEAGUE_AVG_ERA     # 4.15
+_LG_WHIP     = LEAGUE_AVG_WHIP    # 1.30
+_LG_K_PCT    = 0.220              # starter league-avg K%
+_LG_BB_PCT   = 0.080              # starter league-avg BB%
+_LG_K_BB     = _LG_K_PCT - _LG_BB_PCT   # 0.140
+
+# Bayesian stabilisation constant for ERA estimators (TBF at 50% reliability).
+# Research-based: FIP/xFIP stabilise around 300-400 TBF; SIERA around 250.
+# Using 350 as a reasonable average across the fallback chain.
+_K_TBF_ERA   = 350
 
 
 class PitcherEngine:
     """
-    Motor de ajuste por factores de pitchers.
-    
-    Ajusta lambdas de Poisson basado en:
-    - Calidad del pitcher starter
-    - Forma reciente del pitcher
-    - Matchup histórico pitcher vs equipo
-    - Park factors específicos para pitchers
-    - Fatiga y travel del pitcher
-    - Calidad y disponibilidad del bullpen
+    Adjusts Poisson λ values for the starting pitcher matchup.
+    Each sub-factor returns a multiplier around 1.0; factors are combined
+    via the delta formula: 1 + Σ((factor − 1) × weight).
     """
-    
+
     def __init__(self):
-        self.name = "PitcherEngine G13 Pro Focused"
+        self.name    = "PitcherEngine"
         self.weights = dict(PITCHER_ENGINE_WEIGHTS)
-    
-    
+
     def adjust_for_pitchers(
         self,
         lh: float,
         la: float,
-        game_data: Dict[str, Any]
+        game_data: Dict[str, Any],
     ) -> Tuple[float, float, Dict[str, Any]]:
         """
-        Ajusta lambdas por todos los factores de pitchers.
-        
-        Args:
-            lh: Lambda home después de HFA/Calibration
-            la: Lambda away después de HFA/Calibration
-            game_data: Dict completo con info del juego
-        
-        Returns:
-            (lh_adjusted, la_adjusted, metadata)
+        Adjusts λ_home and λ_away for the starter matchup.
+
+        Away pitcher faces the home lineup  → adjusts λ_home.
+        Home pitcher faces the away lineup  → adjusts λ_away.
+
+        Returns (lh_adjusted, la_adjusted, metadata).
         """
-        
-        logger.info(f"🎯 Pitcher Engine G13 Pro - Ajustando lambdas")
-        logger.info(f"   Input: λ_h={lh:.3f}, λ_a={la:.3f}")
-        
+        logger.info("Pitcher Engine — adjusting lambdas")
+        logger.info("   Input: λ_h=%.3f  λ_a=%.3f", lh, la)
+
+        pitcher_home = game_data.get("pitcher_home", {})
+        pitcher_away = game_data.get("pitcher_away", {})
+
+        # Away starter holds down the home lineup
+        adj_away = self._calculate_pitcher_adjustment(pitcher_away, game_data, is_home=False)
+        lh_new   = lh * adj_away["total_multiplier"]
+
+        # Home starter holds down the away lineup
+        adj_home = self._calculate_pitcher_adjustment(pitcher_home, game_data, is_home=True)
+        la_new   = la * adj_home["total_multiplier"]
+
+        logger.info(
+            "   Away starter (%s): mult=%.3f  λ_home %.3f → %.3f",
+            pitcher_away.get("name", "?"), adj_away["total_multiplier"], lh, lh_new,
+        )
+        logger.info(
+            "   Home starter (%s): mult=%.3f  λ_away %.3f → %.3f",
+            pitcher_home.get("name", "?"), adj_home["total_multiplier"], la, la_new,
+        )
+
         metadata = {
-            'adjustments': {},
-            'pitcher_home': {},
-            'pitcher_away': {}
+            "pitcher_home": adj_home,
+            "pitcher_away": adj_away,
         }
-        
-        # Extraer datos
-        pitcher_home = game_data.get('pitcher_home', {})
-        pitcher_away = game_data.get('pitcher_away', {})
-        park = game_data.get('park', {})
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 1: AJUSTAR POR PITCHER AWAY (afecta λ_home)
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        adj_away = self._calculate_pitcher_adjustment(
-            pitcher_away,
-            game_data,
-            is_home=False
-        )
-        
-        lh_new = lh * adj_away['total_multiplier']
-        metadata['pitcher_away'] = adj_away
-        
-        logger.info(f"   Pitcher Away ({pitcher_away.get('name', 'Unknown')}):")
-        logger.info(f"   └─ Multiplier: {adj_away['total_multiplier']:.3f}")
-        logger.info(f"   └─ λ_home: {lh:.3f} → {lh_new:.3f}")
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 2: AJUSTAR POR PITCHER HOME (afecta λ_away)
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        adj_home = self._calculate_pitcher_adjustment(
-            pitcher_home,
-            game_data,
-            is_home=True
-        )
-        
-        la_new = la * adj_home['total_multiplier']
-        metadata['pitcher_home'] = adj_home
-        
-        logger.info(f"   Pitcher Home ({pitcher_home.get('name', 'Unknown')}):")
-        logger.info(f"   └─ Multiplier: {adj_home['total_multiplier']:.3f}")
-        logger.info(f"   └─ λ_away: {la:.3f} → {la_new:.3f}")
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # RESULTADO FINAL
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        logger.info(f"✅ Pitcher Engine completado:")
-        logger.info(f"   λ_home: {lh:.3f} → {lh_new:.3f} (Δ={lh_new-lh:+.3f})")
-        logger.info(f"   λ_away: {la:.3f} → {la_new:.3f} (Δ={la_new-la:+.3f})")
-        
         return lh_new, la_new, metadata
-    
-    
+
+    # ── Factor dispatch ────────────────────────────────────────────────────────
+
     def _calculate_pitcher_adjustment(
         self,
         pitcher: Dict[str, Any],
         game_data: Dict[str, Any],
-        is_home: bool
+        is_home: bool,
     ) -> Dict[str, Any]:
-        """
-        Calcula el ajuste completo para UN pitcher.
-        
-        Returns:
-            Dict con multiplicador total y desglose
-        """
-        
-        result = {
-            'pitcher_name':     pitcher.get('name', 'Unknown'),
-            'quality_mult':     1.0,
-            'form_mult':        1.0,
-            'matchup_mult':     1.0,
-            'platoon_mult':     1.0,
-            'fatigue_mult':     1.0,
-            'total_multiplier': 1.0,
+        quality  = self._adjust_pitcher_quality(pitcher)
+        form     = self._adjust_pitcher_form(pitcher)
+        matchup  = self._adjust_pitcher_matchup(pitcher, game_data, is_home)
+        platoon  = self._adjust_pitcher_platoon(pitcher, game_data, is_home)
+        fatigue  = self._adjust_pitcher_fatigue(pitcher)
+
+        # Delta-weighted combination: preserves the direction and magnitude of each
+        # sub-factor while mixing them proportionally by their assigned weights.
+        total = 1.0 + (
+            (quality - 1.0) * self.weights["pitcher_quality"] +
+            (form    - 1.0) * self.weights["pitcher_form"]    +
+            (matchup - 1.0) * self.weights["pitcher_matchup"] +
+            (platoon - 1.0) * self.weights["pitcher_platoon"] +
+            (fatigue - 1.0) * self.weights["pitcher_fatigue"]
+        )
+
+        return {
+            "pitcher_name":     pitcher.get("name", "Unknown"),
+            "quality_mult":     quality,
+            "form_mult":        form,
+            "matchup_mult":     matchup,
+            "platoon_mult":     platoon,
+            "fatigue_mult":     fatigue,
+            "total_multiplier": float(np.clip(total, 0.65, 1.45)),
         }
 
-        # 1. PITCHER QUALITY (SIERA → xFIP → FIP → ERA, + Savant overlays)
-        result['quality_mult'] = self._adjust_pitcher_quality(pitcher)
+    # ── Quality ───────────────────────────────────────────────────────────────
 
-        # 2. PITCHER FORM (era_last_5 level + trend slope + quality_start_pct)
-        result['form_mult'] = self._adjust_pitcher_form(pitcher)
-
-        # 3. PITCHER VS TEAM MATCHUP
-        result['matchup_mult'] = self._adjust_pitcher_matchup(
-            pitcher, game_data, is_home
-        )
-
-        # 4. PLATOON SPLITS × LINEUP HANDEDNESS
-        result['platoon_mult'] = self._adjust_pitcher_platoon(
-            pitcher, game_data, is_home
-        )
-
-        # 5. PITCHER FATIGUE (days rest, pitch count)
-        result['fatigue_mult'] = self._adjust_pitcher_fatigue(pitcher)
-
-        # Combine via delta formula: 1.0 + Σ((factor - 1.0) × weight)
-        result['total_multiplier'] = 1.0 + (
-            (result['quality_mult']  - 1.0) * self.weights['pitcher_quality'] +
-            (result['form_mult']     - 1.0) * self.weights['pitcher_form'] +
-            (result['matchup_mult']  - 1.0) * self.weights['pitcher_matchup'] +
-            (result['platoon_mult']  - 1.0) * self.weights['pitcher_platoon'] +
-            (result['fatigue_mult']  - 1.0) * self.weights['pitcher_fatigue']
-        )
-
-        return result
-    
-    
     def _adjust_pitcher_quality(self, pitcher: Dict) -> float:
         """
-        Pitcher quality multiplier.
+        Starter quality multiplier combining four orthogonal signals:
 
-        ERA estimator fallback (most predictive → least):
-          SIERA → xFIP → FIP → ERA
+        1. ERA estimator (SIERA → xFIP → xERA → FIP → ERA)
+           Bayesian-regressed toward league average based on IP (TBF proxy),
+           so small samples early in the season don't overfit.
 
-        Contact quality overlay from Baseball Savant:
-          est_woba (xwOBA allowed)  — expected batting value per PA
-          brl_percent               — barrel rate allowed; predicts HR/XBH
+        2. Statcast xwOBA allowed — expected batting value vs this pitcher
+           per PA (removes BABIP luck from batted-ball outcomes).
 
-        League averages: ERA ≈ 4.20, xwOBA ≈ 0.320, barrel% ≈ 8.0
-        Output clamped to [0.70, 1.30].
+        3. Statcast barrel% allowed — predicts HR/XBH better than HR/9.
+
+        4. K%-BB% differential — most reliably stabilises and predicts
+           future ERA; reflects true command and swing-and-miss ability.
+
+        Output clamped to [0.70, 1.35].
         """
-        era   = pitcher.get("era", 4.50)
+        era   = float(pitcher.get("era",   _LG_ERA))
         fip   = pitcher.get("fip")
         xfip  = pitcher.get("xfip")
+        xera  = pitcher.get("xera")
         siera = pitcher.get("siera")
 
-        primary = (
+        # Best available ERA estimator (most predictive → least)
+        primary = float(
             siera if siera is not None else
             xfip  if xfip  is not None else
+            xera  if xera  is not None else
             fip   if fip   is not None else
             era
         )
-        skill_mult = primary / 4.20
 
-        # xwOBA penalty: each 0.010 above league avg (0.320) ≈ +3% runs allowed
+        # Bayesian regression: regress primary toward league avg based on IP sample.
+        # At IP=0 → 100% league avg. At IP≈81 (350 TBF) → 50/50. At IP=∞ → raw value.
+        ip_cur   = float(pitcher.get("innings_pitched") or 0)
+        tbf_est  = max(0.0, ip_cur * 4.3)   # ~4.3 TBF per IP for starters
+        shrink_w = _K_TBF_ERA / (_K_TBF_ERA + tbf_est)
+        primary_reg = primary * (1.0 - shrink_w) + _LG_ERA * shrink_w
+        skill_mult  = primary_reg / _LG_ERA
+
+        # xwOBA allowed overlay — each 0.010 above avg (0.320) ≈ +3% runs allowed
         est_woba = pitcher.get("est_woba")
-        if est_woba is not None:
-            woba_mult = 1.0 + (float(est_woba) - 0.320) * 3.0
-        else:
-            woba_mult = 1.0
+        woba_mult = (
+            1.0 + (float(est_woba) - 0.320) * 3.0
+            if est_woba is not None else 1.0
+        )
 
-        # Barrel% penalty: each 1 ppt above league avg (8%) ≈ +1.2% runs allowed
+        # Barrel% allowed overlay — each 1 ppt above avg (8%) ≈ +1.2% runs allowed
         brl_pct = pitcher.get("brl_percent")
-        if brl_pct is not None:
-            brl_mult = 1.0 + max(0.0, float(brl_pct) - 8.0) * 0.012
-        else:
-            brl_mult = 1.0
+        brl_mult = (
+            1.0 + max(0.0, float(brl_pct) - 8.0) * 0.012
+            if brl_pct is not None else 1.0
+        )
 
-        multiplier = float(np.clip(skill_mult * woba_mult * brl_mult, 0.70, 1.30))
+        # K%-BB% overlay — elite command (high K, low BB) means fewer runs
+        # Each 1% above league avg K-BB (14%) → ~1.5% fewer runs allowed
+        k_pct  = pitcher.get("k_pct")
+        bb_pct = pitcher.get("bb_pct")
+        if k_pct is not None and bb_pct is not None:
+            k_bb_diff = (float(k_pct) - float(bb_pct)) - _LG_K_BB
+            kbb_mult  = float(np.clip(1.0 - k_bb_diff * 1.5, 0.88, 1.12))
+        else:
+            kbb_mult = 1.0
+
+        multiplier = float(np.clip(
+            skill_mult * woba_mult * brl_mult * kbb_mult,
+            0.70, 1.35,
+        ))
+        logger.debug(
+            "   quality: prim=%.2f→%.2f(reg)  xwOBA=%.3f  brl=%.1f  kbb_mult=%.3f  → %.3f",
+            primary, primary_reg,
+            float(est_woba) if est_woba is not None else 0.320,
+            float(brl_pct)  if brl_pct  is not None else 8.0,
+            kbb_mult, multiplier,
+        )
         return multiplier
-    
-    
+
+    # ── Form ──────────────────────────────────────────────────────────────────
+
     def _adjust_pitcher_form(self, pitcher: Dict) -> float:
         """
-        Adjust for recent form using three signals:
+        Three recent-form signals combined multiplicatively:
+          1. ERA level  — era_last_5 vs season ERA
+          2. ERA trend  — signed slope of per-start ERA (improving vs worsening)
+          3. QS%        — fraction of recent starts that were quality starts
 
-        1. ERA level  — era_last_5 vs season ERA (how does recent compare overall?)
-        2. ERA trend  — slope of per-start ERA, oldest→newest (getting better/worse?)
-        3. QS%        — fraction of recent starts that were quality starts (≥6 IP ≤3 ER)
-
-        All three push in the same direction so no signal cancels another.
-        Clamped to [0.85, 1.15] to match the other factor limits.
+        Clamped to [0.85, 1.15].
         """
-        recent_era = pitcher.get('era_last_5', pitcher.get('era', 4.50))
-        season_era = pitcher.get('era', 4.50)
+        recent_era = pitcher.get("era_last_5", pitcher.get("era", _LG_ERA))
+        season_era = pitcher.get("era",          _LG_ERA)
 
-        # Level: positive diff = pitcher ERA worse recently = more opponent runs
-        level_diff = recent_era - season_era
-        level_adj  = 1.0 + (level_diff * 0.06)
+        level_diff = float(recent_era) - float(season_era)
+        level_adj  = 1.0 + level_diff * 0.06
 
-        # Trend: negative slope = ERA dropping (improving) → opponent scores less
-        era_trend  = pitcher.get('era_trend', 0.0)
-        trend_adj  = 1.0 + (era_trend * 0.03)
+        era_trend = pitcher.get("era_trend", 0.0)
+        trend_adj = 1.0 + float(era_trend or 0.0) * 0.03
 
-        # Quality-start %: higher = pitcher dominant = less opponent scoring
-        qs_pct    = pitcher.get('quality_start_pct', 0.50)
-        qs_adj    = 1.0 - (qs_pct - 0.50) * 0.06  # neutral at 50%, ±3% at extremes
+        qs_pct  = pitcher.get("quality_start_pct", 0.50)
+        qs_adj  = 1.0 - (float(qs_pct or 0.50) - 0.50) * 0.06
 
         form_adj = level_adj * trend_adj * qs_adj
         return float(np.clip(form_adj, 0.85, 1.15))
 
-    def _adjust_pitcher_platoon(
-        self, pitcher: Dict, game_data: Dict, is_home: bool
-    ) -> float:
-        """
-        Adjust for the platoon mismatch between the pitcher's L/R splits
-        and the opposing lineup's actual handedness composition.
+    # ── Matchup ───────────────────────────────────────────────────────────────
 
-        Data flow:
-          pitcher['platoon_splits'] = {'vs_lhb': {ip, whip, ...},
-                                       'vs_rhb': {ip, whip, ...}}
-          game_data['home_lineup_lhb_pct'] / 'away_lineup_lhb_pct'  (0–1)
-
-        Home pitcher faces the away lineup (away_lineup_lhb_pct).
-        Away pitcher faces the home lineup (home_lineup_lhb_pct).
-
-        A pitcher with a large WHIP differential between splits will be
-        penalised/rewarded based on how many of that type are in today's lineup.
-        Returns 1.0 when data is insufficient.
-        """
-        platoon = pitcher.get('platoon_splits')
-        if not platoon:
-            return 1.0
-
-        vs_lhb = platoon.get('vs_lhb') or {}
-        vs_rhb = platoon.get('vs_rhb') or {}
-        if not vs_lhb or not vs_rhb:
-            return 1.0
-
-        # Fraction of LHB in the *opposing* lineup
-        if is_home:
-            opp_lhb_pct = float(game_data.get('away_lineup_lhb_pct', 0.45))
-        else:
-            opp_lhb_pct = float(game_data.get('home_lineup_lhb_pct', 0.45))
-        opp_rhb_pct = 1.0 - opp_lhb_pct
-
-        # Lineup-composition-weighted WHIP
-        lhb_whip = float(vs_lhb.get('whip', 1.30))
-        rhb_whip = float(vs_rhb.get('whip', 1.30))
-        lineup_whip = opp_lhb_pct * lhb_whip + opp_rhb_pct * rhb_whip
-
-        overall_whip = float(pitcher.get('whip', 1.30))
-        if overall_whip <= 0:
-            return 1.0
-
-        # lineup_whip > overall_whip → today's lineup is harder for this pitcher
-        platoon_mult = lineup_whip / overall_whip
-        return float(np.clip(platoon_mult, 0.93, 1.07))
-    
-    
     def _adjust_pitcher_matchup(
         self,
         pitcher: Dict,
         game_data: Dict,
-        is_home: bool
+        is_home: bool,
     ) -> float:
         """
-        Ajusta por matchup histórico pitcher vs este equipo.
-        era_vs_opp is populated by data_fetchers via the MLB Stats API vsTeam endpoint.
+        Historical ERA vs today's opponent, shrunk toward season ERA
+        when sample is < 15 IP.
         """
         era_vs_team = pitcher.get("era_vs_opp")
         if era_vs_team is None:
             return 1.0
 
-        season_era = pitcher.get('era', 4.50)
-        ip_vs_opp = pitcher.get('ip_vs_opp', 0)
+        season_era = float(pitcher.get("era", _LG_ERA))
+        ip_vs_opp  = pitcher.get("ip_vs_opp", 0)
 
-        # Shrink toward season ERA when sample is small (< 15 IP)
-        if ip_vs_opp and ip_vs_opp < 15:
-            weight = ip_vs_opp / 15.0
-            era_vs_team = era_vs_team * weight + season_era * (1 - weight)
+        if ip_vs_opp and float(ip_vs_opp) < 15:
+            w = float(ip_vs_opp) / 15.0
+            era_vs_team = float(era_vs_team) * w + season_era * (1.0 - w)
 
-        diff = era_vs_team - season_era
-        matchup_mult = 1.0 + (diff * 0.06)
-        matchup_mult = np.clip(matchup_mult, 0.85, 1.15)
+        diff = float(era_vs_team) - season_era
+        return float(np.clip(1.0 + diff * 0.06, 0.85, 1.15))
 
-        return float(matchup_mult)
-    
-    
+    # ── Platoon ───────────────────────────────────────────────────────────────
+
+    def _adjust_pitcher_platoon(
+        self,
+        pitcher: Dict,
+        game_data: Dict,
+        is_home: bool,
+    ) -> float:
+        """
+        WHIP-based platoon mismatch: lineup-composition-weighted WHIP vs overall WHIP.
+        Home pitcher faces away lineup (away_lineup_lhb_pct) and vice versa.
+        Returns 1.0 when split data is insufficient.
+        """
+        platoon = pitcher.get("platoon_splits")
+        if not platoon:
+            return 1.0
+
+        vs_lhb = platoon.get("vs_lhb") or {}
+        vs_rhb = platoon.get("vs_rhb") or {}
+        if not vs_lhb or not vs_rhb:
+            return 1.0
+
+        opp_lhb_pct = float(
+            game_data.get("away_lineup_lhb_pct", 0.45) if is_home
+            else game_data.get("home_lineup_lhb_pct", 0.45)
+        )
+        opp_rhb_pct = 1.0 - opp_lhb_pct
+
+        lhb_whip    = float(vs_lhb.get("whip", _LG_WHIP))
+        rhb_whip    = float(vs_rhb.get("whip", _LG_WHIP))
+        lineup_whip = opp_lhb_pct * lhb_whip + opp_rhb_pct * rhb_whip
+
+        overall_whip = float(pitcher.get("whip", _LG_WHIP))
+        if overall_whip <= 0:
+            return 1.0
+
+        return float(np.clip(lineup_whip / overall_whip, 0.93, 1.07))
+
+    # ── Fatigue ───────────────────────────────────────────────────────────────
+
     def _adjust_pitcher_fatigue(self, pitcher: Dict) -> float:
         """
-        Ajusta por fatiga del pitcher (days rest, pitch count).
+        Smooth fatigue gradient from days rest and last-start pitch count.
+
+        Days rest (optimal window: 4–5 days):
+          0 d  → +9.0%  (back-to-back, extremely rare for starters)
+          1 d  → +7.5%
+          2 d  → +5.0%
+          3 d  → +2.5%
+          4–5 d → neutral
+          6 d  → +0.8%  (rust begins)
+          7 d  → +1.6%
+          8+ d → +2.4% cap
+
+        Pitch count (above 100 in last start):
+          +0.12% per pitch above 100; capped at +4.8% (at 140 pitches).
         """
-        
-        days_rest = pitcher.get('days_rest', 4)
-        last_pitch_count = pitcher.get('last_pitch_count', 90)
-        
-        fatigue_mult = 1.0
-        
-        # Days rest
-        if days_rest < 4:  # Menos descanso de lo normal
-            fatigue_mult *= 1.05  # Peor rendimiento
-        elif days_rest > 5:  # Demasiado descanso (rust)
-            fatigue_mult *= 1.02
-        
-        # Pitch count alto en último start
-        if last_pitch_count > 105:
-            fatigue_mult *= 1.04  # Cansancio residual
-        
-        fatigue_mult = np.clip(fatigue_mult, 0.95, 1.10)
-        
-        return fatigue_mult
-    
-    
+        days_rest = int(pitcher.get("days_rest", 4))
+
+        if days_rest == 0:
+            rest_adj = 1.090
+        elif days_rest <= 3:
+            rest_adj = 1.0 + (4 - days_rest) * 0.025
+        elif days_rest >= 6:
+            rest_adj = 1.0 + min((days_rest - 5) * 0.008, 0.024)
+        else:
+            rest_adj = 1.0   # 4–5 days: optimal
+
+        last_pc  = float(pitcher.get("last_pitch_count", 90))
+        pc_mult  = (
+            1.0 + min((last_pc - 100.0) * 0.0012, 0.048)
+            if last_pc > 100 else 1.0
+        )
+
+        return float(np.clip(rest_adj * pc_mult, 0.95, 1.12))
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# FUNCIÓN HELPER PARA USAR EN RUN_MODULE
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ── Module-level helper ────────────────────────────────────────────────────────
 
 def adjust_for_pitchers(
     lh: float,
     la: float,
-    game_data: Dict[str, Any]
+    game_data: Dict[str, Any],
 ) -> Tuple[float, float, Dict[str, Any]]:
     """
-    Función helper para importar en run_module.
-    
-    Usage:
+    Convenience wrapper used by run_module.py:
         from context_engine.pitcher_engine import adjust_for_pitchers
-        
-        lh_adj, la_adj, meta = adjust_for_pitchers(lh, la, game_data)
+        lh, la, meta = adjust_for_pitchers(lh, la, game_data)
     """
-    
-    engine = PitcherEngine()
-    return engine.adjust_for_pitchers(lh, la, game_data)
+    return PitcherEngine().adjust_for_pitchers(lh, la, game_data)

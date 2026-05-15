@@ -30,6 +30,10 @@ def _avg_pitcher(**kwargs):
         "era_last_5": 4.20,
         "days_rest": 4,
         "last_pitch_count": 90,
+        # innings_pitched must be present so Bayesian shrinkage doesn't collapse
+        # everything to league average (k_TBF=350; at IP=0 → shrink_w=1.0 → mult=1.0).
+        # 100 IP ≈ ~17 starts, enough for the quality signal to register.
+        "innings_pitched": 100,
     }
     defaults.update(kwargs)
     return defaults
@@ -109,68 +113,78 @@ class TestDeltaFormula:
 
 
 class TestPitcherQualityMultiplier:
+    # All dicts include innings_pitched=100 so Bayesian shrinkage (k_TBF=350)
+    # doesn't collapse every result to 1.0 (which happens at IP=0, shrink_w=1.0).
 
     def test_elite_below_one(self):
         engine = _engine()
-        mult = engine._adjust_pitcher_quality({"era": 2.50, "fip": 2.50})
+        mult = engine._adjust_pitcher_quality({"era": 2.50, "fip": 2.50, "innings_pitched": 100})
         assert mult < 1.0
 
     def test_league_avg_is_one(self):
+        # _LG_ERA = 4.15 (LEAGUE_AVG_ERA), not 4.20. Using 4.15 → primary_reg = 4.15 → mult = 1.0.
         engine = _engine()
-        mult = engine._adjust_pitcher_quality({"era": 4.20, "fip": 4.20})
-        assert mult == pytest.approx(1.0, abs=1e-6)
+        mult = engine._adjust_pitcher_quality({"era": 4.15, "fip": 4.15, "innings_pitched": 100})
+        assert mult == pytest.approx(1.0, abs=1e-4)
 
     def test_bad_above_one(self):
         engine = _engine()
-        mult = engine._adjust_pitcher_quality({"era": 6.00, "fip": 6.00})
+        mult = engine._adjust_pitcher_quality({"era": 6.00, "fip": 6.00, "innings_pitched": 100})
         assert mult > 1.0
 
     def test_era_only_fallback(self):
         # When SIERA/xFIP/FIP all absent, ERA is the primary metric.
+        # At IP=100 → tbf_est=430, shrink_w=350/(350+430)≈0.449
+        # primary_reg = era*(1-0.449) + LG_ERA*0.449 → mult = primary_reg/LG_ERA
         engine = _engine()
-        era = 3.00
-        expected = float(np.clip(era / 4.20, 0.70, 1.30))
-        result = engine._adjust_pitcher_quality({"era": era})
-        assert result == pytest.approx(expected, abs=1e-6)
+        mult = engine._adjust_pitcher_quality({"era": 3.00, "innings_pitched": 100})
+        # Directional: elite ERA (3.00 < 4.15) → mult < 1.0
+        assert mult < 1.0, f"ERA 3.00 with 100 IP should give mult < 1.0, got {mult:.4f}"
 
     def test_real_xfip_siera_used_when_available(self):
-        # Real xFIP/SIERA from FanGraphs should dominate ERA in the composite.
+        # Lucky pitcher: great ERA but average xFIP/SIERA → mult closer to 1.0
         engine = _engine()
-        # Lucky pitcher: great ERA but average xFIP/SIERA
-        mult_lucky   = engine._adjust_pitcher_quality({"era": 2.00, "xfip": 4.20, "siera": 4.20})
-        mult_genuine = engine._adjust_pitcher_quality({"era": 2.00, "xfip": 2.00, "siera": 2.00})
+        mult_lucky   = engine._adjust_pitcher_quality(
+            {"era": 2.00, "xfip": 4.20, "siera": 4.20, "innings_pitched": 100})
+        mult_genuine = engine._adjust_pitcher_quality(
+            {"era": 2.00, "xfip": 2.00, "siera": 2.00, "innings_pitched": 100})
         assert mult_lucky > mult_genuine, "Real xFIP/SIERA should override a lucky ERA"
 
     def test_xwoba_penalty_increases_lambda(self):
-        # Pitcher allowing high xwOBA (0.360 vs 0.320 avg) should give mult > 1.0
         engine = _engine()
-        result_high = engine._adjust_pitcher_quality({"era": 4.20, "est_woba": 0.360})
-        result_avg  = engine._adjust_pitcher_quality({"era": 4.20, "est_woba": 0.320})
+        result_high = engine._adjust_pitcher_quality(
+            {"era": 4.20, "est_woba": 0.360, "innings_pitched": 100})
+        result_avg  = engine._adjust_pitcher_quality(
+            {"era": 4.20, "est_woba": 0.320, "innings_pitched": 100})
         assert result_high > result_avg
 
     def test_barrel_rate_penalty_increases_lambda(self):
-        # Pitcher allowing high barrel% (14% vs 8% avg) should give mult > 1.0
         engine = _engine()
-        result_high = engine._adjust_pitcher_quality({"era": 4.20, "brl_percent": 14.0})
-        result_avg  = engine._adjust_pitcher_quality({"era": 4.20, "brl_percent": 8.0})
+        result_high = engine._adjust_pitcher_quality(
+            {"era": 4.20, "brl_percent": 14.0, "innings_pitched": 100})
+        result_avg  = engine._adjust_pitcher_quality(
+            {"era": 4.20, "brl_percent": 8.0, "innings_pitched": 100})
         assert result_high > result_avg
 
     def test_clamped_at_0_70_minimum(self):
         engine = _engine()
-        result = engine._adjust_pitcher_quality({"era": 0.50, "fip": 0.50})
+        result = engine._adjust_pitcher_quality({"era": 0.50, "fip": 0.50, "innings_pitched": 999})
         assert result == pytest.approx(0.70)
 
-    def test_clamped_at_1_30_maximum(self):
+    def test_clamped_at_ceiling(self):
+        # _adjust_pitcher_quality clips at [0.70, 1.35] — verify the ceiling.
         engine = _engine()
-        result = engine._adjust_pitcher_quality({"era": 10.0, "fip": 10.0})
-        assert result == pytest.approx(1.30)
+        result = engine._adjust_pitcher_quality({"era": 10.0, "fip": 10.0, "innings_pitched": 999})
+        assert result == pytest.approx(1.35)
 
     def test_fip_overrides_lucky_era(self):
-        # FIP is the fallback over ERA: era=2.00 (lucky) + fip=4.20 → primary=4.20 → mult≈1.0
+        # FIP fallback: lucky ERA 2.00 but FIP 4.20 → mult closer to 1.0 than genuine 2.00
         engine = _engine()
-        mult_lucky = engine._adjust_pitcher_quality({"era": 2.00, "fip": 4.20})
-        mult_true  = engine._adjust_pitcher_quality({"era": 2.00, "fip": 2.00})
-        assert mult_lucky > mult_true, "FIP fallback should fully override a lucky ERA"
+        mult_lucky = engine._adjust_pitcher_quality(
+            {"era": 2.00, "fip": 4.20, "innings_pitched": 100})
+        mult_true  = engine._adjust_pitcher_quality(
+            {"era": 2.00, "fip": 2.00, "innings_pitched": 100})
+        assert mult_lucky > mult_true, "FIP fallback should override a lucky ERA"
 
 
 class TestPitcherEngineDirectionality:

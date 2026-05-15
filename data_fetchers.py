@@ -1284,11 +1284,29 @@ class MLBStatsAPI:
             ra_per_game = round(runs_allowed / games, 3) if games > 0 else 4.5
             if era <= 0 or whip <= 0:
                 return None
+
+            # DER = 1 − BABIP_allowed (fielding-pure metric)
+            # BIP = AB − K − HR + SF
+            hits = int(stat.get("hits", 0))
+            ab   = int(stat.get("atBats", 0))
+            so   = int(stat.get("strikeOuts", 0))
+            hr   = int(stat.get("homeRuns", 0))
+            sf   = int(stat.get("sacFlies", 0))
+            bip  = ab - so - hr + sf
+            if bip > 0:
+                babip_allowed = (hits - hr) / bip
+                der = round(1.0 - babip_allowed, 4)
+            else:
+                der = 0.715   # league average fallback
+                bip = 0
+
             result = {
                 "team_era": round(era, 2),
                 "team_whip": round(whip, 2),
                 "runs_allowed_per_game": ra_per_game,
                 "games": games,
+                "der": der,
+                "bip": bip,
             }
             with open(cache_file, "w") as f:
                 json.dump(result, f)
@@ -1330,11 +1348,26 @@ class MLBStatsAPI:
             whip = _safe_float(stat.get("whip"))
             if era <= 0:
                 return None
+
+            # K% and BB% — same API call, no extra cost
+            so  = int(stat.get("strikeOuts",    0))
+            bb  = int(stat.get("baseOnBalls",   0))
+            tbf = int(stat.get("battersFaced",  0))
+            ip_str = stat.get("inningsPitched", "0")
+            try:
+                ip = float(ip_str)
+            except (TypeError, ValueError):
+                ip = 0.0
+
             result = {
-                "era": round(era, 2),          # key the pitcher engine reads
-                "bullpen_era": round(era, 2),
-                "bullpen_whip": round(whip, 2) if whip > 0 else None,
+                "era":           round(era,  2),
+                "bullpen_era":   round(era,  2),
+                "bullpen_whip":  round(whip, 2) if whip > 0 else None,
                 "bullpen_games": games,
+                "k_pct":  round(so / tbf, 4) if tbf > 0 else None,
+                "bb_pct": round(bb / tbf, 4) if tbf > 0 else None,
+                "tbf":    tbf,
+                "ip":     round(ip, 1),
             }
             with open(cache_file, "w") as f:
                 json.dump(result, f)
@@ -2060,6 +2093,24 @@ class MLBDataIntegrator:
                     if away_pitch:
                         enriched["away_pitching_stats"] = away_pitch
                         print(f"  ✅ {game['away_team']} pitching: ERA={away_pitch['team_era']} WHIP={away_pitch['team_whip']}")
+
+                # 8b) Defensive efficiency dicts (DER from pitching stats, OAA absent by default)
+                #     Convention: defense_home = home team's fielding; defense_away = away team's
+                for _side, _pitch_key, _def_key, _team_name in [
+                    ("home", "home_pitching_stats", "defense_home", game.get("home_team", "")),
+                    ("away", "away_pitching_stats", "defense_away", game.get("away_team", "")),
+                ]:
+                    _ps = enriched.get(_pitch_key) or {}
+                    _der = _ps.get("der")
+                    _bip = _ps.get("bip", 0)
+                    if _der is not None and _bip > 0:
+                        enriched[_def_key] = {
+                            "team_name": _team_name,
+                            "der": _der,
+                            "bip": _bip,
+                            "oaa": None,   # OAA not available from free MLB API
+                        }
+                        print(f"  🛡️  {_team_name} defense: DER={_der:.4f}  BIP={_bip}")
 
                 # 9) Lineup handedness (LHB% per side — used for platoon split adjustment)
                 for _side, _lineup_key, _lhb_key in [

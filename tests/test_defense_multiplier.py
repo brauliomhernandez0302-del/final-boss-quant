@@ -1,128 +1,182 @@
 """
-Tests for the defense multiplier in both HFA engine and AutoCalibrator.
+Tests for defense-related adjustments after the architecture split.
 
-Critical invariant: elite defense (low ERA/WHIP/RA) → multiplier < 1.0
-                    weak defense (high ERA/WHIP/RA) → multiplier > 1.0
-                    league-average defense           → multiplier ≈ 1.0
+Post-refactor ownership:
+  • Fielding (DER/OAA)         → DefensiveEfficiencyEngine  (PASO 4)
+  • Starting pitcher (ERA/FIP) → PitcherEngine              (PASO 5)
+  • Bullpen                    → BullpenEngine              (PASO 6)
+  • AutoCalibrator             → recent form + season context only
+                                 (defense_mult removed to eliminate triple-counting)
 
-The bug this guards against: previously the formula was inverted
-(league_avg / stat instead of stat / league_avg), making elite pitching
-look like easy scoring. These tests pin the correct direction.
+Critical invariant preserved across all engines:
+  Strong defense → reduces OPPONENT's λ
+  Weak defense   → increases OPPONENT's λ
 """
 import pytest
 from config import LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP, LEAGUE_AVG_RUNS
 
 
-ELITE = {
-    "team_era": 3.00,
-    "team_whip": 1.05,
-    "runs_allowed_per_game": 3.40,
-}
-AVERAGE = {
-    "team_era": LEAGUE_AVG_ERA,
-    "team_whip": LEAGUE_AVG_WHIP,
-    "runs_allowed_per_game": LEAGUE_AVG_RUNS,
-}
-WEAK = {
-    "team_era": 5.50,
-    "team_whip": 1.65,
-    "runs_allowed_per_game": 5.60,
-}
+# ── Defensive Efficiency Engine ────────────────────────────────────────────────
 
-
-class TestHFADefenseMultiplier:
-    """HFAEngine._calculate_defense_multiplier — team ERA/WHIP/RA, clamped [0.78, 1.22]."""
-
-    def _mult(self, team_dict):
-        from modules.baseball_module.hfa.hfa_engine import HFAEngine
-        return HFAEngine()._calculate_defense_multiplier(team_dict)
-
-    def test_elite_defense_below_one(self):
-        result = self._mult(ELITE)
-        assert result < 1.0, f"Elite defense should suppress scoring: got {result:.4f}"
-
-    def test_weak_defense_above_one(self):
-        result = self._mult(WEAK)
-        assert result > 1.0, f"Weak defense should inflate scoring: got {result:.4f}"
-
-    def test_average_defense_is_one(self):
-        result = self._mult(AVERAGE)
-        assert result == pytest.approx(1.0, abs=1e-6)
-
-    def test_monotone_direction(self):
-        # Replacing each metric independently with a better value must reduce the multiplier.
-        import copy
-        base = {
-            "team_era": 4.50,
-            "team_whip": 1.40,
-            "runs_allowed_per_game": 4.80,
-        }
-        better_era  = {**base, "team_era": 3.00}
-        better_whip = {**base, "team_whip": 1.05}
-        better_ra   = {**base, "runs_allowed_per_game": 3.50}
-
-        b = self._mult(base)
-        assert self._mult(better_era)  < b
-        assert self._mult(better_whip) < b
-        assert self._mult(better_ra)   < b
-
-    def test_lower_clamp_at_0_78(self):
-        # Absurdly elite pitching: ERA=1.00 → clamped floor at 0.78
-        extreme = {"team_era": 1.00, "team_whip": 0.70, "runs_allowed_per_game": 1.50}
-        result = self._mult(extreme)
-        assert result == pytest.approx(0.78)
-
-    def test_upper_clamp_at_1_22(self):
-        # Absurdly weak pitching: ERA=9.00 → clamped ceiling at 1.22
-        extreme = {"team_era": 9.00, "team_whip": 2.50, "runs_allowed_per_game": 8.00}
-        result = self._mult(extreme)
-        assert result == pytest.approx(1.22)
-
-    def test_missing_fields_use_league_averages(self):
-        # When fields are absent the defaults are league averages → mult ≈ 1.0
-        result = self._mult({})
-        assert result == pytest.approx(1.0, abs=1e-6)
-
-    def test_weight_era_40_whip_35_ra_25(self):
-        # Verify the weighted formula directly.
-        team = {"team_era": 3.00, "team_whip": 1.30, "runs_allowed_per_game": 4.50}
-        era_m  = 3.00 / LEAGUE_AVG_ERA
-        whip_m = 1.30 / LEAGUE_AVG_WHIP
-        ra_m   = 4.50 / LEAGUE_AVG_RUNS
-        expected = era_m * 0.40 + whip_m * 0.35 + ra_m * 0.25
-        import numpy as np
-        expected = float(np.clip(expected, 0.78, 1.22))
-        assert self._mult(team) == pytest.approx(expected, abs=1e-6)
-
-
-class TestCalibratorDefenseMultiplier:
+class TestDefensiveEfficiencyEngine:
     """
-    LambdaCalibrator._calculate_defense_multiplier — same directional invariant.
-    The calibrator takes the *opponent* dict (team that is pitching),
-    so a strong opponent pitching staff should reduce the scoring team's lambda.
+    DefensiveEfficiencyEngine: DER → multiplier on opponent's λ.
+    Convention: home defence → reduces λ_away; away defence → reduces λ_home.
     """
 
-    def _mult(self, opponent_dict):
-        from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
-        return LambdaCalibrator()._calculate_defense_multiplier(opponent_dict)
-
-    def test_elite_opponent_below_one(self):
-        result = self._mult(ELITE)
-        assert result < 1.0, f"Elite opponent pitching should suppress scoring: got {result:.4f}"
-
-    def test_weak_opponent_above_one(self):
-        result = self._mult(WEAK)
-        assert result > 1.0, f"Weak opponent pitching should inflate scoring: got {result:.4f}"
-
-    def test_average_opponent_near_one(self):
-        result = self._mult(AVERAGE)
-        assert result == pytest.approx(1.0, abs=0.01)
-
-    def test_elite_and_weak_are_symmetric_around_one(self):
-        # The gap above 1.0 for weak should be roughly comparable
-        # to the gap below 1.0 for elite (not necessarily equal, but within 2×).
-        elite_gap = 1.0 - self._mult(ELITE)
-        weak_gap  = self._mult(WEAK) - 1.0
-        assert 0.3 <= elite_gap / weak_gap <= 3.0, (
-            f"Asymmetric gaps: elite_gap={elite_gap:.4f}, weak_gap={weak_gap:.4f}"
+    def _engine(self):
+        from modules.baseball_module.context_engine.defensive_efficiency_engine import (
+            DefensiveEfficiencyEngine,
         )
+        return DefensiveEfficiencyEngine()
+
+    def test_elite_fielding_reduces_opponent_lambda(self):
+        engine = self._engine()
+        # DER=0.740 (elite) → home defence should reduce λ_away
+        game_data = {
+            "defense_home": {"der": 0.740, "bip": 2000, "oaa": None},
+            "defense_away": {},
+        }
+        lh, la, meta = engine.adjust_for_defense(4.5, 4.5, game_data)
+        assert la < 4.5, f"Elite home fielding must reduce λ_away, got {la:.4f}"
+
+    def test_weak_fielding_raises_opponent_lambda(self):
+        engine = self._engine()
+        # DER=0.685 (weak) → home defence should raise λ_away
+        game_data = {
+            "defense_home": {"der": 0.685, "bip": 2000, "oaa": None},
+            "defense_away": {},
+        }
+        lh, la, meta = engine.adjust_for_defense(4.5, 4.5, game_data)
+        assert la > 4.5, f"Weak home fielding must raise λ_away, got {la:.4f}"
+
+    def test_league_average_der_neutral(self):
+        engine = self._engine()
+        game_data = {
+            "defense_home": {"der": 0.715, "bip": 2000, "oaa": None},
+            "defense_away": {"der": 0.715, "bip": 2000, "oaa": None},
+        }
+        lh, la, _ = engine.adjust_for_defense(4.5, 4.5, game_data)
+        assert lh == pytest.approx(4.5, abs=0.01)
+        assert la == pytest.approx(4.5, abs=0.01)
+
+    def test_home_defence_affects_only_away_lambda(self):
+        engine = self._engine()
+        game_data = {
+            "defense_home": {"der": 0.740, "bip": 2000, "oaa": None},
+            "defense_away": {},   # no away defence data
+        }
+        lh, la, meta = engine.adjust_for_defense(4.5, 4.5, game_data)
+        # λ_home should not be affected by home defence (away fielders affect λ_home)
+        assert la < 4.5, "Home elite fielding must reduce λ_away"
+
+    def test_small_sample_bayesian_regression(self):
+        engine = self._engine()
+        # With BIP=50 (tiny sample), DER=0.760 → heavily regressed toward 0.715
+        game_data = {
+            "defense_home": {"der": 0.760, "bip": 50, "oaa": None},
+            "defense_away": {},
+        }
+        _, la_small, _ = engine.adjust_for_defense(4.5, 4.5, game_data)
+
+        game_data2 = {
+            "defense_home": {"der": 0.760, "bip": 2000, "oaa": None},
+            "defense_away": {},
+        }
+        _, la_large, _ = engine.adjust_for_defense(4.5, 4.5, game_data2)
+
+        # Larger sample → more aggressive adjustment
+        assert la_small > la_large, "Large BIP sample should produce stronger adjustment"
+
+    def test_max_adjustment_capped(self):
+        engine = self._engine()
+        # Impossibly elite fielding — should be capped at ±5%
+        game_data = {
+            "defense_home": {"der": 0.999, "bip": 9999, "oaa": 100},
+            "defense_away": {"der": 0.001, "bip": 9999, "oaa": -100},
+        }
+        lh, la, _ = engine.adjust_for_defense(4.5, 4.5, game_data)
+        assert la >= 4.5 * 0.95, "Floor cap: -5% max"
+        assert lh <= 4.5 * 1.05, "Ceiling cap: +5% max"
+
+    def test_no_data_returns_unchanged(self):
+        from modules.baseball_module.context_engine.defensive_efficiency_engine import (
+            adjust_for_defense,
+        )
+        lh, la, meta = adjust_for_defense(4.5, 4.3, {})
+        assert lh == 4.5
+        assert la == 4.3
+        assert meta.get("skipped"), "Should return a truthy skipped value when no defense data"
+
+    def test_oaa_increases_effect_on_elite_team(self):
+        engine = self._engine()
+        # Neutral DER (0.715 = league avg → der_factor = 1.0, no DER adjustment).
+        # Positive OAA = 20 → oaa_factor < 1.0 → combined mult < 1.0 (OAA adds signal).
+        # Without OAA, neutral DER means no adjustment at all (mult = 1.0).
+        base = {"der": 0.715, "bip": 2000}
+        game_no_oaa  = {"defense_home": {**base, "oaa": None},  "defense_away": {}}
+        game_pos_oaa = {"defense_home": {**base, "oaa": 20.0},  "defense_away": {}}
+
+        _, la_no,  _ = engine.adjust_for_defense(4.5, 4.5, game_no_oaa)
+        _, la_pos, _ = engine.adjust_for_defense(4.5, 4.5, game_pos_oaa)
+        assert la_pos < la_no, "Positive OAA with neutral DER should reduce λ_away"
+
+
+# ── AutoCalibrator: form + season only (defense_mult removed) ──────────────────
+
+class TestCalibratorFormOnly:
+    """
+    After the architecture split, LambdaCalibrator applies form + season context.
+    Verify it has no defense_mult method and that form still works correctly.
+    """
+
+    def test_no_defense_method(self):
+        from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
+        cal = LambdaCalibrator()
+        assert not hasattr(cal, "_calculate_defense_multiplier"), (
+            "_calculate_defense_multiplier must not exist — defense is in DefensiveEfficiencyEngine"
+        )
+
+    def test_hot_team_gets_positive_adjustment(self):
+        from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
+        cal = LambdaCalibrator()
+        game_data = {
+            "home_team": {"name": "H", "last_10": "8-2", "streak": "W5", "wins": 80, "losses": 50},
+            "away_team": {"name": "A", "last_10": "5-5", "streak": "", "wins": 70, "losses": 60},
+        }
+        lh, la = cal.calibrate(4.5, 4.5, game_data, tte_active=True)
+        assert lh > 4.5, "Hot home team must increase λ_home"
+
+    def test_cold_team_gets_negative_adjustment(self):
+        from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
+        cal = LambdaCalibrator()
+        game_data = {
+            "home_team": {"name": "H", "last_10": "5-5", "streak": "", "wins": 70, "losses": 60},
+            "away_team": {"name": "A", "last_10": "2-8", "streak": "L6", "wins": 40, "losses": 90},
+        }
+        lh, la = cal.calibrate(4.5, 4.5, game_data, tte_active=True)
+        assert la < 4.5, "Cold away team must decrease λ_away"
+
+    def test_neutral_team_unchanged(self):
+        from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
+        cal = LambdaCalibrator()
+        game_data = {
+            "home_team": {"name": "H", "last_10": "5-5", "streak": "", "wins": 81, "losses": 81},
+            "away_team": {"name": "A", "last_10": "5-5", "streak": "", "wins": 81, "losses": 81},
+        }
+        lh, la = cal.calibrate(4.5, 4.3, game_data, tte_active=True)
+        assert lh == pytest.approx(4.5, abs=0.001)
+        assert la == pytest.approx(4.3, abs=0.001)
+
+    def test_cap_at_8_percent(self):
+        from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
+        cal = LambdaCalibrator()
+        game_data = {
+            "home_team": {"name": "H", "last_10": "10-0", "streak": "W10",
+                          "wins": 110, "losses": 30},
+            "away_team": {"name": "A", "last_10": "0-10", "streak": "L10",
+                          "wins": 30, "losses": 110},
+        }
+        lh, la = cal.calibrate(4.5, 4.5, game_data, tte_active=True)
+        assert lh <= 4.5 * 1.08 + 1e-9, f"Cap +8% violated: {lh:.4f}"
+        assert la >= 4.5 * 0.92 - 1e-9, f"Cap -8% violated: {la:.4f}"

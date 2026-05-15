@@ -453,7 +453,9 @@ def run_pipeline(
     """Run the full pipeline and return prediction dict."""
     # 1. Calibration
     calibrator = LambdaCalibrator(learning_engine=learning)
-    lh, la = calibrator.calibrate(lh, la, game_data)
+    # tte_active=False: backtest uses legacy λ_base (no TTE), so offense_mult
+    # should apply as the primary quality signal in the fallback path.
+    lh, la = calibrator.calibrate(lh, la, game_data, tte_active=False)
 
     # 2. HFA
     lh, la, _ = get_adjusted_lambdas(lh, la, game_data)
