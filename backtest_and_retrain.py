@@ -60,9 +60,8 @@ from modules.baseball_module.context_engine.pitcher_engine import adjust_for_pit
 from modules.baseball_module.context_engine.pitchers_regression import (
     calculate_pitcher_regression,
 )
-from modules.baseball_module.core.run_module import _compute_f5_lambda
 from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
-from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced
+from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced, F5_SCALE
 
 # External enrichment — Savant + FanGraphs (graceful degradation if unavailable)
 try:
@@ -475,17 +474,14 @@ def run_pipeline(
     lh *= factor_away
     la *= factor_home
 
-    # 5. F5 lambdas
-    home_bp_era = game_data.get("bullpen_home", {}).get("era", 4.20)
-    away_bp_era = game_data.get("bullpen_away", {}).get("era", 4.20)
-    lh_f5 = _compute_f5_lambda(game_data.get("pitcher_away", {}), away_bp_era)
-    la_f5 = _compute_f5_lambda(game_data.get("pitcher_home", {}), home_bp_era)
+    # 5. F5 lambdas — derived from post-pitcher λ (same as production pipeline).
+    # analyze_f5=False so these are not used in this backtest (moneyline only).
+    lh_f5 = round(lh * F5_SCALE, 3)
+    la_f5 = round(la * F5_SCALE, 3)
 
-    # Fix 5: clamp lambdas before simulation.
-    # lambda_sum < 5 (bad pitcher data) produced p_home=0.52 vs actual=0.39 (-13pp).
-    # lambda_sum > 18 are physically implausible and inflate extreme probabilities.
-    lh = max(3.0, min(lh, 7.0))
-    la = max(3.0, min(la, 7.0))
+    # Clamp lambdas: only block physically absurd values.
+    lh = max(1.5, min(lh, 12.0))
+    la = max(1.5, min(la, 12.0))
 
     # 6. Monte Carlo — block must be <= n_max per simulator validation
     mc = monte_carlo_advanced(

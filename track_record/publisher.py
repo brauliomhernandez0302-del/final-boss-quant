@@ -139,7 +139,6 @@ def publish_mlb_picks(
                 use_calibration=True,
                 use_hfa=True,
                 use_pitcher=True,
-                use_regression=True,
                 analyze_f5=True,
             )
         except Exception as e:
