@@ -80,6 +80,18 @@ def _platt(p: float, a: float = _PLATT_A_FALLBACK, b: float = _PLATT_B_FALLBACK)
     return 1.0 / (1.0 + _exp(-(a * logit + b)))
 
 
+def _compute_lambda_noise(tte_active: bool, enrichment_available: bool, has_real_pitcher: bool) -> float:
+    """
+    Epistemic uncertainty for the MC noise parameter.
+    More data sources → smaller noise (λ is better estimated).
+    """
+    if tte_active and enrichment_available and has_real_pitcher:
+        return 0.04  # full stack: TTE + Savant/FG + real pitcher stats
+    if tte_active or enrichment_available:
+        return 0.06  # partial data
+    return 0.08      # legacy fallback only
+
+
 def _compute_f5_lambda(pitcher_stats: Dict, bullpen_era: float = 4.20) -> Optional[float]:
     """
     Compute expected runs against this pitcher in the first 5 innings.
@@ -553,6 +565,21 @@ def run_module(
         )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # PASO 8: MARKET ODDS PRE-FETCH (antes del MC para pasar total_line)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        market_odds = None
+        if get_best_odds_for_teams is not None:
+            try:
+                market_odds = get_best_odds_for_teams(
+                    home_team=home_team,
+                    away_team=away_team,
+                    sport="baseball_mlb"
+                )
+            except Exception as e:
+                logger.warning(f"   ⚠️  No se pudieron obtener odds: {e}")
+        _market_total_line = (market_odds or {}).get('total_line')
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 8: MONTE CARLO SIMULATION
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         logger.info(f"\n🎲 PASO 8: Monte Carlo ({n_max:,} simulaciones)...")
@@ -566,13 +593,24 @@ def run_module(
         if la_f5 is not None:
             logger.info(f"   F5 λ_a={la_f5:.3f} (home pitcher avg_IPS={game_data['pitcher_home'].get('avg_innings_per_start','?')} f5_ERA={game_data['pitcher_home'].get('f5_era','?')})")
 
-        lh = max(3.0, min(lh, 7.0))
-        la = max(3.0, min(la, 7.0))
+        # Wide clip — engines are calibrated to stay in range; clipping at [3, 7]
+        # was overriding legitimate extreme outputs (ace + pitcher's park → λ≈2.5,
+        # Coors + weak bullpen → λ≈9). Use [1.5, 12] as a sanity guard only.
+        lh = max(1.5, min(lh, 12.0))
+        la = max(1.5, min(la, 12.0))
+
+        _has_real_pitcher = bool(
+            game_data.get('pitcher_home', {}).get('fip') or
+            game_data.get('pitcher_away', {}).get('fip')
+        )
+        _lambda_noise = _compute_lambda_noise(_TTE_AVAILABLE, _ENRICHMENT_AVAILABLE, _has_real_pitcher)
 
         mc_results = monte_carlo_advanced(
             lh=lh,
             la=la,
             n_max=n_max,
+            total_line=_market_total_line,
+            lambda_noise=_lambda_noise,
             analyze_f5=analyze_f5,
             lh_f5=lh_f5,
             la_f5=la_f5,
@@ -597,9 +635,20 @@ def run_module(
 
         results['probabilities'] = mc_results
 
-        logger.info(f"   ✅ Simulaciones completadas (Platt a={_pa:.3f} b={_pb:.3f})")
-        logger.info(f"   Home Win: {mc_results.get('p_home', 0):.1%}")
-        logger.info(f"   Away Win: {mc_results.get('p_away', 0):.1%}")
+        logger.info(f"   ✅ MC completado (noise={_lambda_noise:.2f}, Platt a={_pa:.3f} b={_pb:.3f})")
+        logger.info(f"   Home Win: {mc_results.get('p_home', 0):.1%}  |  Away Win: {mc_results.get('p_away', 0):.1%}")
+        logger.info(
+            f"   Run Line: home-1.5={mc_results.get('p_rl_home', 'N/A'):.3f}  "
+            f"away+1.5={mc_results.get('p_rl_away', 'N/A'):.3f}"
+            if mc_results.get('p_rl_home') is not None else "   Run Line: N/A (no samples)"
+        )
+        if _market_total_line:
+            logger.info(
+                f"   Total O/U: line={_market_total_line}  "
+                f"over={mc_results.get('p_over', 'N/A'):.3f}  "
+                f"under={mc_results.get('p_under', 'N/A'):.3f}"
+                if mc_results.get('p_over') is not None else f"   Total line={_market_total_line}"
+            )
 
         # Persist prediction for future learning
         _gk = game_data.get('game_pk') or game_id
@@ -625,20 +674,9 @@ def run_module(
                 logger.debug(f"[learning] record_prediction failed: {_e}")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 6: VALUE DETECTION
+        # PASO 9: VALUE DETECTION
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        logger.info("\n💰 PASO 6: Value Detection...")
-
-        market_odds = None
-        if get_best_odds_for_teams is not None:
-            try:
-                market_odds = get_best_odds_for_teams(
-                    home_team=home_team,
-                    away_team=away_team,
-                    sport="baseball_mlb"
-                )
-            except Exception as e:
-                logger.warning(f"   ⚠️  No se pudieron obtener odds: {e}")
+        logger.info("\n💰 PASO 9: Value Detection...")
 
         if market_odds and market_odds.get('ml_home') and market_odds.get('ml_away'):
             from core.value_detector import GameOdds
@@ -647,6 +685,11 @@ def run_module(
                 ml_away=market_odds['ml_away'],
                 pin_home=market_odds.get('pin_home'),
                 pin_away=market_odds.get('pin_away'),
+                total_line=market_odds.get('total_line'),
+                total_over=market_odds.get('total_over'),
+                total_under=market_odds.get('total_under'),
+                runline_home=market_odds.get('runline_home'),
+                runline_away=market_odds.get('runline_away'),
             )
             value_results = evaluate_value_ultra(
                 mc_result=mc_results,

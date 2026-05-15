@@ -223,6 +223,12 @@ def monte_carlo_advanced(
         results["away_samples"]  = final_away
         results["total_samples"] = final_total
 
+        # Run-line probabilities from stored samples (zero extra sims).
+        # home -1.5 covers when home wins by 2+; away +1.5 covers when diff <= 1.
+        _diff = final_home.astype(np.int32) - final_away.astype(np.int32)
+        results["p_rl_home"] = round(float(np.mean(_diff >= 2)), 4)
+        results["p_rl_away"] = round(float(np.mean(_diff <= 1)), 4)
+
     # ── O/U probabilities ──────────────────────────────────────────────────
     # Use `is not None` (not truthiness) so line=0 would not be skipped.
     line_to_use = (
