@@ -39,8 +39,17 @@ _PLATT_RECAL_DAYS   = 7
 _PLATT_A_DEFAULT    = 1.0
 _PLATT_B_DEFAULT    = 0.0
 
-# Pipeline gradient-descent weights — one per engine stage
-_STAGE_KEYS = ["calibration", "hfa", "pitcher", "regression", "learning_bias"]
+# Kalman blend fraction — must be identical in both get_kalman_lambda_adjustment
+# and compute_team_bias_kalman_adjusted so the bias dampening formula matches
+# the actual blend applied.
+_KALMAN_BLEND = 0.35
+
+# Pipeline gradient-descent weights — one per engine stage.
+# Only stages that are tracked in stage_factors_json should appear here;
+# "regression" and "learning_bias" were planned but never implemented in
+# run_module.py's stage_factors recorder, so they stay at 1.0 forever and
+# waste gradient cycles.
+_STAGE_KEYS = ["calibration", "hfa", "pitcher"]
 _LR         = 0.01    # gradient step size
 _MIN_WEIGHT = 0.30    # floor: never fully bypass a stage
 _MAX_WEIGHT = 1.50    # ceiling
@@ -131,6 +140,8 @@ class LearningEngine:
                 ("venue", "TEXT"),
                 ("month", "INTEGER"),
                 ("stage_factors_json", "TEXT"),
+                ("p_home_raw", "REAL"),   # pre-Platt MC probability (for clean Platt refitting)
+                ("p_away_raw", "REAL"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE game_outcomes ADD COLUMN {col} {typedef}")
@@ -154,27 +165,57 @@ class LearningEngine:
         p_away: float,
         venue: Optional[str] = None,
         stage_factors: Optional[Dict[str, Any]] = None,
+        p_home_raw: Optional[float] = None,  # pre-Platt MC probability
+        p_away_raw: Optional[float] = None,
     ) -> bool:
-        """Insert a pre-game prediction row. Returns True if newly inserted."""
+        """Insert a pre-game prediction row. Returns True if newly inserted.
+
+        p_home / p_away  — post-Platt calibrated probabilities (for display).
+        p_home_raw / p_away_raw — raw Monte Carlo probabilities before Platt
+            scaling.  recalibrate_platt() prefers these so Platt is fitted on
+            its own input signal rather than its own output (circular dependency).
+
+        For rows that already exist (historical bulk imports), we backfill any
+        NULL fields that we now have values for — crucially stage_factors_json
+        (required by gradient descent) and p_home_raw (required by clean Platt
+        refitting).  INSERT OR IGNORE alone would silently skip this, leaving
+        gradient descent permanently starved of stage factor data.
+        """
         month = None
         try:
             month = int(game_date[5:7]) if game_date else None
         except (IndexError, ValueError):
             pass
 
+        sf_json = json.dumps(stage_factors) if stage_factors else None
+
         with self._get_conn() as conn:
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO game_outcomes
                     (game_pk, game_date, season, home_team, away_team, venue, month,
-                     lambda_home, lambda_away, p_home, p_away, stage_factors_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     lambda_home, lambda_away, p_home, p_away,
+                     p_home_raw, p_away_raw, stage_factors_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (game_pk, game_date, season, home_team, away_team, venue, month,
                  lambda_home, lambda_away, p_home, p_away,
-                 json.dumps(stage_factors) if stage_factors else None),
+                 p_home_raw, p_away_raw, sf_json),
             )
             inserted = cursor.rowcount == 1
+            if not inserted:
+                # Row already exists (e.g. historical bulk import).  Backfill
+                # any NULL fields we now have — never overwrite existing data.
+                conn.execute(
+                    """
+                    UPDATE game_outcomes SET
+                        stage_factors_json = COALESCE(stage_factors_json, ?),
+                        p_home_raw         = COALESCE(p_home_raw, ?),
+                        p_away_raw         = COALESCE(p_away_raw, ?)
+                    WHERE game_pk = ?
+                    """,
+                    (sf_json, p_home_raw, p_away_raw, game_pk),
+                )
         logger.debug(f"[learning] recorded prediction game_pk={game_pk} inserted={inserted}")
         return inserted
 
@@ -354,8 +395,6 @@ class LearningEngine:
         if not state or state["n_obs"] < 10:
             return raw_bias  # Kalman cold-start: no overlap to remove
 
-        # blend must stay in sync with get_kalman_lambda_adjustment
-        _KALMAN_BLEND = 0.35
         dampened = 1.0 + (1.0 - _KALMAN_BLEND) * (raw_bias - 1.0)
         logger.debug(
             "[learning] %s bias Kalman-adjusted: raw=%.4f → dampened=%.4f (n_obs=%d)",
@@ -525,20 +564,20 @@ class LearningEngine:
         context: str,
         season: int,
         model_lambda: float,
-        blend: float = 0.35,
     ) -> float:
         """
         Return an adjusted λ blending the model estimate with the Kalman estimate.
 
-        blend=0.35 → 35% Kalman, 65% model. Returns model_lambda when fewer
-        than 10 Kalman observations exist (cold start).
+        Uses the module-level _KALMAN_BLEND (35% Kalman, 65% model), which must
+        match the fraction used in compute_team_bias_kalman_adjusted so the bias
+        dampening formula removes exactly the Kalman share of the correction.
+        Returns model_lambda when fewer than 10 Kalman observations exist.
         """
         state = self._get_kalman_state(team, context, season)
         if not state or state["n_obs"] < 10:
             return model_lambda
         kalman_lam = state["x_est"]
-        # Soft blend; clip to prevent runaway Kalman estimates
-        result = (1.0 - blend) * model_lambda + blend * kalman_lam
+        result = (1.0 - _KALMAN_BLEND) * model_lambda + _KALMAN_BLEND * kalman_lam
         return max(2.0, min(9.0, result))
 
     # ------------------------------------------------------------------
@@ -568,7 +607,8 @@ class LearningEngine:
         with self._get_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT p_home, home_won FROM game_outcomes
+                SELECT COALESCE(p_home_raw, p_home) AS p_home, home_won
+                FROM game_outcomes
                 WHERE season = ? AND home_won IS NOT NULL AND p_home IS NOT NULL
                 """,
                 (season,),
@@ -663,7 +703,9 @@ class LearningEngine:
         except (json.JSONDecodeError, TypeError):
             return
 
-        weights = self.get_pipeline_weights(season)
+        state = self.load_state("pipeline_weights", "weights", season)
+        weights = {k: float(state.get(k, 1.0)) for k in _STAGE_KEYS} if state else {k: 1.0 for k in _STAGE_KEYS}
+        n_steps = (state.get("sample_count", 0) if state else 0) + 1
         updated = dict(weights)
 
         for role, lam_final, actual in [
@@ -672,19 +714,23 @@ class LearningEngine:
         ]:
             if not lam_final or lam_final <= 0:
                 continue
-            # Poisson gradient: ∂NLL/∂λ = (λ - actual) / λ (normalised)
-            residual = (lam_final - actual) / max(lam_final, 0.5)
 
             for stage in _STAGE_KEYS:
                 adj = factors.get(f"{role}_{stage}", 1.0)
                 if adj == 1.0:
                     continue  # stage had no effect on this game
                 w = weights[stage]
-                # ∂λ/∂w_stage = λ_final * (adj - 1) / (1 + w*(adj-1))
+                # Model: λ_final = λ_base × ∏_s (1 + w_s × (adj_s − 1))
+                # ∂NLL/∂λ  = (λ − k) / λ           [Poisson NLL gradient]
+                # ∂λ/∂w_s  = λ_final × (adj_s − 1) / (1 + w_s × (adj_s − 1))
+                # ∂NLL/∂w_s = (λ − k) × (adj_s − 1) / denom   [chain rule]
+                #
+                # Previous code used (λ−k)/λ × (adj−1)/denom, which dropped the
+                # λ_final factor and made the effective LR ~4.5× too small.
                 denom = 1.0 + w * (adj - 1.0)
                 if abs(denom) < 1e-6:
                     continue
-                grad = residual * (adj - 1.0) / denom
+                grad = (lam_final - actual) * (adj - 1.0) / denom
                 updated[stage] = updated[stage] - _LR * grad
 
         # Clamp
@@ -692,7 +738,7 @@ class LearningEngine:
             updated[stage] = max(_MIN_WEIGHT, min(_MAX_WEIGHT, updated[stage]))
 
         self.save_state("pipeline_weights", "weights", updated,
-                        sample_count=0, season=season)
+                        sample_count=n_steps, season=season)
 
     # ------------------------------------------------------------------
     # Generic state persistence

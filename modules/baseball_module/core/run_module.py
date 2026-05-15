@@ -498,16 +498,22 @@ def run_module(
             la_f5=la_f5,
         )
 
+        # Capture raw MC probabilities BEFORE Platt overwrites them.
+        # These are stored as p_home_raw so recalibrate_platt() fits on its
+        # own input signal rather than its own output (circular dependency).
+        _p_home_mc = mc_results['p_home']
+        _p_away_mc = mc_results['p_away']
+
         # Dynamic Platt calibration — refitted weekly from live outcomes.
         # Renormalize after Platt so p_home + p_away = 1.0 exactly; applying
         # Platt independently with b≠0 inflates their sum to ~1.049, creating a
         # phantom edge against any fair market that sums to 1.0.
         _pa, _pb = _learning.get_platt_params(_season)
-        _p_home_raw = _platt(mc_results['p_home'], _pa, _pb)
-        _p_away_raw = _platt(mc_results['p_away'], _pa, _pb)
-        _platt_total = _p_home_raw + _p_away_raw
-        mc_results['p_home'] = round(_p_home_raw / _platt_total, 5)
-        mc_results['p_away'] = round(_p_away_raw / _platt_total, 5)
+        _p_home_cal = _platt(mc_results['p_home'], _pa, _pb)
+        _p_away_cal = _platt(mc_results['p_away'], _pa, _pb)
+        _platt_total = _p_home_cal + _p_away_cal
+        mc_results['p_home'] = round(_p_home_cal / _platt_total, 5)
+        mc_results['p_away'] = round(_p_away_cal / _platt_total, 5)
 
         results['probabilities'] = mc_results
 
@@ -530,6 +536,8 @@ def run_module(
                     lambda_away=la,
                     p_home=mc_results.get('p_home', 0.5),
                     p_away=mc_results.get('p_away', 0.5),
+                    p_home_raw=float(_p_home_mc),
+                    p_away_raw=float(_p_away_mc),
                     venue=game_data.get('venue'),
                     stage_factors=_stage_factors,
                 )
