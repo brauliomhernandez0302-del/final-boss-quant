@@ -298,6 +298,11 @@ def get_best_odds_for_teams(
         best_away = 0.0
         pin_home: Optional[float] = None
         pin_away: Optional[float] = None
+        total_line: Optional[float] = None
+        total_over: Optional[float] = None
+        total_under: Optional[float] = None
+        best_rl_home = 0.0
+        best_rl_away = 0.0
 
         for bm in event.get("bookmakers", []):
             is_pinnacle = (
@@ -305,28 +310,55 @@ def get_best_odds_for_teams(
                 or "pinnacle" in bm.get("title", "").lower()
             )
             for market in bm.get("markets", []):
-                if market.get("key") != "h2h":
-                    continue
-                for outcome in market.get("outcomes", []):
-                    name  = outcome.get("name", "")
-                    price = outcome.get("price", 0.0)
-                    if name == g_home:
-                        best_home = max(best_home, price)
-                        if is_pinnacle:
-                            pin_home = price
-                    elif name == g_away:
-                        best_away = max(best_away, price)
-                        if is_pinnacle:
-                            pin_away = price
+                mkey     = market.get("key", "")
+                outcomes = market.get("outcomes", [])
+
+                if mkey == "h2h":
+                    for outcome in outcomes:
+                        name  = outcome.get("name", "")
+                        price = outcome.get("price", 0.0) or 0.0
+                        if name == g_home:
+                            best_home = max(best_home, price)
+                            if is_pinnacle:
+                                pin_home = price
+                        elif name == g_away:
+                            best_away = max(best_away, price)
+                            if is_pinnacle:
+                                pin_away = price
+
+                elif mkey == "totals":
+                    for outcome in outcomes:
+                        n     = outcome.get("name", "").lower()
+                        price = outcome.get("price", 0.0) or 0.0
+                        if n == "over":
+                            if total_line is None:
+                                total_line = outcome.get("point")
+                            total_over = max(total_over or 0.0, price) or None
+                        elif n == "under":
+                            total_under = max(total_under or 0.0, price) or None
+
+                elif mkey == "spreads":
+                    for outcome in outcomes:
+                        name  = outcome.get("name", "")
+                        price = outcome.get("price", 0.0) or 0.0
+                        if name == g_home:
+                            best_rl_home = max(best_rl_home, price)
+                        elif name == g_away:
+                            best_rl_away = max(best_rl_away, price)
 
         return {
-            "home_team": g_home,
-            "away_team": g_away,
-            "ml_home":   best_home if best_home > 0 else None,
-            "ml_away":   best_away if best_away > 0 else None,
-            "pin_home":  pin_home,
-            "pin_away":  pin_away,
-            "game_id":   event.get("id"),
+            "home_team":    g_home,
+            "away_team":    g_away,
+            "ml_home":      best_home if best_home > 0 else None,
+            "ml_away":      best_away if best_away > 0 else None,
+            "pin_home":     pin_home,
+            "pin_away":     pin_away,
+            "total_line":   total_line,
+            "total_over":   total_over if (total_over or 0) > 0 else None,
+            "total_under":  total_under if (total_under or 0) > 0 else None,
+            "runline_home": best_rl_home if best_rl_home > 0 else None,
+            "runline_away": best_rl_away if best_rl_away > 0 else None,
+            "game_id":      event.get("id"),
         }
 
     return {}
