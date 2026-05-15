@@ -87,7 +87,7 @@ def publish_mlb_picks(
     try:
         from data_fetchers import MLBDataIntegrator
         from modules.baseball_module.core.run_module import run_module as run_mlb
-        from odds_api import get_best_odds_for_teams
+        from odds_fetcher import get_best_odds_for_teams
     except ImportError as e:
         log.error(f"MLB import error: {e}")
         return []

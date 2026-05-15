@@ -41,9 +41,9 @@ try:
 except ImportError:
     _ENRICHMENT_AVAILABLE = False
 
-# Odds API
+# Odds — best prices lookup lives in odds_fetcher (same cache, no extra API call)
 try:
-    from odds_api import get_best_odds_for_teams
+    from odds_fetcher import get_best_odds_for_teams
 except Exception:
     get_best_odds_for_teams = None
 
