@@ -1,6 +1,6 @@
 
 # ==========================================================
-# MONTE CARLO ENGINE G9 PRO ULTRA v2.0 FIXED
+# MONTE CARLO ENGINE G9 PRO ULTRA v2.0
 # ==========================================================
 
 import numpy as np
@@ -25,7 +25,9 @@ class MonteCarloLimits:
 
 LIMITS = MonteCarloLimits()
 
-F5_SCALE = 0.575  # ~57.5% of runs expected in first 5 innings
+# Fraction of expected full-game runs that score in the first 5 innings.
+# MLB empirical range: 55–58%; 57.5% is the calibrated midpoint.
+F5_SCALE = 0.575
 
 def validate_inputs(lh, la, n_max, block, lambda_noise, early_stop_se, total_line):
     if not (LIMITS.MIN_LAMBDA <= lh <= LIMITS.MAX_LAMBDA):
@@ -51,23 +53,40 @@ def monte_carlo_advanced(
     total_line: Optional[float] = None,
     rng_seed: Optional[int] = None,
     lambda_noise: float = 0.05,
-    early_stop_se: float = 0.003,
+    early_stop_se: float = 0.0005,
     progress_callback: Optional[Callable[[int, int], None]] = None,
     store_samples: bool = True,
     analyze_f5: bool = False,
     lh_f5: Optional[float] = None,
     la_f5: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Simulación Monte Carlo avanzada CORREGIDA."""
-    
+    """
+    Vectorized block-based Monte Carlo simulation for MLB run scoring.
+
+    Each simulation draws λ from N(lh, noise·lh) then scores ~ Poisson(λ),
+    which models both aleatoric (Poisson) and epistemic (parameter) uncertainty.
+    Noise adds only ~1% variance on top of pure Poisson and leaves the mean exact.
+
+    Early stopping fires after every block once sims_done >= 500_000 and
+    SE(p_home) < early_stop_se.  Default threshold 0.0005 ≈ 1 M sims for
+    typical win probabilities.
+
+    Returns
+    -------
+    dict with keys: n, p_home, p_away, mean_home, mean_away, mean_total,
+    std_total, converged_early, and (when store_samples=True) percentiles,
+    home_samples, away_samples, total_samples, and optional p_over/p_under/
+    p_push/total_line/f5_home/f5_away/f5_draw.
+    """
+
     validate_inputs(lh, la, n_max, block, lambda_noise, early_stop_se, total_line)
-    
+
     rng = np.random.default_rng(rng_seed)
     sims_done = 0
-    
+
     logger.info(f"🎲 Monte Carlo: λ_h={lh:.2f}, λ_a={la:.2f}, max={n_max:,}")
-    
-    # ✅ ACUMULADORES GLOBALES (CRÍTICO)
+
+    # Win/loss counters — the authoritative source for p_home/p_away
     wins_home_total = 0
     wins_away_total = 0
     ties_total = 0
@@ -76,146 +95,162 @@ def monte_carlo_advanced(
     f5_wins_away_total = 0
     f5_ties_total = 0
 
+    # Running sums for mean/variance — computed incrementally so they are
+    # always consistent with the same draws used for the win counters above.
+    # (Previously, store_samples=False regenerated fresh samples from a new
+    # RNG state, giving mean/std from a different draw than the counters.)
+    sum_home = 0.0
+    sum_away = 0.0
+    sum_total = 0.0
+    sum_sq_total = 0.0  # for variance: E[X²] - E[X]²
+
     if store_samples:
-        all_home, all_away, all_total = [], [], []
-    
-    # Simulación por bloques
+        all_home: list = []
+        all_away: list = []
+        all_total: list = []
+
     while sims_done < n_max:
         b = min(block, n_max - sims_done)
-        
-        # Varianza dinámica
+
+        # Lambda noise models parameter uncertainty (epistemic).
+        # std = lambda_noise * lambda so noise scales proportionally.
         lh_noise = np.clip(
             rng.normal(lh, lambda_noise * max(lh, 0.5), size=b),
-            LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA
+            LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA,
         )
         la_noise = np.clip(
             rng.normal(la, lambda_noise * max(la, 0.5), size=b),
-            LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA
+            LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA,
         )
-        
+
         home_runs = rng.poisson(lh_noise)
         away_runs = rng.poisson(la_noise)
         total_runs = home_runs + away_runs
-        
-        # ✅ ACUMULAR CONTADORES
+
         wins_home_total += int(np.sum(home_runs > away_runs))
         wins_away_total += int(np.sum(away_runs > home_runs))
-        ties_total += int(np.sum(home_runs == away_runs))
+        ties_total      += int(np.sum(home_runs == away_runs))
+
+        sum_home     += float(np.sum(home_runs))
+        sum_away     += float(np.sum(away_runs))
+        sum_total    += float(np.sum(total_runs))
+        sum_sq_total += float(np.dot(total_runs.astype(np.float64),
+                                     total_runs.astype(np.float64)))
 
         if analyze_f5:
-            # Use real per-pitcher F5 lambdas when available; else scale full-game noise
             if lh_f5 is not None:
                 lh_f5_noise = np.clip(
                     rng.normal(lh_f5, lambda_noise * max(lh_f5, 0.5), size=b),
-                    LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA
+                    LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA,
                 )
             else:
+                # Scale the same per-simulation λ so full-game/F5 are correlated
                 lh_f5_noise = lh_noise * F5_SCALE
             if la_f5 is not None:
                 la_f5_noise = np.clip(
                     rng.normal(la_f5, lambda_noise * max(la_f5, 0.5), size=b),
-                    LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA
+                    LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA,
                 )
             else:
                 la_f5_noise = la_noise * F5_SCALE
+
             home_f5 = rng.poisson(lh_f5_noise)
             away_f5 = rng.poisson(la_f5_noise)
             f5_wins_home_total += int(np.sum(home_f5 > away_f5))
             f5_wins_away_total += int(np.sum(away_f5 > home_f5))
-            f5_ties_total += int(np.sum(home_f5 == away_f5))
-        
+            f5_ties_total      += int(np.sum(home_f5 == away_f5))
+
         if store_samples:
             all_home.append(home_runs)
             all_away.append(away_runs)
             all_total.append(total_runs)
-        
+
         sims_done += b
-        
-        # Progress callback con protección
+
         if progress_callback:
             try:
                 progress_callback(sims_done, n_max)
             except Exception as e:
                 logger.warning(f"Progress callback error: {e}")
-        
-        # ✅ EARLY STOP CORREGIDO
-        if sims_done >= 500_000 and sims_done % 100_000 == 0:
-            p_home_est = (wins_home_total + 0.5 * ties_total) / sims_done  # ✅ Usa acumulado
-            se_home = math.sqrt(max(p_home_est * (1 - p_home_est), 1e-9) / sims_done)
-            
-            if se_home < early_stop_se:
-                logger.info(f"✅ Convergencia en {sims_done:,} sims (SE={se_home:.5f})")
+
+        # Early stop: check after every block once past the warm-up minimum.
+        # The old code checked only when sims_done % 100_000 == 0, which
+        # silently skipped early stopping for non-100K-divisible block sizes
+        # (e.g. block=333K never satisfied the modulo condition).
+        if sims_done >= 500_000:
+            p_est = (wins_home_total + 0.5 * ties_total) / sims_done
+            se = math.sqrt(max(p_est * (1.0 - p_est), 1e-9) / sims_done)
+            if se < early_stop_se:
+                logger.info(
+                    f"✅ Convergencia en {sims_done:,} sims (SE={se:.6f} < {early_stop_se})"
+                )
                 break
-    
-    # ✅ CALCULAR ESTADÍSTICAS FINALES
-    if store_samples:
-        final_home = np.concatenate(all_home)
-        final_away = np.concatenate(all_away)
-        final_total = np.concatenate(all_total)
-    else:
-        # ✅ REGENERAR todas las simulaciones si no guardamos
-        logger.debug("Regenerando muestras para estadísticas finales...")
-        lh_noise = np.clip(
-            rng.normal(lh, lambda_noise * max(lh, 0.5), size=sims_done),
-            LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA
-        )
-        la_noise = np.clip(
-            rng.normal(la, lambda_noise * max(la, 0.5), size=sims_done),
-            LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA
-        )
-        final_home = rng.poisson(lh_noise)
-        final_away = rng.poisson(la_noise)
-        final_total = final_home + final_away
-    
-    # Estadísticas
+
+    # ── Statistics from running accumulators (always consistent with wins) ──
+    mean_home  = sum_home  / sims_done
+    mean_away  = sum_away  / sims_done
+    mean_total = sum_total / sims_done
+    var_total  = max(sum_sq_total / sims_done - mean_total ** 2, 0.0)
+    std_total  = math.sqrt(var_total)
+
+    # Ties are split 50/50; result sums to exactly 1.0.
     p_home = (wins_home_total + 0.5 * ties_total) / sims_done
     p_away = (wins_away_total + 0.5 * ties_total) / sims_done
-    mean_home = float(np.mean(final_home))
-    mean_away = float(np.mean(final_away))
-    mean_total = float(np.mean(final_total))
-    std_total = float(np.std(final_total))
-    
-    # ✅ PERCENTILES CON KEYS CORRECTAS
-    percentiles = {
-        f"p{p}": float(np.percentile(final_total, p))
-        for p in [10, 25, 50, 75, 90]
-    }
-    
-    results = {
-        "n": sims_done,
-        "p_home": float(p_home),
-        "p_away": float(p_away),
-        "mean_home": mean_home,
-        "mean_away": mean_away,
-        "mean_total": mean_total,
-        "std_total": std_total,
-        "percentiles": percentiles,
+
+    results: Dict[str, Any] = {
+        "n":               sims_done,
+        "p_home":          float(p_home),
+        "p_away":          float(p_away),
+        "mean_home":       mean_home,
+        "mean_away":       mean_away,
+        "mean_total":      mean_total,
+        "std_total":       std_total,
         "converged_early": sims_done < n_max,
     }
-    
-    # Totales O/U — use explicit line or auto-line when analyze_f5 requested
-    line_to_use = total_line if total_line else (round(mean_total * 2) / 2 if analyze_f5 else None)
-    if line_to_use:
-        over = int(np.sum(final_total > line_to_use))
+
+    if store_samples:
+        final_home  = np.concatenate(all_home)
+        final_away  = np.concatenate(all_away)
+        final_total = np.concatenate(all_total)
+
+        results["percentiles"] = {
+            f"p{p}": float(np.percentile(final_total, p))
+            for p in [10, 25, 50, 75, 90]
+        }
+        # Expose arrays so value_detector can compute bootstrap CIs and
+        # sample-based O/U without re-running the simulation.
+        results["home_samples"]  = final_home
+        results["away_samples"]  = final_away
+        results["total_samples"] = final_total
+
+    # ── O/U probabilities ──────────────────────────────────────────────────
+    # Use `is not None` (not truthiness) so line=0 would not be skipped.
+    line_to_use = (
+        total_line if total_line is not None
+        else (round(mean_total * 2) / 2 if analyze_f5 else None)
+    )
+    if line_to_use is not None and store_samples:
+        n_arr = len(final_total)
+        over  = int(np.sum(final_total > line_to_use))
         under = int(np.sum(final_total < line_to_use))
-        push = int(np.sum(final_total == line_to_use))
-        n = len(final_total)
+        push  = n_arr - over - under
         results.update({
-            "p_over": float(over / n),
-            "p_under": float(under / n),
-            "p_push": float(push / n),
-            "total_line": float(line_to_use),
+            "p_over":      float(over  / n_arr),
+            "p_under":     float(under / n_arr),
+            "p_push":      float(push  / n_arr),
+            "total_line":  float(line_to_use),
         })
 
     if analyze_f5:
         results.update({
             "f5_home": round(f5_wins_home_total / sims_done, 4),
             "f5_away": round(f5_wins_away_total / sims_done, 4),
-            "f5_draw": round(f5_ties_total / sims_done, 4),
+            "f5_draw": round(f5_ties_total      / sims_done, 4),
         })
 
     logger.info(f"✅ Completado: {sims_done:,} sims | P(Home)={p_home:.3f}")
     return results
+
 
 def monte_carlo_simple(lh: float, la: float, total_line: float = 8.5):
     return monte_carlo_advanced(
@@ -224,28 +259,31 @@ def monte_carlo_simple(lh: float, la: float, total_line: float = 8.5):
         block=50_000,
         total_line=total_line,
         rng_seed=42,
-        store_samples=True  # ✅ Para evitar regeneración
+        store_samples=True,
     )
+
 
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s"
+        format="%(asctime)s | %(levelname)s | %(message)s",
     )
-    
-    print("🧪 TEST: Monte Carlo G9 PRO ULTRA v2.0 FIXED")
+
+    print("🧪 TEST: Monte Carlo")
     result = monte_carlo_advanced(
         lh=4.3, la=3.9,
         total_line=8.0,
         n_max=1_000_000,
-        store_samples=True  # Para test
+        store_samples=True,
     )
-    
+
     print(f"\n📊 RESULTADOS:")
-    print(f"  Sims: {result['n']:,}")
-    print(f"  P(Home): {result['p_home']:.3f}")
-    print(f"  P(Away): {result['p_away']:.3f}")
-    print(f"  P(Over): {result.get('p_over', 'N/A'):.3f}")
-    print(f"  Media Total: {result['mean_total']:.2f} ± {result['std_total']:.2f}")
-    print(f"  Percentiles: {result['percentiles']}")
+    print(f"  Sims:             {result['n']:,}")
+    print(f"  P(Home):          {result['p_home']:.4f}")
+    print(f"  P(Away):          {result['p_away']:.4f}")
+    print(f"  Sum:              {result['p_home'] + result['p_away']:.6f}")
+    print(f"  P(Over):          {result.get('p_over', 'N/A')}")
+    print(f"  Media Total:      {result['mean_total']:.3f} ± {result['std_total']:.3f}")
+    print(f"  Percentiles:      {result.get('percentiles', 'N/A')}")
+    print(f"  home_samples:     {len(result.get('home_samples', []))} samples")
     print(f"  Convergió temprano: {result['converged_early']}")
