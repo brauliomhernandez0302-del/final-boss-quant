@@ -40,7 +40,7 @@ from modules.baseball_module.context_engine.contextual_engine import adjust_for_
 from modules.baseball_module.context_engine.defensive_efficiency_engine import adjust_for_defense
 
 # Monte Carlo - ABSOLUTO
-from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced
+from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced, F5_SCALE
 
 # Value Detection - ABSOLUTO
 from core.value_detector import evaluate_value_ultra
@@ -91,23 +91,6 @@ def _compute_lambda_noise(tte_active: bool, enrichment_available: bool, has_real
         return 0.06  # partial data
     return 0.08      # legacy fallback only
 
-
-def _compute_f5_lambda(pitcher_stats: Dict, bullpen_era: float = 4.20) -> Optional[float]:
-    """
-    Compute expected runs against this pitcher in the first 5 innings.
-
-    Uses the pitcher's real byInning F5 ERA plus average IPS to determine
-    how many of those 5 innings the starter vs the bullpen will cover.
-    Returns None when avg_innings_per_start is unavailable (caller falls
-    back to the F5_SCALE constant inside the simulator).
-    """
-    avg_ips = pitcher_stats.get('avg_innings_per_start')
-    if avg_ips is None:
-        return None
-    f5_era = pitcher_stats.get('f5_era') or pitcher_stats.get('era', 4.20)
-    starter_f5_ip = min(float(avg_ips), 5.0)
-    bullpen_f5_ip = 5.0 - starter_f5_ip
-    return round(starter_f5_ip * (f5_era / 9.0) + bullpen_f5_ip * (bullpen_era / 9.0), 3)
 
 
 def run_module(
@@ -584,24 +567,19 @@ def run_module(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         logger.info(f"\n🎲 PASO 8: Monte Carlo ({n_max:,} simulaciones)...")
 
-        # Use BullpenEngine's composite effective_era (quality_mult × LG_BP_ERA),
-        # which already incorporates xwOBA, K-BB%, ERA, and barrel% signals.
-        # Falls back to raw ERA if BullpenEngine didn't run (no bullpen data).
-        _bp_meta = results['metadata'].get('bullpen', {})
-        _home_bp_era = (
-            _bp_meta.get('bullpen_home', {}).get('effective_era')
-            or game_data.get('bullpen_home', {}).get('era', 4.20)
-        )
-        _away_bp_era = (
-            _bp_meta.get('bullpen_away', {}).get('effective_era')
-            or game_data.get('bullpen_away', {}).get('era', 4.20)
-        )
-        lh_f5 = _compute_f5_lambda(game_data.get('pitcher_away', {}), _away_bp_era)
-        la_f5 = _compute_f5_lambda(game_data.get('pitcher_home', {}), _home_bp_era)
-        if lh_f5 is not None:
-            logger.info(f"   F5 λ_h={lh_f5:.3f} (away pitcher avg_IPS={game_data['pitcher_away'].get('avg_innings_per_start','?')} f5_ERA={game_data['pitcher_away'].get('f5_era','?')})")
-        if la_f5 is not None:
-            logger.info(f"   F5 λ_a={la_f5:.3f} (home pitcher avg_IPS={game_data['pitcher_home'].get('avg_innings_per_start','?')} f5_ERA={game_data['pitcher_home'].get('f5_era','?')})")
+        # F5 lambda derived from the pipeline after Pitcher Engine (PASO 5), before Bullpen.
+        # The Pitcher Engine already applied FIP/xFIP/SIERA/form/fatigue with Bayesian
+        # regression — no need to recompute from raw ERA. Bullpen is excluded because
+        # starters pitch most or all of the first 5 innings.
+        _post_pitcher = results['lambdas_history'].get('pitcher', {})
+        if _post_pitcher:
+            lh_f5 = round(_post_pitcher['lh'] * F5_SCALE, 3)
+            la_f5 = round(_post_pitcher['la'] * F5_SCALE, 3)
+            logger.info(f"   F5: λ_h={lh_f5:.3f}  λ_a={la_f5:.3f}  (post-pitcher × {F5_SCALE})")
+        else:
+            lh_f5 = None
+            la_f5 = None
+            logger.info("   F5: sin datos de pitcher, el MC usará F5_SCALE internamente")
 
         # Wide clip — engines are calibrated to stay in range; clipping at [3, 7]
         # was overriding legitimate extreme outputs (ace + pitcher's park → λ≈2.5,
