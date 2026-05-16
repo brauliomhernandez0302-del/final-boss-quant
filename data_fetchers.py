@@ -529,10 +529,12 @@ class MLBStatsAPI:
         if season is None:
             season = _current_mlb_season()
         cache_file = CACHE_DIR / f"pitcher_f5_{pitcher_id}_{season}.json"
-        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 21600:
             try:
-                with open(cache_file) as f:
-                    return json.load(f)
+                data = json.load(open(cache_file))
+                if data.get("_failed"):
+                    return None
+                return data
             except Exception:
                 pass
 
@@ -543,6 +545,7 @@ class MLBStatsAPI:
             r.raise_for_status()
             splits = r.json().get("stats", [{}])[0].get("splits", [])
             if not splits:
+                json.dump({"_failed": True}, open(cache_file, "w"))
                 return None
 
             f5_er = 0
@@ -555,6 +558,7 @@ class MLBStatsAPI:
                     f5_ip += float(stat.get("inningsPitched", 0.0))
 
             if f5_ip < 5.0:
+                json.dump({"_failed": True}, open(cache_file, "w"))
                 return None
 
             result = {
@@ -562,11 +566,11 @@ class MLBStatsAPI:
                 "f5_ip": round(f5_ip, 1),
                 "f5_er": f5_er,
             }
-            with open(cache_file, "w") as f:
-                json.dump(result, f)
+            json.dump(result, open(cache_file, "w"))
             return result
         except Exception as e:
             print(f"⚠️ Error obteniendo F5 stats pitcher {pitcher_id}: {e}")
+            json.dump({"_failed": True}, open(cache_file, "w"))
             return None
 
     # ── 5-level pitcher fallback ──────────────────────────────────────────────

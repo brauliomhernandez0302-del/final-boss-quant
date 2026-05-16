@@ -108,7 +108,7 @@ def _cache_path(name: str) -> Path:
     return CACHE_DIR / name
 
 
-def _cache_valid(path: Path, ttl_seconds: int = 21600) -> bool:
+def _cache_valid(path: Path, ttl_seconds: int = 86400) -> bool:
     return path.exists() and (time.time() - path.stat().st_mtime) < ttl_seconds
 
 

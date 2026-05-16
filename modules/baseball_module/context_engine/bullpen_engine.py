@@ -96,7 +96,7 @@ def _get_csv(url: str, params: dict = None, timeout: int = 15) -> Optional[str]:
         return None
 
 
-def _cache_valid(path: Path, ttl: int = 21600) -> bool:
+def _cache_valid(path: Path, ttl: int = 86400) -> bool:
     return path.exists() and (time.time() - path.stat().st_mtime) < ttl
 
 
@@ -105,11 +105,31 @@ def _cache_valid(path: Path, ttl: int = 21600) -> bool:
 def _fetch_savant_pitcher_expected(season: int) -> Dict[int, dict]:
     """
     Returns {player_id: {est_woba, pa, bip}} for ALL pitchers in MLB.
-    Cached 6 hours. Used to aggregate team-level xwOBA against.
+    Checks data_enrichment SavantFetcher cache first to avoid duplicate downloads.
     """
     cache = CACHE_DIR / f"bp_savant_expected_{season}.json"
     if _cache_valid(cache):
         return {int(k): v for k, v in json.loads(cache.read_text()).items()}
+
+    # Reuse SavantFetcher cache if run_module already downloaded it this session.
+    _enrichment_cache = ROOT / "data" / ".cache" / f"savant_expected_{season}.json"
+    if _cache_valid(_enrichment_cache):
+        try:
+            raw = json.loads(_enrichment_cache.read_text())
+            result = {
+                int(k): {
+                    "est_woba": float(v.get("est_woba") or _LG_XWOBA_AG),
+                    "pa":       float(v.get("pa") or 0),
+                    "bip":      float(v.get("bip") or 0),
+                }
+                for k, v in raw.items()
+                if float(v.get("pa") or 0) > 0
+            }
+            cache.write_text(json.dumps(result))
+            log.info("Savant pitcher expected %d: reused enrichment cache (%d pitchers)", season, len(result))
+            return result
+        except Exception:
+            pass
 
     csv_text = _get_csv(
         f"{SAVANT_BASE}/leaderboard/expected_statistics",
@@ -144,11 +164,31 @@ def _fetch_savant_pitcher_expected(season: int) -> Dict[int, dict]:
 def _fetch_savant_pitcher_exitvelo(season: int) -> Dict[int, dict]:
     """
     Returns {player_id: {barrels, brl_pa, attempts}} for ALL pitchers.
-    Cached 6 hours. Used for barrel% against.
+    Checks data_enrichment SavantFetcher cache first to avoid duplicate downloads.
     """
     cache = CACHE_DIR / f"bp_savant_exitvelo_{season}.json"
     if _cache_valid(cache):
         return {int(k): v for k, v in json.loads(cache.read_text()).items()}
+
+    # Reuse SavantFetcher EV cache if already downloaded this session.
+    _enrichment_cache = ROOT / "data" / ".cache" / f"savant_ev_{season}.json"
+    if _cache_valid(_enrichment_cache):
+        try:
+            raw = json.loads(_enrichment_cache.read_text())
+            result = {
+                int(k): {
+                    "barrels":  float(v.get("barrels")  or 0),
+                    "brl_pa":   float(v.get("brl_pa")   or 0),
+                    "attempts": float(v.get("attempts")  or 0),
+                }
+                for k, v in raw.items()
+                if float(v.get("attempts") or 0) > 0
+            }
+            cache.write_text(json.dumps(result))
+            log.info("Savant pitcher exitvelo %d: reused enrichment cache (%d pitchers)", season, len(result))
+            return result
+        except Exception:
+            pass
 
     csv_text = _get_csv(
         f"{SAVANT_BASE}/leaderboard/statcast",
