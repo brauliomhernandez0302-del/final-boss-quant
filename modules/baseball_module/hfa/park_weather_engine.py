@@ -51,6 +51,42 @@ _NEUTRAL_TEMP_F = 72.0
 # Run-increase per 5°F above neutral
 _TEMP_RATE = 0.005
 
+# Wind × handedness asymmetry scale.
+# A team with 60% LHB (vs 45% avg = +15% deviation) in a perfect 20 mph
+# RF cross-wind gets a ~0.6% scoring boost relative to the symmetric baseline.
+# Small by design — this is a second-order correction on top of the primary
+# in/out wind effect (which is already 2% per 5 mph unit).
+_HANDEDNESS_WIND_SCALE = 0.040
+# Minimum wind speed for handedness correction to activate (mph)
+_HANDEDNESS_WIND_MIN_MPH = 10.0
+# Average MLB LHB fraction (switch hitters count 0.5)
+_AVG_LHB_PCT = 0.45
+
+
+def _signed_crosswind(wind_from: float, cf_direction: int) -> float:
+    """
+    Signed crosswind component relative to the LF/RF split.
+
+    Returns +1.0 when wind blows fully toward RF (LHB advantage — lefties pull to RF).
+    Returns -1.0 when wind blows fully toward LF (RHB advantage — righties pull to LF).
+    Returns  0.0 for pure in/out winds (no lateral component).
+
+    CF is at `cf_direction` from home plate.
+    LF is at cf_direction − 45°, RF is at cf_direction + 45° (approximate).
+    Wind pushes toward RF when it blows FROM the LF side (cf_direction − 45°).
+    Wind pushes toward LF when it blows FROM the RF side (cf_direction + 45°).
+    """
+    lf_side_from = (cf_direction - 45) % 360   # wind from here → pushes toward RF (+)
+    rf_side_from = (cf_direction + 45) % 360   # wind from here → pushes toward LF (−)
+
+    diff_lf = abs((wind_from - lf_side_from + 180) % 360 - 180)  # 0 = perfect RF push
+    diff_rf = abs((wind_from - rf_side_from + 180) % 360 - 180)  # 0 = perfect LF push
+
+    rf_component = max(0.0, 1.0 - diff_lf / 90.0)  # 1 at 0°, 0 at 90°+
+    lf_component = max(0.0, 1.0 - diff_rf / 90.0)
+
+    return rf_component - lf_component  # + = RF wind (LHB adv), − = LF wind (RHB adv)
+
 
 @dataclass
 class StadiumFactors:
@@ -219,21 +255,56 @@ class ParkWeatherEngine:
         lh_new     = lh * total_mult
         la_new     = la * total_mult
 
+        # ── Wind × handedness asymmetry ────────────────────────────────────────
+        # Crosswind toward RF benefits LHB-heavy lineups; toward LF benefits RHB.
+        # Only active when wind ≥ 10 mph, roof is open, and handedness data exists.
+        hnd_home = hnd_away = 0.0
+        if (
+            not roof_closed
+            and stadium
+            and float(weather.get("wind_speed_mph") or 0) >= _HANDEDNESS_WIND_MIN_MPH
+        ):
+            wind_mph = float(weather.get("wind_speed_mph", 0))
+            wind_dir = float(weather.get("wind_direction", 0))
+            home_lhb = float(game_data.get("home_lhb_pct") or _AVG_LHB_PCT)
+            away_lhb = float(game_data.get("away_lhb_pct") or _AVG_LHB_PCT)
+
+            speed_factor  = (wind_mph - _HANDEDNESS_WIND_MIN_MPH) / 10.0
+            signed_cross  = _signed_crosswind(wind_dir, stadium.cf_direction)
+
+            # delta: how much batting team's LHB% deviates from average
+            # positive signed_cross (RF wind) × positive lhb_delta → boost
+            home_lhb_delta = home_lhb - _AVG_LHB_PCT
+            away_lhb_delta = away_lhb - _AVG_LHB_PCT
+            hnd_home = signed_cross * home_lhb_delta * speed_factor * _HANDEDNESS_WIND_SCALE
+            hnd_away = signed_cross * away_lhb_delta * speed_factor * _HANDEDNESS_WIND_SCALE
+            hnd_home = max(-0.015, min(0.015, hnd_home))
+            hnd_away = max(-0.015, min(0.015, hnd_away))
+
+            lh_new *= (1.0 + hnd_home)
+            la_new *= (1.0 + hnd_away)
+
         meta = {
-            "park_name":         park_name,
-            "park_factor":       round(park_mult,    4),
-            "weather_mult":      round(weather_mult, 4),
-            "total_mult":        round(total_mult,   4),
-            "roof_closed":       roof_closed,
-            "postponement_risk": weather.get("postponement_risk",
-                                             float(weather.get("rain_mm", 0)) > 10.0),
+            "park_name":              park_name,
+            "park_factor":            round(park_mult,    4),
+            "weather_mult":           round(weather_mult, 4),
+            "total_mult":             round(total_mult,   4),
+            "roof_closed":            roof_closed,
+            "postponement_risk":      weather.get("postponement_risk",
+                                                  float(weather.get("rain_mm", 0)) > 10.0),
+            "wind_handedness_home":   round(hnd_home, 4),
+            "wind_handedness_away":   round(hnd_away, 4),
             **wx_meta,
         }
 
+        hnd_str = (
+            f"  hnd_h={hnd_home:+.4f} hnd_a={hnd_away:+.4f}"
+            if (hnd_home or hnd_away) else ""
+        )
         log.info(
-            "Park+Weather | %s  park=%.3f  weather=%.3f  total=%.3f  "
+            "Park+Weather | %s  park=%.3f  weather=%.3f  total=%.3f%s  "
             "λ_h %.3f→%.3f  λ_a %.3f→%.3f",
-            park_name, park_mult, weather_mult, total_mult,
+            park_name, park_mult, weather_mult, total_mult, hnd_str,
             lh, lh_new, la, la_new,
         )
         return lh_new, la_new, meta

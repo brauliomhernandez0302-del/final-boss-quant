@@ -1452,6 +1452,52 @@ class MLBStatsAPI:
             return None
 
     # ==========================================================
+    # FEATURE: BATTING HANDEDNESS % PER TEAM (for wind asymmetry)
+    # ==========================================================
+    def get_team_batting_handedness_pct(
+        self, team_id: int, game_date: str
+    ) -> Optional[float]:
+        """
+        Fraction of non-pitcher players on the gameday roster who bat left.
+        Cached per team per date (changes only on roster moves).
+        Returns LHB% (0.0–1.0) or None if unavailable.
+        """
+        cache_file = CACHE_DIR / f"lhb_pct_{team_id}_{game_date}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 86_400:
+            try:
+                return json.load(open(cache_file)).get("lhb_pct")
+            except Exception:
+                pass
+        try:
+            r = self.session.get(
+                f"{self.BASE_URL}/teams/{team_id}/roster",
+                params={"rosterType": "gameday", "season": game_date[:4],
+                        "hydrate": "person"},
+                timeout=(5, 15),
+            )
+            r.raise_for_status()
+            roster = r.json().get("roster", [])
+            counts = {"L": 0, "R": 0, "S": 0}
+            for entry in roster:
+                pos_type = (entry.get("position") or {}).get("type", "")
+                if pos_type == "Pitcher":
+                    continue
+                side = (entry.get("person") or {}).get("batSide", {}).get("code", "")
+                if side in counts:
+                    counts[side] += 1
+            total = counts["L"] + counts["R"] + counts["S"]
+            if total < 5:
+                return None
+            # Switch hitters counted as 0.5 LHB, 0.5 RHB
+            lhb_pct = round((counts["L"] + counts["S"] * 0.5) / total, 3)
+            with open(cache_file, "w") as f:
+                json.dump({"lhb_pct": lhb_pct, "counts": counts}, f)
+            return lhb_pct
+        except Exception as exc:
+            logger.debug(f"[handedness] team {team_id} {game_date}: {exc}")
+            return None
+
+    # ==========================================================
     # FEATURE: PITCHER PLATOON SPLITS (vs LHB / vs RHB)
     # ==========================================================
     def get_pitcher_platoon_splits(
@@ -2291,6 +2337,21 @@ class MLBDataIntegrator:
                     if away_off:
                         enriched["away_offensive_stats"] = away_off
                         logger.info(f"  ✅ {game['away_team']} offense: wOBA={away_off['woba']} OPS={away_off['ops']}")
+
+                # 5c) Batting handedness % (for wind asymmetry in park_weather_engine)
+                game_date_str = (game.get("game_date") or "")[:10]
+                if game.get("home_team_id") and game_date_str:
+                    lhb = self.mlb_api.get_team_batting_handedness_pct(
+                        game["home_team_id"], game_date_str
+                    )
+                    if lhb is not None:
+                        enriched["home_lhb_pct"] = lhb
+                if game.get("away_team_id") and game_date_str:
+                    lhb = self.mlb_api.get_team_batting_handedness_pct(
+                        game["away_team_id"], game_date_str
+                    )
+                    if lhb is not None:
+                        enriched["away_lhb_pct"] = lhb
 
                 # 6) Travel Fatigue (coordinate-based miles + time zones)
                 if game.get("away_team_id") and game.get("game_date"):
