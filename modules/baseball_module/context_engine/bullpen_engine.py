@@ -70,6 +70,14 @@ _K_K_BB_BP   = 180   # K%-BB% for team bullpen aggregate
 _NORMAL_IP_3D  = 9.0
 _DEFAULT_AVG_IPS = 5.5
 
+# Bullpen tier ERA adjustments (empirical MLB averages).
+# When starter exits early, Long Relief pitchers fill innings — ERA runs above avg.
+# When starter goes deep, High Leverage (setup/closer) pitches — ERA runs below avg.
+_LONG_RELIEF_ERA_DELTA  = 0.80   # Long Relief ERA ≈ avg bullpen ERA + 0.80
+_HIGH_LEVERAGE_ERA_DELTA = 0.70  # Closer/Setup ERA ≈ avg bullpen ERA − 0.70
+_LONG_RELIEF_IPS_THRESHOLD  = 5.5  # avg_ips below this → long relief blends in
+_HIGH_LEVERAGE_IPS_THRESHOLD = 6.5  # avg_ips above this → high leverage blends in
+
 
 # ── HTTP helpers ───────────────────────────────────────────────────────────────
 
@@ -380,6 +388,11 @@ class BullpenEngine:
         season:   int,
         label:    str = "",
     ) -> dict:
+        # ── Starter depth (computed first — needed for tier ERA adjustment) ──
+        avg_ips     = float(starter.get("avg_innings_per_start") or _DEFAULT_AVG_IPS)
+        avg_ips     = max(4.0, min(8.0, avg_ips))
+        innings_weight = (9.0 - avg_ips) / 9.0
+
         # ── MLB API metrics (reliever-specific) ───────────────────────────
         _era  = bullpen.get("era");          era  = float(_era  if _era  is not None else _LG_BP_ERA)
         _whip = bullpen.get("bullpen_whip"); whip = float(_whip if _whip is not None else _LG_BP_WHIP)
@@ -387,9 +400,24 @@ class BullpenEngine:
         k_pct  = bullpen.get("k_pct")   # may be None if not yet fetched
         bb_pct = bullpen.get("bb_pct")
 
-        # Bayesian regression on ERA/WHIP based on TBF
-        era_reg  = _regress(era,  _LG_BP_ERA,  tbf, _K_ERA_BP)
-        whip_reg = _regress(whip, _LG_BP_WHIP, tbf, _K_ERA_BP)
+        # ── Tier ERA adjustment: who actually pitches depends on starter depth ──
+        # Short starter → Long Relief (worse ERA); deep starter → High Leverage (better).
+        # Blend is linear: full effect at threshold extremes, neutral in the middle.
+        if avg_ips < _LONG_RELIEF_IPS_THRESHOLD:
+            tier_blend = min(1.0, (_LONG_RELIEF_IPS_THRESHOLD - avg_ips) / 1.5)
+            tier_era   = era + _LONG_RELIEF_ERA_DELTA * tier_blend
+            tier_label = f"long_relief(blend={tier_blend:.2f})"
+        elif avg_ips > _HIGH_LEVERAGE_IPS_THRESHOLD:
+            tier_blend = min(1.0, (avg_ips - _HIGH_LEVERAGE_IPS_THRESHOLD) / 1.0)
+            tier_era   = era - _HIGH_LEVERAGE_ERA_DELTA * tier_blend
+            tier_label = f"high_leverage(blend={tier_blend:.2f})"
+        else:
+            tier_era   = era
+            tier_label = "average"
+
+        # Bayesian regression on tier-adjusted ERA/WHIP based on TBF
+        era_reg  = _regress(tier_era, _LG_BP_ERA,  tbf, _K_ERA_BP)
+        whip_reg = _regress(whip,     _LG_BP_WHIP, tbf, _K_ERA_BP)
         era_factor  = era_reg  / _LG_BP_ERA
         whip_factor = whip_reg / _LG_BP_WHIP
 
@@ -444,23 +472,23 @@ class BullpenEngine:
 
         raw_mult = quality_mult * workload_mult
 
-        # ── Innings weighting ──────────────────────────────────────────────
-        avg_ips        = float(starter.get("avg_innings_per_start") or _DEFAULT_AVG_IPS)
-        avg_ips        = max(4.0, min(8.0, avg_ips))
-        innings_weight = (9.0 - avg_ips) / 9.0
+        # ── Innings weighting (avg_ips already computed above for tier) ───
 
         total_mult = 1.0 + innings_weight * (raw_mult - 1.0)
         total_mult = max(0.90, min(1.10, total_mult))
 
         log.debug(
-            "   [%s bp] xwOBA=%.3f(reg) kbb=%.3f(reg) ERA=%.2f(reg) brl=%.3f "
+            "   [%s bp] tier=%s ERA %.2f→%.2f(tier)→%.2f(reg) xwOBA=%.3f kbb=%.3f brl=%.3f "
             "→ quality=%.3f  workload=%.3f  raw=%.3f  bp_w=%.2f  total=%.3f",
-            label, xwoba_reg, k_bb_reg, era_reg, barrel_reg,
+            label, tier_label, era, tier_era, era_reg,
+            xwoba_reg, k_bb_reg, barrel_reg,
             quality_mult, workload_mult, raw_mult, innings_weight, total_mult,
         )
 
         return {
             "era":            round(era,            2),
+            "tier_era":       round(tier_era,       2),
+            "tier_label":     tier_label,
             "era_reg":        round(era_reg,        3),
             # Composite quality expressed as an ERA rate: quality_mult × LG_BP_ERA.
             # Used by _compute_f5_lambda to estimate bullpen runs in F5 innings.
