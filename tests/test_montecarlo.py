@@ -200,3 +200,52 @@ class TestPercentiles:
     def test_median_near_mean(self):
         r = monte_carlo_advanced(lh=4.5, la=3.8, **FAST)
         assert abs(r["percentiles"]["p50"] - r["mean_total"]) < 1.0
+
+
+class TestBivariatePoisson:
+    """Bivariate Poisson: correlated λ noise between home and away scoring."""
+
+    def test_rho_returned_in_results(self):
+        r = monte_carlo_advanced(lh=4.5, la=3.8, rho_game=-0.06, **FAST)
+        assert r["bivariate_rho"] == pytest.approx(-0.06)
+
+    def test_marginal_means_preserved_with_negative_rho(self):
+        # Bivariate correlation must not shift the marginal means.
+        r = monte_carlo_advanced(lh=4.5, la=3.8, rho_game=-0.30, **FAST)
+        assert r["mean_home"] == pytest.approx(4.5, abs=0.15)
+        assert r["mean_away"] == pytest.approx(3.8, abs=0.15)
+
+    def test_probabilities_sum_to_one_with_rho(self):
+        r = monte_carlo_advanced(lh=4.5, la=3.8, rho_game=-0.06, **FAST)
+        assert r["p_home"] + r["p_away"] == pytest.approx(1.0, abs=1e-9)
+
+    def test_negative_rho_compresses_total_variance(self):
+        # With large noise, negative rho should reduce std_total vs rho=0.
+        # Use large lambda_noise to make effect detectable.
+        kwargs = {"lh": 4.5, "la": 4.5, "n_max": 2_000_000, "rng_seed": 7,
+                  "lambda_noise": 0.25}
+        r_ind = monte_carlo_advanced(**kwargs, rho_game=0.0)
+        r_neg = monte_carlo_advanced(**kwargs, rho_game=-0.50)
+        assert r_neg["std_total"] < r_ind["std_total"], (
+            f"Negative rho should compress total std: {r_neg['std_total']:.4f} "
+            f"vs {r_ind['std_total']:.4f}"
+        )
+
+    def test_positive_rho_widens_total_variance(self):
+        kwargs = {"lh": 4.5, "la": 4.5, "n_max": 2_000_000, "rng_seed": 7,
+                  "lambda_noise": 0.25}
+        r_ind = monte_carlo_advanced(**kwargs, rho_game=0.0)
+        r_pos = monte_carlo_advanced(**kwargs, rho_game=0.50)
+        assert r_pos["std_total"] > r_ind["std_total"]
+
+    def test_invalid_rho_raises(self):
+        with pytest.raises(ValueError, match="rho_game"):
+            monte_carlo_advanced(lh=4.5, la=3.8, rho_game=1.0, n_max=500_000)
+        with pytest.raises(ValueError, match="rho_game"):
+            monte_carlo_advanced(lh=4.5, la=3.8, rho_game=-1.5, n_max=500_000)
+
+    def test_rho_zero_preserves_directional_advantage(self):
+        # rho=0 must not distort win probabilities — lh > la → home should still win more.
+        r = monte_carlo_advanced(lh=4.5, la=3.8, n_max=500_000, rng_seed=42, rho_game=0.0)
+        assert r["p_home"] > r["p_away"], "Home advantage must hold with rho=0"
+        assert r["p_home"] + r["p_away"] == pytest.approx(1.0, abs=1e-9)

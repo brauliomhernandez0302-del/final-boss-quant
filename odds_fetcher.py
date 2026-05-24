@@ -78,7 +78,7 @@ _PINNACLE_KEY = "pinnaclesports"
 def _get(url: str, max_retries: int = 3, delay: int = 2) -> Optional[Any]:
     for attempt in range(max_retries):
         try:
-            resp = requests.get(url, timeout=15)
+            resp = requests.get(url, timeout=(5, 30))
             if resp.status_code == 200:
                 return resp.json()
             if resp.status_code == 429:
@@ -197,25 +197,33 @@ def _get_raw_events() -> List[Dict]:
 
 
 def _normalize_event(event: Dict) -> Dict:
-    """Flatten one raw API event to a simple dict for the UI.
+    """Flatten one raw API event to a UI-friendly dict.
 
-    Uses the BEST available price across all bookmakers for home/away ML.
-    Falls back to first-bookmaker totals for over/under display.
+    Extracts across ALL bookmakers:
+      - Best ML home/away (h2h)
+      - Pinnacle ML home/away (sharp reference)
+      - Best over/under odds + total line
+      - Best runline (spreads) home/away
     """
     result: Dict[str, Any] = {
-        "sport_key":    event.get("sport_key", ""),
-        "sport_title":  event.get("sport_title", ""),
-        "home_team":    event.get("home_team", ""),
-        "away_team":    event.get("away_team", ""),
+        "sport_key":     event.get("sport_key", ""),
+        "sport_title":   event.get("sport_title", ""),
+        "home_team":     event.get("home_team", ""),
+        "away_team":     event.get("away_team", ""),
         "commence_time": event.get("commence_time", ""),
-        "home_odds":    None,
-        "draw_odds":    None,
-        "away_odds":    None,
-        "total_line":   None,
-        "over_odds":    None,
-        "under_odds":   None,
-        "bookmaker":    None,
-        "last_update":  datetime.now().isoformat(),
+        "home_odds":     None,
+        "draw_odds":     None,
+        "away_odds":     None,
+        "pin_home":      None,
+        "pin_away":      None,
+        "pin_total":     None,
+        "total_line":    None,
+        "over_odds":     None,
+        "under_odds":    None,
+        "runline_home":  None,
+        "runline_away":  None,
+        "bookmaker":     None,
+        "last_update":   datetime.now().isoformat(),
     }
 
     home = result["home_team"]
@@ -227,35 +235,66 @@ def _normalize_event(event: Dict) -> Dict:
     best_home: float = 0.0
     best_away: float = 0.0
     best_draw: Optional[float] = None
+    best_over: float = 0.0
+    best_under: float = 0.0
+    best_rl_home: float = 0.0
+    best_rl_away: float = 0.0
 
     for bm in bookmakers:
         if result["bookmaker"] is None:
             result["bookmaker"] = bm.get("title", "Unknown")
+
+        bm_key = bm.get("key", "").lower()
+        is_pinnacle = bm_key == _PINNACLE_KEY or "pinnacle" in bm.get("title", "").lower()
+
         for market in bm.get("markets", []):
-            mkey = market.get("key", "")
+            mkey     = market.get("key", "")
             outcomes = market.get("outcomes", [])
+
             if mkey == "h2h":
                 for o in outcomes:
                     name  = o.get("name", "").strip()
                     price = o.get("price") or 0.0
                     if name == home:
                         best_home = max(best_home, price)
+                        if is_pinnacle:
+                            result["pin_home"] = price
                     elif name == away:
                         best_away = max(best_away, price)
+                        if is_pinnacle:
+                            result["pin_away"] = price
                     elif name.lower() in ("draw", "empate", "tie"):
                         best_draw = max(best_draw or 0.0, price) or None
-            elif mkey == "totals" and result["total_line"] is None and outcomes:
-                result["total_line"] = outcomes[0].get("point")
-                for o in outcomes:
-                    n = o.get("name", "").lower()
-                    if n == "over":
-                        result["over_odds"] = o.get("price")
-                    elif n == "under":
-                        result["under_odds"] = o.get("price")
 
-    result["home_odds"] = best_home or None
-    result["away_odds"] = best_away or None
-    result["draw_odds"] = best_draw
+            elif mkey == "totals" and outcomes:
+                for o in outcomes:
+                    n     = o.get("name", "").lower()
+                    price = o.get("price") or 0.0
+                    if n == "over":
+                        if result["total_line"] is None:
+                            result["total_line"] = o.get("point")
+                        if is_pinnacle and result["pin_total"] is None:
+                            result["pin_total"] = o.get("point")
+                        best_over = max(best_over, price)
+                    elif n == "under":
+                        best_under = max(best_under, price)
+
+            elif mkey == "spreads" and outcomes:
+                for o in outcomes:
+                    name  = o.get("name", "").strip()
+                    price = o.get("price") or 0.0
+                    if name == home:
+                        best_rl_home = max(best_rl_home, price)
+                    elif name == away:
+                        best_rl_away = max(best_rl_away, price)
+
+    result["home_odds"]    = best_home    or None
+    result["away_odds"]    = best_away    or None
+    result["draw_odds"]    = best_draw
+    result["over_odds"]    = best_over    or None
+    result["under_odds"]   = best_under   or None
+    result["runline_home"] = best_rl_home or None
+    result["runline_away"] = best_rl_away or None
     return result
 
 
@@ -298,6 +337,7 @@ def get_best_odds_for_teams(
         best_away = 0.0
         pin_home: Optional[float] = None
         pin_away: Optional[float] = None
+        pin_total: Optional[float] = None
         total_line: Optional[float] = None
         total_over: Optional[float] = None
         total_under: Optional[float] = None
@@ -333,6 +373,8 @@ def get_best_odds_for_teams(
                         if n == "over":
                             if total_line is None:
                                 total_line = outcome.get("point")
+                            if is_pinnacle and pin_total is None:
+                                pin_total = outcome.get("point")
                             total_over = max(total_over or 0.0, price) or None
                         elif n == "under":
                             total_under = max(total_under or 0.0, price) or None
@@ -353,6 +395,7 @@ def get_best_odds_for_teams(
             "ml_away":      best_away if best_away > 0 else None,
             "pin_home":     pin_home,
             "pin_away":     pin_away,
+            "pin_total":    pin_total,
             "total_line":   total_line,
             "total_over":   total_over if (total_over or 0) > 0 else None,
             "total_under":  total_under if (total_under or 0) > 0 else None,

@@ -136,7 +136,6 @@ def publish_mlb_picks(
         try:
             result = run_mlb(
                 game_id=game_pk,
-                use_calibration=True,
                 use_hfa=True,
                 use_pitcher=True,
                 analyze_f5=True,

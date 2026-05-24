@@ -44,6 +44,7 @@ def validate_inputs(lh, la, n_max, block, lambda_noise, early_stop_se, total_lin
         raise ValueError(f"early_stop_se={early_stop_se} inválido")
     if total_line is not None and not (0 < total_line < 50):
         raise ValueError(f"total_line={total_line} fuera de rango")
+    # rho_game validated separately in monte_carlo_advanced after validate_inputs
 
 def monte_carlo_advanced(
     lh: float,
@@ -59,12 +60,20 @@ def monte_carlo_advanced(
     analyze_f5: bool = False,
     lh_f5: Optional[float] = None,
     la_f5: Optional[float] = None,
+    rho_game: float = -0.06,
 ) -> Dict[str, Any]:
     """
     Vectorized block-based Monte Carlo simulation for MLB run scoring.
 
-    Each simulation draws λ from N(lh, noise·lh) then scores ~ Poisson(λ),
-    which models both aleatoric (Poisson) and epistemic (parameter) uncertainty.
+    Each simulation draws λ from a bivariate normal centered at (lh, la) with
+    correlation rho_game, then scores ~ Poisson(λ). This models both aleatoric
+    (Poisson) and epistemic (parameter) uncertainty. The marginal distributions
+    are preserved exactly — only the joint structure (total variance) changes.
+
+    rho_game < 0: negative correlation → compresses total run variance (pitcher
+    duels keep both teams down; one team scoring big makes the other slightly less
+    likely to also exceed their mean). Default -0.06 matches empirical MLB data.
+
     Noise adds only ~1% variance on top of pure Poisson and leaves the mean exact.
 
     Early stopping fires after every block once sims_done >= 500_000 and
@@ -74,17 +83,28 @@ def monte_carlo_advanced(
     Returns
     -------
     dict with keys: n, p_home, p_away, mean_home, mean_away, mean_total,
-    std_total, converged_early, and (when store_samples=True) percentiles,
-    home_samples, away_samples, total_samples, and optional p_over/p_under/
-    p_push/total_line/f5_home/f5_away/f5_draw.
+    std_total, bivariate_rho, converged_early, and (when store_samples=True)
+    percentiles, home_samples, away_samples, total_samples, and optional
+    p_over/p_under/p_push/total_line/f5_home/f5_away/f5_draw.
     """
 
     validate_inputs(lh, la, n_max, block, lambda_noise, early_stop_se, total_line)
+    if not (-1.0 < rho_game < 1.0):
+        raise ValueError(f"rho_game={rho_game} must be in (-1, 1)")
+
+    # Precompute for bivariate normal: noise_h and noise_a share correlation rho_game.
+    # Decomposition: noise = sigma * (rho * z_shared + sqrt(1 - rho²) * z_ind)
+    # This preserves each marginal while introducing cross-term correlation.
+    _rho_sqrt_comp = math.sqrt(max(0.0, 1.0 - rho_game ** 2))
+    _sigma_h = lambda_noise * max(lh, 0.5)
+    _sigma_a = lambda_noise * max(la, 0.5)
 
     rng = np.random.default_rng(rng_seed)
     sims_done = 0
 
-    logger.info(f"🎲 Monte Carlo: λ_h={lh:.2f}, λ_a={la:.2f}, max={n_max:,}")
+    logger.info(
+        f"🎲 Monte Carlo: λ_h={lh:.2f}, λ_a={la:.2f}, max={n_max:,}, ρ={rho_game:+.2f}"
+    )
 
     # Win/loss counters — the authoritative source for p_home/p_away
     wins_home_total = 0
@@ -112,14 +132,19 @@ def monte_carlo_advanced(
     while sims_done < n_max:
         b = min(block, n_max - sims_done)
 
-        # Lambda noise models parameter uncertainty (epistemic).
-        # std = lambda_noise * lambda so noise scales proportionally.
+        # Bivariate normal λ noise — Cholesky decomposition for exact correlation.
+        # z1 drives lh_noise; z2 is the independent residual for la_noise.
+        # Cov(lh_noise, la_noise) = sigma_h * sigma_a * rho_game  (exact).
+        # Marginal variances are preserved: each noise term has variance sigma².
+        z1 = rng.standard_normal(size=b)
+        z2 = rng.standard_normal(size=b)
+
         lh_noise = np.clip(
-            rng.normal(lh, lambda_noise * max(lh, 0.5), size=b),
+            lh + _sigma_h * z1,
             LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA,
         )
         la_noise = np.clip(
-            rng.normal(la, lambda_noise * max(la, 0.5), size=b),
+            la + _sigma_a * (rho_game * z1 + _rho_sqrt_comp * z2),
             LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA,
         )
 
@@ -139,20 +164,33 @@ def monte_carlo_advanced(
 
         if analyze_f5:
             if lh_f5 is not None:
+                zf1 = rng.standard_normal(size=b)
+                zf2 = rng.standard_normal(size=b)
+                _s_f5h = lambda_noise * max(lh_f5, 0.5)
                 lh_f5_noise = np.clip(
-                    rng.normal(lh_f5, lambda_noise * max(lh_f5, 0.5), size=b),
+                    lh_f5 + _s_f5h * zf1,
                     LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA,
                 )
+                if la_f5 is not None:
+                    _s_f5a = lambda_noise * max(la_f5, 0.5)
+                    la_f5_noise = np.clip(
+                        la_f5 + _s_f5a * (rho_game * zf1 + _rho_sqrt_comp * zf2),
+                        LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA,
+                    )
+                else:
+                    la_f5_noise = np.clip(la_noise * F5_SCALE, LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA)
             else:
-                # Scale the same per-simulation λ so full-game/F5 are correlated
-                lh_f5_noise = lh_noise * F5_SCALE
-            if la_f5 is not None:
-                la_f5_noise = np.clip(
-                    rng.normal(la_f5, lambda_noise * max(la_f5, 0.5), size=b),
-                    LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA,
-                )
-            else:
-                la_f5_noise = la_noise * F5_SCALE
+                lh_f5_noise = np.clip(lh_noise * F5_SCALE, LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA)
+                if la_f5 is not None:
+                    _s_f5a = lambda_noise * max(la_f5, 0.5)
+                    zf1 = rng.standard_normal(size=b)
+                    zf2 = rng.standard_normal(size=b)
+                    la_f5_noise = np.clip(
+                        la_f5 + _s_f5a * (rho_game * zf1 + _rho_sqrt_comp * zf2),
+                        LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA,
+                    )
+                else:
+                    la_f5_noise = np.clip(la_noise * F5_SCALE, LIMITS.MIN_LAMBDA, LIMITS.MAX_LAMBDA)
 
             home_f5 = rng.poisson(lh_f5_noise)
             away_f5 = rng.poisson(la_f5_noise)
@@ -205,6 +243,7 @@ def monte_carlo_advanced(
         "mean_away":       mean_away,
         "mean_total":      mean_total,
         "std_total":       std_total,
+        "bivariate_rho":   rho_game,
         "converged_early": sims_done < n_max,
     }
 
@@ -231,10 +270,18 @@ def monte_carlo_advanced(
 
     # ── O/U probabilities ──────────────────────────────────────────────────
     # Use `is not None` (not truthiness) so line=0 would not be skipped.
+    # When total_line is absent and analyze_f5=True, derive a "fair" full-game
+    # line from the simulation mean so F5 callers get O/U context without
+    # needing to pass it explicitly. Otherwise None → skip O/U block.
     line_to_use = (
         total_line if total_line is not None
         else (round(mean_total * 2) / 2 if analyze_f5 else None)
     )
+    if line_to_use is not None and not store_samples:
+        logger.warning(
+            "total_line=%.1f provided but store_samples=False — O/U probabilities not computed",
+            line_to_use,
+        )
     if line_to_use is not None and store_samples:
         n_arr = len(final_total)
         over  = int(np.sum(final_total > line_to_use))

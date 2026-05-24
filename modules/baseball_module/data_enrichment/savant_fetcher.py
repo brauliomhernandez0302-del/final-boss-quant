@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 _EXPECTED_URL = "https://baseballsavant.mlb.com/leaderboard/expected_statistics"
 _EV_URL       = "https://baseballsavant.mlb.com/leaderboard/statcast"
 _CACHE_TTL    = 86_400  # 24 h in seconds
-_TIMEOUT      = 15
+_TIMEOUT      = (5, 30)
 
 
 class SavantFetcher:
@@ -139,16 +139,16 @@ class SavantFetcher:
                 if not pid:
                     continue
                 out[pid] = {
-                    "avg_hit_speed":   _f(row.get("avg_hit_speed")),
-                    "brl_percent":     _f(row.get("brl_percent")),
-                    "brl_pa":          _f(row.get("brl_pa")),
-                    "ev95percent":     _f(row.get("ev95percent")),
-                    "ev95plus":        _i(row.get("ev95plus")),
-                    "max_hit_speed":   _f(row.get("max_hit_speed")),
-                    "ev50":            _f(row.get("ev50")),
-                    "avg_hit_angle":   _f(row.get("avg_hit_angle")),
-                    "hard_hit_pct":    _f(row.get("hard_hit_pct")),
-                    "attempts":        _i(row.get("attempts")),
+                    "avg_hit_speed":        _f(row.get("avg_hit_speed")),
+                    "brl_percent":          _f(row.get("brl_percent")),
+                    "brl_pa":               _f(row.get("brl_pa")),
+                    "ev95percent":          _f(row.get("ev95percent")),
+                    "ev95plus":             _i(row.get("ev95plus")),
+                    "max_hit_speed":        _f(row.get("max_hit_speed")),
+                    "ev50":                 _f(row.get("ev50")),
+                    "avg_hit_angle":        _f(row.get("avg_hit_angle")),
+                    "sweet_spot_pct":       _f(row.get("anglesweetspotpercent")),
+                    "attempts":             _i(row.get("attempts")),
                 }
             except (ValueError, KeyError):
                 continue

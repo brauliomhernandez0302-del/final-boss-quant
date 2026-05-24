@@ -39,7 +39,6 @@ Regression constants (half-reliability PA from FanGraphs / BIS research):
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import time
@@ -49,23 +48,23 @@ from typing import Dict, Optional, Tuple
 
 import requests
 
+from config import CACHE_DIR, LEAGUE_AVG_RUNS, LEAGUE_AVG_WOBA
+
 log = logging.getLogger(__name__)
 
-ROOT      = Path(__file__).parent.parent.parent.parent
-CACHE_DIR = ROOT / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
-MLB_BASE   = "https://statsapi.mlb.com/api/v1"
+MLB_BASE    = "https://statsapi.mlb.com/api/v1"
 SAVANT_BASE = "https://baseballsavant.mlb.com"
 
-# ── League averages (2024/2025 combined — updated annually) ──────────────────
-LG_RPG       = 4.50
-LG_XWOBA     = 0.312
-LG_WOBA      = 0.310
-LG_WOBA_SCALE = 1.157   # FanGraphs wOBAscale 2024
+# ── League averages (2024/2025 — updated annually) ────────────────────────────
+LG_RPG       = LEAGUE_AVG_RUNS   # single source of truth: config.py
+LG_XWOBA     = 0.312             # Statcast expected wOBA (≠ traditional wOBA)
+LG_WOBA      = LEAGUE_AVG_WOBA   # single source of truth: config.py
+LG_WOBA_SCALE = 1.157            # FanGraphs wOBAscale 2024
 LG_BB_PCT    = 0.086
 LG_K_PCT     = 0.224
-LG_BARREL_PA = 0.088    # league barrel per PA
+LG_BARREL_PA = 0.088             # league barrel per PA
 
 # Bayesian regression constants (PA at which metric is 50% reliable)
 _K_XWOBA  = 150
@@ -82,7 +81,7 @@ _PRIOR_PA_EQUIVALENT = 1000
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 
-def _get_json(url: str, params: dict = None, timeout: int = 12) -> Optional[dict]:
+def _get_json(url: str, params: dict = None, timeout: tuple = (5, 20)) -> Optional[dict]:
     try:
         r = requests.get(url, params=params, timeout=timeout,
                          headers={"User-Agent": "Mozilla/5.0"})
@@ -93,7 +92,7 @@ def _get_json(url: str, params: dict = None, timeout: int = 12) -> Optional[dict
         return None
 
 
-def _get_csv(url: str, params: dict = None, timeout: int = 15) -> Optional[str]:
+def _get_csv(url: str, params: dict = None, timeout: tuple = (5, 30)) -> Optional[str]:
     try:
         r = requests.get(url, params=params, timeout=timeout,
                          headers={"User-Agent": "Mozilla/5.0"})
@@ -214,9 +213,49 @@ def _fetch_savant_exitvelo(season: int) -> dict:
 # ── MLB Stats API fetchers ────────────────────────────────────────────────────
 
 
+def _fetch_game_lineup(game_pk: int) -> Dict[str, list]:
+    """
+    Returns {"home": [pid1,...,pid9], "away": [...]} from the confirmed batting
+    lineup in the boxscore.  Returns {"home": [], "away": []} when the lineup
+    has not been posted yet (< 9 confirmed batters per side).
+    Cached for 2 hours — lineups don't change once posted.
+    """
+    cache = _cache_path(f"tte_lineup_{game_pk}.json")
+    if _cache_valid(cache, ttl_seconds=7200):
+        return json.loads(cache.read_text())
+
+    result = {"home": [], "away": []}
+    data = _get_json(f"{MLB_BASE}/game/{game_pk}/boxscore")
+    if not data:
+        return result
+
+    for side in ("home", "away"):
+        players = data.get("teams", {}).get(side, {}).get("players", {})
+        lineup: list = []
+        for pdata in players.values():
+            bo = pdata.get("battingOrder")
+            if bo is not None:
+                pid = pdata.get("person", {}).get("id")
+                if pid:
+                    lineup.append((int(bo), int(pid)))
+        lineup.sort()
+        result[side] = [pid for _, pid in lineup]
+
+    if len(result["home"]) >= 9 and len(result["away"]) >= 9:
+        cache.write_text(json.dumps(result))
+        log.info("Lineup confirmed for game_pk=%d: %d home / %d away batters",
+                 game_pk, len(result["home"]), len(result["away"]))
+    else:
+        log.debug("Lineup not yet posted for game_pk=%d", game_pk)
+
+    return result
+
+
 def _fetch_team_roster(team_id: int, season: int) -> Dict[int, str]:
     """
-    Returns {mlbam_player_id: player_full_name} for the team's 40-man roster.
+    Returns {mlbam_player_id: player_full_name} for the team's gameday roster.
+    Uses rosterType=gameday (~38 players) instead of 40Man (~70) to exclude
+    minor-leaguers and players on the 60-day IL.
     Cached per team/season for 24 hours.
     """
     cache = _cache_path(f"tte_roster_{team_id}_{season}.json")
@@ -225,7 +264,7 @@ def _fetch_team_roster(team_id: int, season: int) -> Dict[int, str]:
 
     data = _get_json(
         f"{MLB_BASE}/teams/{team_id}/roster",
-        params={"rosterType": "40Man", "season": season},
+        params={"rosterType": "gameday", "season": season},
     )
     if not data:
         return {}
@@ -239,7 +278,7 @@ def _fetch_team_roster(team_id: int, season: int) -> Dict[int, str]:
             roster[int(pid)] = name
 
     cache.write_text(json.dumps(roster))
-    log.debug("Roster %d/%d: %d players", team_id, season, len(roster))
+    log.debug("Gameday roster %d/%d: %d players", team_id, season, len(roster))
     return roster
 
 
@@ -321,11 +360,15 @@ def _aggregate_statcast_for_team(
     roster: Dict[int, str],
     savant_exp: dict,
     savant_ev: dict,
+    player_ids: Optional[list] = None,
 ) -> dict:
     """
     PA-weighted aggregation of player-level Statcast data for a roster.
     Returns {xwoba, barrel_pa, avg_ev, total_pa, n_players}.
     Falls back to league averages for missing players.
+
+    player_ids — if provided (confirmed lineup), restrict aggregation to those
+                 players only; otherwise aggregates the full roster.
     """
     total_pa      = 0.0
     xwoba_sum     = 0.0
@@ -334,7 +377,8 @@ def _aggregate_statcast_for_team(
     ev_sum        = 0.0
     n_found       = 0
 
-    for pid in roster:
+    candidates = player_ids if player_ids else list(roster)
+    for pid in candidates:
         exp = savant_exp.get(pid) or savant_exp.get(str(pid))
         ev  = savant_ev.get(pid)  or savant_ev.get(str(pid))
         if exp:
@@ -359,7 +403,7 @@ def _aggregate_statcast_for_team(
 
     return {
         "xwoba":     round(xwoba_sum  / total_pa,     4),
-        "barrel_pa": round(barrels_sum / total_pa,     4) if total_pa > 0 else LG_BARREL_PA,
+        "barrel_pa": round(barrels_sum / total_pa,     4),
         "avg_ev":    round(ev_sum / attempts_sum,      2) if attempts_sum > 0 else 87.0,
         "total_pa":  total_pa,
         "n_players": n_found,
@@ -371,19 +415,25 @@ def _aggregate_statcast_for_team(
 
 def _composite_score(
     xwoba_reg:  float,
-    wrc_reg:    float,
     barrel_reg: float,
     plate_reg:  float,
 ) -> float:
     """
-    Weighted composite of four regressed, normalised factors.
+    Weighted composite of three orthogonal, regressed, normalised factors.
     Each factor is centred at 1.0 = league average.
+
+    f_xwoba  (0.50) — contact quality stripped of BABIP luck (Statcast)
+    f_barrel (0.30) — power/exit-velocity; predicts future HR; stabilises ~80 BIP
+    f_plate  (0.20) — BB%−K% discipline; most stable signal (k=60–120 PA)
+
+    wRC+ derived from raw wOBA was removed: it was collinear with xwOBA
+    (same contact-quality signal) but added BABIP noise xwOBA was designed
+    to remove. Its 0.30 weight redistributed to barrel (+0.15) and plate (+0.10).
     """
     return (
-        xwoba_reg  * 0.45 +
-        wrc_reg    * 0.30 +
-        barrel_reg * 0.15 +
-        plate_reg  * 0.10
+        xwoba_reg  * 0.50 +
+        barrel_reg * 0.30 +
+        plate_reg  * 0.20
     )
 
 
@@ -434,15 +484,20 @@ class TrueTalentOffenseEngine:
 
     def get_lambda(
         self,
-        team_id:   int,
-        team_name: str,
-        season:    Optional[int] = None,
+        team_id:    int,
+        team_name:  str,
+        season:     Optional[int] = None,
+        lineup_ids: Optional[list] = None,
     ) -> Tuple[float, dict]:
         """
         Returns (λ_talent, metadata_dict).
 
-        λ_talent — park-neutral expected runs per game.
-        metadata  — all intermediate values for logging / debugging.
+        λ_talent   — park-neutral expected runs per game.
+        metadata   — all intermediate values for logging / debugging.
+        lineup_ids — confirmed day-of batting lineup (MLBAM player IDs).
+                     When provided, Statcast aggregation uses these 9 players
+                     instead of the full roster, giving a more accurate picture
+                     of today's actual offensive threat.
         """
         if season is None:
             season = datetime.now().year
@@ -454,7 +509,8 @@ class TrueTalentOffenseEngine:
         roster_cur  = _fetch_team_roster(team_id, season)
         hitting_cur = _fetch_team_hitting_stats(team_id, season)
         sc_cur      = _aggregate_statcast_for_team(
-            roster_cur, self._savant_exp, self._savant_ev
+            roster_cur, self._savant_exp, self._savant_ev,
+            player_ids=lineup_ids if lineup_ids else None,
         )
 
         # ── Prior season data (for blending) ──────────────────────────────
@@ -485,38 +541,26 @@ class TrueTalentOffenseEngine:
         barrel_reg = _regress(barrel_cur, LG_BARREL_PA, pa_cur, _K_BARREL)
         bb_reg     = _regress(bb_cur,     LG_BB_PCT,    pa_cur, _K_BB)
         k_reg      = _regress(k_cur,      LG_K_PCT,     pa_cur, _K_K)
-        woba_reg   = _regress(woba_cur,   LG_WOBA,      pa_cur, _K_WRC)
 
-        # wRC+ approximation from regressed wOBA (no park adjustment needed
-        # because we output park-neutral λ and the Park Engine handles venue)
-        wrc_reg_val = round(((woba_reg - LG_WOBA) / LG_WOBA_SCALE) * 100 + 100, 2)
-        wrc_reg_val = max(50.0, min(165.0, wrc_reg_val))
-
-        # Plate discipline: (BB% - K%) differential vs league
-        # Positive = more walks, fewer Ks (good); normalised to 1.0 = average
-        disc_cur   = (bb_reg - k_reg) - (LG_BB_PCT - LG_K_PCT)
-        plate_reg_val = 1.0 + disc_cur * 3.5   # ±10% range for realistic spreads
-        plate_reg_val = max(0.85, min(1.15, plate_reg_val))
+        # Plate discipline: (BB% − K%) differential vs league baseline.
+        # Positive → more walks, fewer Ks; normalised so 1.0 = league average.
+        disc_cur      = (bb_reg - k_reg) - (LG_BB_PCT - LG_K_PCT)
+        plate_reg_val = max(0.85, min(1.15, 1.0 + disc_cur * 3.5))
 
         # ── Normalise factors (1.0 = league average) ──────────────────────
         f_xwoba  = xwoba_reg  / LG_XWOBA
-        f_wrc    = wrc_reg_val / 100.0
         f_barrel = barrel_reg / LG_BARREL_PA
         f_plate  = plate_reg_val
 
         # ── Composite score → current season λ ────────────────────────────
-        composite = _composite_score(f_xwoba, f_wrc, f_barrel, f_plate)
+        composite  = _composite_score(f_xwoba, f_barrel, f_plate)
         lambda_cur = composite * LG_RPG
 
         # ── Prior season λ (using same formula on prior-season metrics) ────
-        wrc_pri_val = max(50.0, min(165.0,
-            ((woba_pri - LG_WOBA) / LG_WOBA_SCALE) * 100 + 100
-        ))
         disc_pri  = (bb_pri - k_pri) - (LG_BB_PCT - LG_K_PCT)
         plate_pri = max(0.85, min(1.15, 1.0 + disc_pri * 3.5))
         composite_pri = _composite_score(
             xwoba_pri / LG_XWOBA,
-            wrc_pri_val / 100.0,
             barrel_pri / LG_BARREL_PA,
             plate_pri,
         )
@@ -537,19 +581,24 @@ class TrueTalentOffenseEngine:
             "team_name":    team_name,
             "season":       season,
             "pa_current":   int(pa_cur),
+            "lineup_confirmed": bool(lineup_ids and len(lineup_ids) >= 9),
             "n_statcast_players": sc_cur["n_players"],
             "metrics": {
-                "xwoba_raw":       round(xwoba_cur,  4),
-                "xwoba_regressed": round(xwoba_reg,  4),
-                "barrel_pa_raw":   round(barrel_cur, 4),
-                "barrel_regressed":round(barrel_reg, 4),
-                "bb_pct":          round(bb_reg,     4),
-                "k_pct":           round(k_reg,      4),
-                "wrc_plus_approx": round(wrc_reg_val,2),
+                "xwoba_raw":        round(xwoba_cur,  4),
+                "xwoba_regressed":  round(xwoba_reg,  4),
+                "barrel_pa_raw":    round(barrel_cur, 4),
+                "barrel_regressed": round(barrel_reg, 4),
+                "bb_pct":           round(bb_reg,     4),
+                "k_pct":            round(k_reg,      4),
+                # wRC+ removed — was collinear with xwOBA; approx kept for UI reference
+                "wrc_plus_approx":  round(
+                    max(50.0, min(165.0,
+                        ((xwoba_reg - LG_XWOBA) / LG_WOBA_SCALE) * 100 + 100
+                    )), 2
+                ),
             },
             "factors": {
                 "f_xwoba":  round(f_xwoba,  4),
-                "f_wrc":    round(f_wrc,    4),
                 "f_barrel": round(f_barrel, 4),
                 "f_plate":  round(f_plate,  4),
             },
@@ -561,11 +610,11 @@ class TrueTalentOffenseEngine:
         }
 
         log.info(
-            "TTO %s %d | PA=%d  xwOBA=%.3f→%.3f  wRC+=%.0f  "
-            "barrel=%.1f%%  λ=%.3f (prior_w=%.0f%%)",
+            "TTO %s %d | PA=%d  xwOBA=%.3f→%.3f  barrel=%.1f%%  "
+            "disc=%.3f  λ=%.3f (prior_w=%.0f%%)",
             team_name, season, int(pa_cur),
-            xwoba_cur, xwoba_reg, wrc_reg_val,
-            barrel_reg * 100, lambda_talent, prior_w * 100,
+            xwoba_cur, xwoba_reg, barrel_reg * 100,
+            disc_cur, lambda_talent, prior_w * 100,
         )
         return lambda_talent, metadata
 
@@ -576,16 +625,18 @@ _engine: Optional[TrueTalentOffenseEngine] = None
 
 
 def get_true_talent_lambda(
-    team_id:   int,
-    team_name: str,
-    season:    Optional[int] = None,
+    team_id:    int,
+    team_name:  str,
+    season:     Optional[int] = None,
+    lineup_ids: Optional[list] = None,
 ) -> Tuple[float, dict]:
     """
     Convenience wrapper — returns (λ_talent, metadata).
     Re-uses a module-level engine instance to share cached Savant data
     across multiple calls in the same process (e.g. home + away in one game).
+    lineup_ids — confirmed day-of batting lineup player IDs (optional).
     """
     global _engine
     if _engine is None:
         _engine = TrueTalentOffenseEngine()
-    return _engine.get_lambda(team_id, team_name, season)
+    return _engine.get_lambda(team_id, team_name, season, lineup_ids=lineup_ids)

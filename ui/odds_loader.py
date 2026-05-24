@@ -117,33 +117,50 @@ def filter_odds_by_sport(df: pd.DataFrame, keywords: List[str]) -> pd.DataFrame:
 # ── Game selector ─────────────────────────────────────────────────────────
 
 
+def _safe_float(val: Any) -> Optional[float]:
+    """Return float(val) or None if val is missing/zero/invalid."""
+    try:
+        f = float(val)
+        return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def build_game_selector(
     sport_df: pd.DataFrame,
 ) -> Tuple[List[str], Dict[str, GameData]]:
-    """Build dropdown labels and a label→GameData mapping from an odds DataFrame."""
+    """Build dropdown labels and a label→GameData mapping from an odds DataFrame.
+
+    Populates the full GameData — ML odds, Pinnacle reference, totals, and
+    runline — so the caller can pass them straight into run_module() without
+    a second API call.
+    """
     options: List[str] = []
     mapping: Dict[str, GameData] = {}
 
     for _, row in sport_df.iterrows():
-        home       = row.get("home_team", "Home")
-        away       = row.get("away_team", "Away")
-        commence   = row.get("commence_time", "")
-        date_str   = parse_game_datetime(commence)
+        home     = row.get("home_team", "Home")
+        away     = row.get("away_team", "Away")
+        commence = row.get("commence_time", "")
+        date_str = parse_game_datetime(commence)
 
         label = f"{away} @ {home} — {date_str}"
         options.append(label)
 
-        # home_odds: use value directly; fall back to 2.0 if missing/None
-        home_odds_raw = row.get("home_odds")
-        away_odds_raw = row.get("away_odds")
-
         mapping[label] = GameData(
-            home        = str(home),
-            away        = str(away),
-            home_odds   = float(home_odds_raw) if home_odds_raw else 2.0,
-            away_odds   = float(away_odds_raw) if away_odds_raw else 2.0,
+            home          = str(home),
+            away          = str(away),
+            home_odds     = _safe_float(row.get("home_odds"))  or 2.0,
+            away_odds     = _safe_float(row.get("away_odds"))  or 2.0,
+            pin_home      = _safe_float(row.get("pin_home")),
+            pin_away      = _safe_float(row.get("pin_away")),
+            total_line    = _safe_float(row.get("total_line")),
+            total_over    = _safe_float(row.get("over_odds")),
+            total_under   = _safe_float(row.get("under_odds")),
+            runline_home  = _safe_float(row.get("runline_home")),
+            runline_away  = _safe_float(row.get("runline_away")),
             commence_time = str(commence),
-            raw_row     = row,
+            raw_row       = row,
         )
 
     return options, mapping

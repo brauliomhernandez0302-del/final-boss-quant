@@ -384,11 +384,12 @@ def analyze_runline(
         p_home_cover = float(1 - skellam.cdf(1, lh, la))
         p_away_cover = float(skellam.cdf(1, lh, la))
 
-        # CI via normal approximation on Skellam variance (lh + la)
-        se = math.sqrt((lh + la) / n_sims)
-        margin = 1.96 * se
-        home_ci = (max(0.0, p_home_cover - margin), min(1.0, p_home_cover + margin))
-        away_ci = (max(0.0, p_away_cover - margin), min(1.0, p_away_cover + margin))
+        # Bernoulli SE for the probability estimate (same formula as the samples path).
+        # Note: Var(D) = lh + la is the run-differential variance, NOT the SE of P(D≥2).
+        se_home = math.sqrt(p_home_cover * (1 - p_home_cover) / n_sims)
+        se_away = math.sqrt(p_away_cover * (1 - p_away_cover) / n_sims)
+        home_ci = (max(0.0, p_home_cover - 1.96 * se_home), min(1.0, p_home_cover + 1.96 * se_home))
+        away_ci = (max(0.0, p_away_cover - 1.96 * se_away), min(1.0, p_away_cover + 1.96 * se_away))
     
     # Ajuste vig
     odds_dict = {'home': runline_home, 'away': runline_away}
@@ -448,13 +449,14 @@ def analyze_first5(
 ) -> Dict[str, Any]:
     """
     Analiza First 5 Innings.
-    
+
     Ejecuta un Monte Carlo específico para F5 con lambdas ajustadas.
     """
     logger.info("📊 Analizando First 5 Innings")
-    
-    # Ajustar lambdas para F5 (aproximadamente 55-60% del juego completo)
-    f5_factor = 0.58
+
+    # Use the same F5 scale constant as the simulator (empirical 57.5% calibrated midpoint).
+    from modules.baseball_module.montecarlo.simulator import F5_SCALE as _F5_SCALE
+    f5_factor = _F5_SCALE
     lh_f5 = lh * f5_factor
     la_f5 = la * f5_factor
     

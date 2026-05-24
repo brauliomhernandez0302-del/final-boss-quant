@@ -39,7 +39,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-import numpy as np
 import requests
 
 log = logging.getLogger(__name__)
@@ -74,7 +73,7 @@ _DEFAULT_AVG_IPS = 5.5
 
 # ── HTTP helpers ───────────────────────────────────────────────────────────────
 
-def _get_json(url: str, params: dict = None, timeout: int = 10) -> Optional[dict]:
+def _get_json(url: str, params: dict = None, timeout: tuple = (5, 20)) -> Optional[dict]:
     try:
         r = requests.get(url, params=params, timeout=timeout,
                          headers={"User-Agent": "Mozilla/5.0"})
@@ -85,7 +84,7 @@ def _get_json(url: str, params: dict = None, timeout: int = 10) -> Optional[dict
         return None
 
 
-def _get_csv(url: str, params: dict = None, timeout: int = 15) -> Optional[str]:
+def _get_csv(url: str, params: dict = None, timeout: tuple = (5, 30)) -> Optional[str]:
     try:
         r = requests.get(url, params=params, timeout=timeout,
                          headers={"User-Agent": "Mozilla/5.0"})
@@ -220,14 +219,14 @@ def _fetch_savant_pitcher_exitvelo(season: int) -> Dict[int, dict]:
 
 
 def _fetch_team_roster(team_id: int, season: int) -> Dict[int, str]:
-    """40-man roster {player_id: name}. Shared with TTE. Cached 24h."""
+    """Gameday roster {player_id: name}. Shared cache with TTE. Cached 24h."""
     cache = CACHE_DIR / f"tte_roster_{team_id}_{season}.json"
     if _cache_valid(cache, ttl=86400):
         return {int(k): v for k, v in json.loads(cache.read_text()).items()}
 
     data = _get_json(
         f"{MLB_BASE}/teams/{team_id}/roster",
-        params={"rosterType": "40Man", "season": season},
+        params={"rosterType": "gameday", "season": season},
     )
     if not data:
         return {}
@@ -285,13 +284,14 @@ def _aggregate_team_savant(
 
     if total_pa <= 0:
         return {"xwoba_against": _LG_XWOBA_AG, "barrel_pa_against": _LG_BARREL_PA_AG,
-                "total_pa": 0.0, "n_pitchers": 0}
+                "total_pa": 0.0, "total_attempts": 0.0, "n_pitchers": 0}
 
     return {
-        "xwoba_against":   round(xwoba_sum  / total_pa,   4),
-        "barrel_pa_against": round(barrels_sum / total_pa, 4) if total_pa > 0 else _LG_BARREL_PA_AG,
-        "total_pa":        total_pa,
-        "n_pitchers":      n_found,
+        "xwoba_against":     round(xwoba_sum   / total_pa,     4),
+        "barrel_pa_against": round(barrels_sum  / attempts_sum, 4) if attempts_sum > 0 else _LG_BARREL_PA_AG,
+        "total_pa":          total_pa,
+        "total_attempts":    attempts_sum,
+        "n_pitchers":        n_found,
     }
 
 
@@ -332,10 +332,10 @@ class BullpenEngine:
         log.info("Bullpen Engine — adjusting lambdas")
         log.info("   Input: λ_h=%.3f  λ_a=%.3f", lh, la)
 
-        bp_away      = game_data.get("bullpen_away", {})
-        bp_home      = game_data.get("bullpen_home", {})
-        starter_away = game_data.get("pitcher_away", {})
-        starter_home = game_data.get("pitcher_home", {})
+        bp_away      = game_data.get("bullpen_away")  or {}
+        bp_home      = game_data.get("bullpen_home")  or {}
+        starter_away = game_data.get("pitcher_away")  or {}
+        starter_home = game_data.get("pitcher_home")  or {}
 
         home_team_id = game_data.get("home_team_id")
         away_team_id = game_data.get("away_team_id")
@@ -381,11 +381,11 @@ class BullpenEngine:
         label:    str = "",
     ) -> dict:
         # ── MLB API metrics (reliever-specific) ───────────────────────────
-        era   = float(bullpen.get("era",          _LG_BP_ERA))
-        whip  = float(bullpen.get("bullpen_whip", _LG_BP_WHIP))
-        k_pct = bullpen.get("k_pct")   # may be None if not yet fetched
+        _era  = bullpen.get("era");          era  = float(_era  if _era  is not None else _LG_BP_ERA)
+        _whip = bullpen.get("bullpen_whip"); whip = float(_whip if _whip is not None else _LG_BP_WHIP)
+        _tbf  = bullpen.get("tbf");          tbf  = float(_tbf  if _tbf  is not None else 0)
+        k_pct  = bullpen.get("k_pct")   # may be None if not yet fetched
         bb_pct = bullpen.get("bb_pct")
-        tbf    = float(bullpen.get("tbf", 0))
 
         # Bayesian regression on ERA/WHIP based on TBF
         era_reg  = _regress(era,  _LG_BP_ERA,  tbf, _K_ERA_BP)
@@ -399,7 +399,7 @@ class BullpenEngine:
             k_bb_reg = _regress(k_bb_obs, _LG_BP_K_BB, tbf, _K_K_BB_BP)
             delta_k_bb = k_bb_reg - _LG_BP_K_BB
             # Positive = better command → fewer runs → factor < 1
-            k_bb_factor = float(np.clip(1.0 - delta_k_bb * 1.5, 0.85, 1.15))
+            k_bb_factor = max(0.85, min(1.15, 1.0 - delta_k_bb * 1.5))
         else:
             k_bb_factor = 1.0
             k_bb_reg    = _LG_BP_K_BB
@@ -408,19 +408,21 @@ class BullpenEngine:
         xwoba_ag   = _LG_XWOBA_AG
         barrel_ag  = _LG_BARREL_PA_AG
         savant_pa  = 0.0
+        savant_att = 0.0
         n_pitchers = 0
 
         if team_id:
             roster = _fetch_team_roster(int(team_id), season)
             if roster:
                 sv = _aggregate_team_savant(roster, self._savant_exp, self._savant_ev)
-                xwoba_ag   = sv["xwoba_against"]
-                barrel_ag  = sv["barrel_pa_against"]
-                savant_pa  = sv["total_pa"]
-                n_pitchers = sv["n_pitchers"]
+                xwoba_ag      = sv["xwoba_against"]
+                barrel_ag     = sv["barrel_pa_against"]
+                savant_pa     = sv["total_pa"]
+                savant_att    = sv["total_attempts"]
+                n_pitchers    = sv["n_pitchers"]
 
-        xwoba_reg  = _regress(xwoba_ag,  _LG_XWOBA_AG,     savant_pa, _K_XWOBA_BP)
-        barrel_reg = _regress(barrel_ag, _LG_BARREL_PA_AG, savant_pa, _K_XWOBA_BP)
+        xwoba_reg  = _regress(xwoba_ag,  _LG_XWOBA_AG,     savant_pa,  _K_XWOBA_BP)
+        barrel_reg = _regress(barrel_ag, _LG_BARREL_PA_AG, savant_att, _K_XWOBA_BP)
 
         # Higher xwOBA against → more runs → factor > 1
         xwoba_factor  = xwoba_reg  / _LG_XWOBA_AG
@@ -434,10 +436,10 @@ class BullpenEngine:
             era_factor    * 0.20 +
             barrel_factor * 0.10
         )
-        quality_mult = float(np.clip(quality_raw, 0.75, 1.30))
+        quality_mult = max(0.75, min(1.30, quality_raw))
 
         # ── Workload fatigue ───────────────────────────────────────────────
-        ip_3d        = float(bullpen.get("ip_last_3_days", _NORMAL_IP_3D))
+        _ip3  = bullpen.get("ip_last_3_days"); ip_3d = float(_ip3 if _ip3 is not None else _NORMAL_IP_3D)
         workload_mult = self._workload_mult(ip_3d)
 
         raw_mult = quality_mult * workload_mult
@@ -448,7 +450,7 @@ class BullpenEngine:
         innings_weight = (9.0 - avg_ips) / 9.0
 
         total_mult = 1.0 + innings_weight * (raw_mult - 1.0)
-        total_mult = float(np.clip(total_mult, 0.90, 1.10))
+        total_mult = max(0.90, min(1.10, total_mult))
 
         log.debug(
             "   [%s bp] xwOBA=%.3f(reg) kbb=%.3f(reg) ERA=%.2f(reg) brl=%.3f "

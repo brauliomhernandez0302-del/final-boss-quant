@@ -1,9 +1,8 @@
 # ==========================================================
 # MLB DATA FETCHERS V3 FINAL - MLB STATS + WEATHER + PARK
-# Gratis, robusto y completo con TODAS las features
-# Base de ChatGPT + Mejoras de Claude + 7 features adicionales
 # ==========================================================
 
+import logging
 import os
 import json
 import time
@@ -15,7 +14,11 @@ from typing import Dict, Any, List, Optional, Tuple
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from config import DATA_DIR, CACHE_DIR, LEAGUE_AVG_RUNS, LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP
+
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 def _current_mlb_season() -> int:
@@ -54,11 +57,9 @@ def _lon_to_tz_offset(lon: float) -> int:
         return -8   # Pacific
 
 
-# Directorios
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
-CACHE_DIR = Path(".cache")
-CACHE_DIR.mkdir(exist_ok=True)
+# Ensure directories exist (config.py owns the paths)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ==========================================================
 # 1) MLB STATS API - OFICIAL (GRATIS)
@@ -91,7 +92,7 @@ class MLBStatsAPI:
         }
 
         try:
-            r = self.session.get(url, params=params, timeout=12)
+            r = self.session.get(url, params=params, timeout=(5, 20))
             r.raise_for_status()
             data = r.json()
 
@@ -102,11 +103,11 @@ class MLBStatsAPI:
                     if parsed:
                         games.append(parsed)
 
-            print(f"✅ MLB API: {len(games)} juegos encontrados para {date}")
+            logger.info(f"✅ MLB API: {len(games)} juegos encontrados para {date}")
             return games
 
         except Exception as e:
-            print(f"❌ Error obteniendo juegos MLB: {e}")
+            logger.error(f"❌ Error obteniendo juegos MLB: {e}")
             return []
 
     def get_games_by_date(self, date: str) -> List[Dict[str, Any]]:
@@ -206,7 +207,7 @@ class MLBStatsAPI:
                 "hp_umpire_name": hp_umpire_name,
             }
         except Exception as e:
-            print(f"⚠️ Error parseando juego: {e}")
+            logger.warning(f"⚠️ Error parseando juego: {e}")
             return None
 
     # -------------------------
@@ -228,7 +229,7 @@ class MLBStatsAPI:
         params = {"stats": "season", "season": season, "group": "pitching"}
 
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             data = r.json()
             stats = self._parse_pitcher_stats(data)
@@ -237,7 +238,7 @@ class MLBStatsAPI:
                     json.dump(stats, f)
             return stats
         except Exception as e:
-            print(f"⚠️ Error obteniendo stats de pitcher {pitcher_id}: {e}")
+            logger.warning(f"⚠️ Error obteniendo stats de pitcher {pitcher_id}: {e}")
             return None
 
     def _parse_pitcher_stats(self, data: Dict) -> Optional[Dict[str, Any]]:
@@ -349,7 +350,7 @@ class MLBStatsAPI:
         if game_type:
             params["gameType"] = game_type
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             return self._parse_pitcher_stats(r.json())
         except Exception:
@@ -360,19 +361,20 @@ class MLBStatsAPI:
         params = {"stats": "homeAndAway", "season": season, "group": "pitching"}
         result: Dict[str, Any] = {}
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             data = r.json()
             splits = data["stats"][0]["splits"]
             for s in splits:
-                code = (s.get("split") or {}).get("code")
                 stat = s.get("stat") or {}
                 parsed = self._extract_basic_stats(stat)
                 if not parsed:
                     continue
-                if code == "home":
+                # MLB API returns isHome bool at top level (not split.code)
+                is_home_split = s.get("isHome")
+                if is_home_split is True:
                     result["home"] = parsed
-                elif code == "away":
+                elif is_home_split is False:
                     result["away"] = parsed
         except Exception:
             pass
@@ -416,23 +418,23 @@ class MLBStatsAPI:
         if is_playoff and "playoff" in all_stats:
             ps = all_stats["playoff"]
             if ps.get("innings_pitched", 0) >= 3.0:
-                print(f"  ✅ Usando PLAYOFF (IP {ps.get('innings_pitched', 0)})")
+                logger.info(f"  ✅ Usando PLAYOFF (IP {ps.get('innings_pitched', 0)})")
                 return ps, "playoff"
             else:
-                print("  ⚠️ Playoff con IP bajas, buscando fallback...")
+                logger.warning("  ⚠️ Playoff con IP bajas, buscando fallback...")
 
         if is_home and "home" in all_stats:
-            print("  ✅ Usando HOME split")
+            logger.info("  ✅ Usando HOME split")
             return all_stats["home"], "home_split"
         if (not is_home) and "away" in all_stats:
-            print("  ✅ Usando AWAY split")
+            logger.info("  ✅ Usando AWAY split")
             return all_stats["away"], "away_split"
 
         if "regular_overall" in all_stats:
-            print("  ✅ Usando OVERALL (regular season)")
+            logger.info("  ✅ Usando OVERALL (regular season)")
             return all_stats["regular_overall"], "regular_overall"
 
-        print("  ❌ Sin stats válidas")
+        logger.error("  ❌ Sin stats válidas")
         return None, None
 
     def get_pitcher_game_log(self, pitcher_id: int, season: int, last_n: int = 5):
@@ -446,7 +448,7 @@ class MLBStatsAPI:
         url = f"{self.BASE_URL}/people/{pitcher_id}/stats"
         params = {"stats": "gameLog", "season": season, "group": "pitching"}
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             data = r.json()
             splits = data.get("stats", [{}])[0].get("splits", [])
@@ -469,9 +471,8 @@ class MLBStatsAPI:
             days_rest = 4
             if last_date_str:
                 try:
-                    from datetime import datetime as dt
-                    last_date = dt.strptime(last_date_str, "%Y-%m-%d")
-                    days_rest = (dt.utcnow() - last_date).days
+                    last_date = datetime.strptime(last_date_str, "%Y-%m-%d")
+                    days_rest = (datetime.utcnow() - last_date).days
                 except Exception:
                     pass
             result = {
@@ -518,7 +519,7 @@ class MLBStatsAPI:
                 json.dump(result, f2)
             return result
         except Exception as e:
-            print(f"Error game log pitcher {pitcher_id}: {e}")
+            logger.error(f"Error game log pitcher {pitcher_id}: {e}")
             return None
 
     def get_pitcher_f5_stats(self, pitcher_id: int, season: Optional[int] = None) -> Optional[Dict[str, Any]]:
@@ -541,11 +542,11 @@ class MLBStatsAPI:
         url = f"{self.BASE_URL}/people/{pitcher_id}/stats"
         params = {"stats": "byInning", "group": "pitching", "season": season}
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             splits = r.json().get("stats", [{}])[0].get("splits", [])
             if not splits:
-                json.dump({"_failed": True}, open(cache_file, "w"))
+                cache_file.write_text(json.dumps({"_failed": True}))
                 return None
 
             f5_er = 0
@@ -558,7 +559,7 @@ class MLBStatsAPI:
                     f5_ip += float(stat.get("inningsPitched", 0.0))
 
             if f5_ip < 5.0:
-                json.dump({"_failed": True}, open(cache_file, "w"))
+                cache_file.write_text(json.dumps({"_failed": True}))
                 return None
 
             result = {
@@ -566,11 +567,11 @@ class MLBStatsAPI:
                 "f5_ip": round(f5_ip, 1),
                 "f5_er": f5_er,
             }
-            json.dump(result, open(cache_file, "w"))
+            cache_file.write_text(json.dumps(result))
             return result
         except Exception as e:
-            print(f"⚠️ Error obteniendo F5 stats pitcher {pitcher_id}: {e}")
-            json.dump({"_failed": True}, open(cache_file, "w"))
+            logger.warning(f"⚠️ Error obteniendo F5 stats pitcher {pitcher_id}: {e}")
+            cache_file.write_text(json.dumps({"_failed": True}))
             return None
 
     # ── 5-level pitcher fallback ──────────────────────────────────────────────
@@ -592,7 +593,7 @@ class MLBStatsAPI:
         url = f"{self.BASE_URL}/people/{pitcher_id}/stats"
         params = {"stats": "season", "season": season, "group": "pitching", "sportId": sport_id}
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             stats = self._parse_pitcher_stats(r.json())
             if stats:
@@ -640,7 +641,7 @@ class MLBStatsAPI:
         if prev_stats and prev_stats.get("innings_pitched", 0) >= 20.0:
             prev_stats["is_fallback"] = True
             prev_stats["fallback_tier"] = "mlb_prev_season"
-            print(f"  ⚾ Pitcher {pitcher_id}: no current-season data → using {season-1} MLB season")
+            logger.info(f"  ⚾ Pitcher {pitcher_id}: no current-season data → using {season-1} MLB season")
             return prev_stats, "mlb_prev_season"
 
         # ── tier 3: Triple-A current season ──────────────────────────────────
@@ -648,7 +649,7 @@ class MLBStatsAPI:
         if aaa and aaa.get("innings_pitched", 0) >= 10.0:
             aaa["is_fallback"] = True
             aaa["fallback_tier"] = "aaa_current"
-            print(f"  ⚾ Pitcher {pitcher_id}: no MLB data → using AAA {season}")
+            logger.info(f"  ⚾ Pitcher {pitcher_id}: no MLB data → using AAA {season}")
             return aaa, "aaa_current"
 
         # ── tier 4: Double-A current season ───────────────────────────────────
@@ -656,7 +657,7 @@ class MLBStatsAPI:
         if aa and aa.get("innings_pitched", 0) >= 10.0:
             aa["is_fallback"] = True
             aa["fallback_tier"] = "aa_current"
-            print(f"  ⚾ Pitcher {pitcher_id}: no MLB/AAA data → using AA {season}")
+            logger.info(f"  ⚾ Pitcher {pitcher_id}: no MLB/AAA data → using AA {season}")
             return aa, "aa_current"
 
         # ── partial current-season (< 5 IP) is better than nothing ───────────
@@ -680,7 +681,7 @@ class MLBStatsAPI:
             "is_fallback": True,
             "fallback_tier": "team_staff_era",
         }
-        print(f"  ⚾ Pitcher {pitcher_id}: no stats found at any level → team staff ERA {staff_era:.2f}")
+        logger.info(f"  ⚾ Pitcher {pitcher_id}: no stats found at any level → team staff ERA {staff_era:.2f}")
         return staff_stats, "team_staff_era"
 
     def get_team_recent_form(self, team_id: int, games: int = 10) -> Optional[Dict[str, Any]]:
@@ -706,7 +707,7 @@ class MLBStatsAPI:
         }
 
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             data = r.json()
 
@@ -744,7 +745,7 @@ class MLBStatsAPI:
                 json.dump(result, f)
             return result
         except Exception as e:
-            print(f"⚠️ Error obteniendo forma reciente: {e}")
+            logger.warning(f"⚠️ Error obteniendo forma reciente: {e}")
             return None
 
     # ==========================================================
@@ -772,7 +773,7 @@ class MLBStatsAPI:
             "hydrate": "team,linescore"
         }
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             data = r.json()
 
@@ -802,14 +803,31 @@ class MLBStatsAPI:
                 json.dump(result, f)
             return result
         except Exception as e:
-            print(f"⚠️ Error obteniendo runs trend: {e}")
+            logger.warning(f"⚠️ Error obteniendo runs trend: {e}")
             return None
 
     # ==========================================================
     # FEATURE 3 - BULLPEN WORKLOAD (aprox)
     # ==========================================================
+    @staticmethod
+    def _ip_to_float(ip_str) -> float:
+        """Convert baseball IP notation '4.2' (4⅔) to decimal 4.667."""
+        try:
+            s = str(ip_str or "0")
+            if "." in s:
+                whole, thirds = s.split(".", 1)
+                return float(whole) + int(thirds) / 3.0
+            return float(s)
+        except (ValueError, TypeError):
+            return 0.0
+
     def get_bullpen_workload(self, team_id: int, days: int = 3) -> Optional[Dict[str, Any]]:
-        """{"innings_last_n_days": float, "games_played": int, "is_tired": bool, "avg_innings_per_game": float}"""
+        """
+        Returns real bullpen innings pitched over the last N days by reading
+        each completed game's boxscore — no more fixed 3.5-IP estimate.
+        {"innings_last_n_days", "ip_last_3_days", "games_played",
+         "is_tired", "avg_innings_per_game", "starter_ip_avg"}
+        """
         cache_file = CACHE_DIR / f"bullpen_{team_id}_{days}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
             try:
@@ -818,44 +836,97 @@ class MLBStatsAPI:
             except Exception:
                 pass
 
-        end_date = datetime.utcnow()
+        end_date   = datetime.utcnow()
         start_date = end_date - timedelta(days=days)
-        url = f"{self.BASE_URL}/schedule"
-        params = {
-            "sportId": 1,
-            "teamId": team_id,
-            "startDate": start_date.strftime("%Y-%m-%d"),
-            "endDate": end_date.strftime("%Y-%m-%d"),
-            "gameType": "R,F,D,L,W"
+        try:
+            r = self.session.get(
+                f"{self.BASE_URL}/schedule",
+                params={
+                    "sportId": 1, "teamId": team_id,
+                    "startDate": start_date.strftime("%Y-%m-%d"),
+                    "endDate":   end_date.strftime("%Y-%m-%d"),
+                    "gameType":  "R,F,D,L,W",
+                },
+                timeout=(5, 30),
+            )
+            r.raise_for_status()
+            schedule = r.json()
+        except Exception as e:
+            logger.warning(f"⚠️ Error obteniendo schedule bullpen workload: {e}")
+            return None
+
+        game_pks = []
+        for date_item in schedule.get("dates", []):
+            for game in date_item.get("games", []):
+                if game.get("status", {}).get("abstractGameState") == "Final":
+                    game_pks.append(game.get("gamePk"))
+
+        total_bp_ip    = 0.0
+        total_start_ip = 0.0
+        games_counted  = 0
+
+        for gk in game_pks:
+            if not gk:
+                continue
+            try:
+                rb = self.session.get(
+                    f"{self.BASE_URL}/game/{gk}/boxscore",
+                    timeout=(5, 15),
+                )
+                rb.raise_for_status()
+                bs = rb.json()
+            except Exception:
+                continue
+
+            # Determine which side this team is on
+            home_id = (bs.get("teams", {}).get("home", {})
+                         .get("team", {}).get("id"))
+            side = "home" if home_id == team_id else "away"
+            side_data = bs.get("teams", {}).get(side, {})
+            pitchers  = side_data.get("pitchers", [])
+            players   = side_data.get("players", {})
+
+            if not pitchers:
+                continue
+
+            starter_id  = pitchers[0]
+            reliever_ids = pitchers[1:]
+
+            sp_data = players.get(f"ID{starter_id}", {})
+            sp_ip   = self._ip_to_float(
+                sp_data.get("stats", {}).get("pitching", {}).get("inningsPitched", 0)
+            )
+            bp_ip = sum(
+                self._ip_to_float(
+                    players.get(f"ID{pid}", {})
+                           .get("stats", {}).get("pitching", {})
+                           .get("inningsPitched", 0)
+                )
+                for pid in reliever_ids
+            )
+
+            total_start_ip += sp_ip
+            total_bp_ip    += bp_ip
+            games_counted  += 1
+
+        if games_counted == 0:
+            return None
+
+        avg_bp_ip = round(total_bp_ip / games_counted, 2)
+        result = {
+            "innings_last_n_days":  round(total_bp_ip,    1),
+            "ip_last_3_days":       round(total_bp_ip,    1),
+            "games_played":         games_counted,
+            "is_tired":             total_bp_ip > 12.0,
+            "avg_innings_per_game": avg_bp_ip,
+            "starter_ip_avg":       round(total_start_ip / games_counted, 2),
         }
         try:
-            r = self.session.get(url, params=params, timeout=10)
-            r.raise_for_status()
-            data = r.json()
-
-            total_innings = 0.0
-            appearances = 0
-            for date_item in data.get("dates", []):
-                for game in date_item.get("games", []):
-                    if game.get("status", {}).get("abstractGameState") != "Final":
-                        continue
-                    appearances += 1
-                    total_innings += 3.5  # estimación bullpen por juego
-
-            is_tired = total_innings > 12.0  # umbral configurable
-            result = {
-                "innings_last_n_days": round(total_innings, 1),
-                "ip_last_3_days": round(total_innings, 1),
-                "games_played": appearances,
-                "is_tired": is_tired,
-                "avg_innings_per_game": round(total_innings / appearances, 1) if appearances > 0 else 0.0
-            }
             with open(cache_file, "w") as f:
                 json.dump(result, f)
-            return result
-        except Exception as e:
-            print(f"⚠️ Error obteniendo bullpen workload: {e}")
-            return None
+        except Exception:
+            pass
+        return result
 
     # ==========================================================
     # FEATURE 4 - H2H HISTÓRICO
@@ -883,7 +954,7 @@ class MLBStatsAPI:
             "hydrate": "team,linescore"
         }
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             data = r.json()
 
@@ -915,7 +986,7 @@ class MLBStatsAPI:
                 json.dump(result, f)
             return result
         except Exception as e:
-            print(f"⚠️ Error obteniendo H2H: {e}")
+            logger.warning(f"⚠️ Error obteniendo H2H: {e}")
             return None
 
     # ==========================================================
@@ -953,7 +1024,7 @@ class MLBStatsAPI:
                 "season": yr,
             }
             try:
-                r = self.session.get(url, params=params, timeout=10)
+                r = self.session.get(url, params=params, timeout=(5, 30))
                 r.raise_for_status()
                 splits = r.json().get("stats", [{}])[0].get("splits", [])
                 if not splits:
@@ -994,7 +1065,7 @@ class MLBStatsAPI:
                     json.dump(result, f)
                 return result
             except Exception as e:
-                print(f"⚠️ get_pitcher_vs_team({pitcher_id}, {team_id}, {yr}): {e}")
+                logger.warning(f"⚠️ get_pitcher_vs_team({pitcher_id}, {team_id}, {yr}): {e}")
                 return None
 
         # Try current season, fall back to previous if insufficient data
@@ -1024,7 +1095,7 @@ class MLBStatsAPI:
         url = f"{self.BASE_URL}/standings"
         params = {"leagueId": "103,104", "season": season, "standingsTypes": "regularSeason"}
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             data = r.json()
 
@@ -1057,7 +1128,7 @@ class MLBStatsAPI:
                         return result
             return None
         except Exception as e:
-            print(f"⚠️ Error obteniendo standings: {e}")
+            logger.warning(f"⚠️ Error obteniendo standings: {e}")
             return None
 
     # ==========================================================
@@ -1078,7 +1149,7 @@ class MLBStatsAPI:
         try:
             url = f"{self.BASE_URL}/teams/{team_id}/stats"
             params = {"stats": "season", "season": season, "group": "hitting", "sportId": 1}
-            r = self.session.get(url, params=params, timeout=8)
+            r = self.session.get(url, params=params, timeout=(5, 15))
             r.raise_for_status()
             splits = r.json().get("stats", [{}])[0].get("splits", [{}])
             if not splits:
@@ -1127,7 +1198,7 @@ class MLBStatsAPI:
                 json.dump(result, f)
             return result
         except Exception as e:
-            print(f"⚠️ Error obteniendo offensive stats team {team_id}: {e}")
+            logger.warning(f"⚠️ Error obteniendo offensive stats team {team_id}: {e}")
             return None
 
     # ==========================================================
@@ -1160,7 +1231,7 @@ class MLBStatsAPI:
             "hydrate": "venue"
         }
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             data = r.json()
 
@@ -1210,7 +1281,7 @@ class MLBStatsAPI:
                 json.dump(result, f)
             return result
         except Exception as e:
-            print(f"⚠️ Error calculando travel fatigue: {e}")
+            logger.warning(f"⚠️ Error calculando travel fatigue: {e}")
             return None
 
     # ==========================================================
@@ -1236,7 +1307,7 @@ class MLBStatsAPI:
                 "endDate": (target - timedelta(days=1)).strftime("%Y-%m-%d"),
                 "gameType": "R,F,D,L,W",
             }
-            r = self.session.get(url, params=params, timeout=8)
+            r = self.session.get(url, params=params, timeout=(5, 15))
             r.raise_for_status()
             data = r.json()
             last_date = None
@@ -1273,7 +1344,7 @@ class MLBStatsAPI:
         try:
             url = f"{self.BASE_URL}/teams/{team_id}/stats"
             params = {"stats": "season", "season": season, "group": "pitching", "sportId": 1}
-            r = self.session.get(url, params=params, timeout=8)
+            r = self.session.get(url, params=params, timeout=(5, 15))
             r.raise_for_status()
             splits = r.json().get("stats", [{}])[0].get("splits", [{}])
             if not splits:
@@ -1316,7 +1387,7 @@ class MLBStatsAPI:
                 json.dump(result, f)
             return result
         except Exception as e:
-            print(f"⚠️ Error obteniendo pitching stats team {team_id}: {e}")
+            logger.warning(f"⚠️ Error obteniendo pitching stats team {team_id}: {e}")
             return None
 
     def get_bullpen_era(self, team_id: int, season: Optional[int] = None) -> Optional[Dict[str, Any]]:
@@ -1339,7 +1410,7 @@ class MLBStatsAPI:
                 "pitcherType": "R",
                 "sportId": 1,
             }
-            r = self.session.get(url, params=params, timeout=8)
+            r = self.session.get(url, params=params, timeout=(5, 15))
             r.raise_for_status()
             splits = r.json().get("stats", [{}])[0].get("splits", [{}])
             if not splits:
@@ -1377,7 +1448,7 @@ class MLBStatsAPI:
                 json.dump(result, f)
             return result
         except Exception as e:
-            print(f"⚠️ Error obteniendo bullpen ERA team {team_id}: {e}")
+            logger.warning(f"⚠️ Error obteniendo bullpen ERA team {team_id}: {e}")
             return None
 
     # ==========================================================
@@ -1409,11 +1480,11 @@ class MLBStatsAPI:
             "sitCodes": "vl,vr",
         }
         try:
-            r = self.session.get(url, params=params, timeout=10)
+            r = self.session.get(url, params=params, timeout=(5, 30))
             r.raise_for_status()
             splits = r.json().get("stats", [{}])[0].get("splits", [])
         except Exception as e:
-            print(f"⚠️ platoon splits pitcher {pitcher_id}: {e}")
+            logger.warning(f"⚠️ platoon splits pitcher {pitcher_id}: {e}")
             return None
 
         result: Dict[str, Any] = {}
@@ -1477,7 +1548,8 @@ class MLBStatsAPI:
             cache_file = CACHE_DIR / f"hand_{pid}.json"
             if cache_file.exists():
                 try:
-                    result[pid] = json.load(open(cache_file))["s"]
+                    with open(cache_file) as f:
+                        result[pid] = json.load(f)["s"]
                     continue
                 except Exception:
                     pass
@@ -1487,7 +1559,7 @@ class MLBStatsAPI:
             ids_str = ",".join(str(i) for i in uncached)
             url = f"{self.BASE_URL}/people"
             try:
-                r = self.session.get(url, params={"personIds": ids_str}, timeout=15)
+                r = self.session.get(url, params={"personIds": ids_str}, timeout=(5, 30))
                 r.raise_for_status()
                 for person in r.json().get("people", []):
                     pid  = person.get("id")
@@ -1501,7 +1573,7 @@ class MLBStatsAPI:
                         except Exception:
                             pass
             except Exception as e:
-                print(f"⚠️ batch handedness fetch failed: {e}")
+                logger.warning(f"⚠️ batch handedness fetch failed: {e}")
                 for pid in uncached:
                     result.setdefault(pid, "R")
 
@@ -1550,12 +1622,12 @@ class MLBStatsAPI:
                     "endDate":   end_date.strftime("%Y-%m-%d"),
                     "hydrate":   "officials",
                 },
-                timeout=15,
+                timeout=(5, 30),
             )
             r.raise_for_status()
             sched_data = r.json()
         except Exception as e:
-            print(f"⚠️ umpire schedule scan failed: {e}")
+            logger.warning(f"⚠️ umpire schedule scan failed: {e}")
             return None
 
         # Identify game_pks where this ump was home plate ump
@@ -1594,7 +1666,7 @@ class MLBStatsAPI:
             try:
                 r2 = self.session.get(
                     f"{self.BASE_URL}/game/{game_pk}/boxscore",
-                    timeout=8,
+                    timeout=(5, 15),
                 )
                 r2.raise_for_status()
                 bs = r2.json()
@@ -1686,71 +1758,186 @@ class WeatherAPI:
         "Nationals Park": {"lat": 38.8730, "lon": -77.0074, "city": "Washington"},
         "American Family Field": {"lat": 43.0281, "lon": -87.9712, "city": "Milwaukee"},
         "RingCentral Coliseum": {"lat": 37.7516, "lon": -122.2005, "city": "Oakland"},
+        # A's relocated to Sacramento for 2025 season
+        "Sutter Health Park": {"lat": 38.5802, "lon": -121.5011, "city": "Sacramento"},
     }
 
     def __init__(self):
         self.api_key = os.getenv("OPENWEATHER_API_KEY", "")
         if not self.api_key:
-            print("⚠️ OPENWEATHER_API_KEY no configurada en .env")
+            logger.warning("⚠️ OPENWEATHER_API_KEY no configurada en .env")
 
-    def get_weather_for_stadium(self, stadium_name: str) -> Optional[Dict[str, Any]]:
+    # Severity ranking for weather conditions — worst-case wins across game slots
+    _CONDITION_SEVERITY = {
+        "Thunderstorm": 5, "Storm": 5,
+        "Rain": 4, "Drizzle": 3,
+        "Snow": 4, "Mist": 2, "Fog": 2,
+        "Clouds": 1, "Clear": 0, "Haze": 1, "Smoke": 1,
+    }
+
+    def get_weather_for_stadium(
+        self,
+        stadium_name: str,
+        game_time: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Returns weather averaged across the full game duration (~3 hours).
+
+        Uses OpenWeather 5-day/3-hour forecast to find the 1-2 slots that
+        cover game start → game end.  Averages temperature, humidity, wind
+        speed and direction (circular mean).  Uses worst-case condition
+        (e.g. if any slot has Rain during the game, the game has Rain).
+
+        game_time: ISO-8601 string for first pitch (UTC preferred).
+                   If None, uses the next available forecast slot.
+        Falls back to /weather (current conditions) if forecast unavailable.
+        """
         if not self.api_key:
             return None
         coords = self.STADIUM_COORDS.get(stadium_name)
         if not coords:
-            print(f"⚠️ Coordenadas no disponibles para {stadium_name}")
+            logger.warning("⚠️ Coordenadas no disponibles para %s", stadium_name)
             return None
 
-        url = f"{self.BASE_URL}/weather"
-        params = {"lat": coords["lat"], "lon": coords["lon"], "appid": self.api_key, "units": "imperial"}
+        # Parse first-pitch time (naive UTC)
+        target_dt: Optional[datetime] = None
+        if game_time:
+            try:
+                target_dt = datetime.fromisoformat(
+                    game_time.replace("Z", "+00:00")
+                ).replace(tzinfo=None)
+            except Exception:
+                target_dt = None
+
+        params = {"lat": coords["lat"], "lon": coords["lon"],
+                  "appid": self.api_key, "units": "imperial"}
+
+        # ── 5-day / 3-hour forecast (free tier) ──────────────────────────────
         try:
-            r = requests.get(url, params=params, timeout=10)
+            r = requests.get(f"{self.BASE_URL}/forecast", params=params, timeout=(5, 30))
+            r.raise_for_status()
+            all_slots = r.json().get("list", [])
+
+            if all_slots:
+                if target_dt:
+                    game_end_dt = target_dt + timedelta(hours=3)
+                    # Slots whose center time falls within [start, end] window
+                    game_slots = [
+                        s for s in all_slots
+                        if target_dt <= datetime.utcfromtimestamp(s["dt"]) <= game_end_dt
+                    ]
+                    # Always include the slot closest to first pitch as anchor
+                    if not game_slots:
+                        game_slots = [min(
+                            all_slots,
+                            key=lambda s: abs(datetime.utcfromtimestamp(s["dt"]) - target_dt),
+                        )]
+                else:
+                    game_slots = all_slots[:2]  # next two 3-hour slots
+
+                # ── Average continuous metrics ─────────────────────────────
+                avg_temp  = sum(s["main"]["temp"]              for s in game_slots) / len(game_slots)
+                avg_humid = sum(s["main"]["humidity"]          for s in game_slots) / len(game_slots)
+                avg_wind  = sum((s.get("wind") or {}).get("speed", 0) for s in game_slots) / len(game_slots)
+
+                # Circular mean for wind direction (handles 350°↔10° wrap)
+                import math
+                sin_sum = sum(math.sin(math.radians((s.get("wind") or {}).get("deg", 0))) for s in game_slots)
+                cos_sum = sum(math.cos(math.radians((s.get("wind") or {}).get("deg", 0))) for s in game_slots)
+                avg_dir = round(math.degrees(math.atan2(sin_sum, cos_sum)) % 360)
+
+                # ── Precipitation: total mm and max probability across slots ──
+                # rain.3h / snow.3h — OpenWeather returns these only when > 0
+                total_rain_mm = sum(
+                    (s.get("rain") or {}).get("3h", 0.0) +
+                    (s.get("snow") or {}).get("3h", 0.0)
+                    for s in game_slots
+                )
+                max_pop = max(s.get("pop", 0.0) for s in game_slots)  # probability 0-1
+
+                # ── Worst-case condition across the game window ────────────
+                def _severity(slot):
+                    cond = slot["weather"][0]["main"]
+                    return self._CONDITION_SEVERITY.get(cond, 0), cond
+
+                worst_sev, worst_cond = max(_severity(s) for s in game_slots)
+                worst_desc = next(
+                    s["weather"][0]["description"] for s in game_slots
+                    if s["weather"][0]["main"] == worst_cond
+                )
+
+                # Heavy rain (>10mm/game) → postponement territory; flag it clearly
+                postponement_risk = total_rain_mm > 10.0
+
+                slot_times = [
+                    datetime.utcfromtimestamp(s["dt"]).strftime("%H:%M")
+                    for s in game_slots
+                ]
+                result = {
+                    "stadium":            stadium_name,
+                    "city":               coords["city"],
+                    "temp_f":             round(avg_temp,       1),
+                    "humidity":           round(avg_humid,      1),
+                    "wind_speed_mph":     round(avg_wind,       1),
+                    "wind_direction":     avg_dir,
+                    "conditions":         worst_cond,
+                    "description":        worst_desc,
+                    "rain_mm":            round(total_rain_mm,  2),  # mm across game window
+                    "precip_probability": round(max_pop,        2),  # 0-1
+                    "postponement_risk":  postponement_risk,
+                    "forecast_slots":     slot_times,
+                    "n_slots":            len(game_slots),
+                    "timestamp":          datetime.utcnow().isoformat(),
+                }
+
+                if postponement_risk:
+                    logger.warning(
+                        "⚠️  POSTPONEMENT RISK %s: %.1f mm rain expected during game",
+                        stadium_name, total_rain_mm,
+                    )
+                else:
+                    logger.info(
+                        "☁️  Game forecast %s [%s UTC]: %.0f°F %s "
+                        "wind=%.0f mph dir=%d° rain=%.1fmm pop=%.0f%% (%d slots)",
+                        stadium_name, "–".join(slot_times),
+                        result["temp_f"], result["conditions"],
+                        result["wind_speed_mph"], result["wind_direction"],
+                        total_rain_mm, max_pop * 100, len(game_slots),
+                    )
+                return result
+
+        except Exception as e:
+            logger.warning("⚠️ Forecast API failed for %s: %s — trying current weather", stadium_name, e)
+
+        # ── Fallback: current conditions ──────────────────────────────────────
+        try:
+            r = requests.get(f"{self.BASE_URL}/weather", params=params, timeout=(5, 30))
             r.raise_for_status()
             d = r.json()
-            return {
-                "stadium": stadium_name,
-                "city": coords["city"],
-                "temp_f": round(d["main"]["temp"], 1),
-                "humidity": d["main"]["humidity"],
+            result = {
+                "stadium":        stadium_name,
+                "city":           coords["city"],
+                "temp_f":         round(d["main"]["temp"], 1),
+                "humidity":       d["main"]["humidity"],
                 "wind_speed_mph": round((d.get("wind") or {}).get("speed", 0.0), 1),
                 "wind_direction": (d.get("wind") or {}).get("deg", 0),
-                "conditions": d["weather"][0]["main"],
-                "description": d["weather"][0]["description"],
-                "timestamp": datetime.utcnow().isoformat()
+                "conditions":     d["weather"][0]["main"],
+                "description":    d["weather"][0]["description"],
+                "timestamp":      datetime.utcnow().isoformat(),
             }
+            logger.info(
+                "☁️  Current weather %s: %.0f°F %s wind=%.0f mph",
+                stadium_name, result["temp_f"], result["conditions"], result["wind_speed_mph"],
+            )
+            return result
         except Exception as e:
-            print(f"❌ Error obteniendo clima: {e}")
+            logger.error("❌ Error obteniendo clima %s: %s", stadium_name, e)
             return None
 
 
-# ==========================================================
-# 3) PARK FACTORS (ESTÁTICO)
-# ==========================================================
-
-class ParkFactors:
-    FACTORS = {
-        "Coors Field": {"runs": 1.30, "hr": 1.25, "type": "hitter"},
-        "Great American Ball Park": {"runs": 1.18, "hr": 1.22, "type": "hitter"},
-        "Fenway Park": {"runs": 1.05, "hr": 1.10, "type": "neutral"},
-        "Yankee Stadium": {"runs": 1.08, "hr": 1.15, "type": "hitter"},
-        "Camden Yards": {"runs": 1.07, "hr": 1.12, "type": "hitter"},
-        "Wrigley Field": {"runs": 0.97, "hr": 0.93, "type": "pitcher"},
-        "Dodger Stadium": {"runs": 0.95, "hr": 0.92, "type": "pitcher"},
-        "Petco Park": {"runs": 0.85, "hr": 0.80, "type": "pitcher"},
-        "Oracle Park": {"runs": 0.88, "hr": 0.75, "type": "pitcher"},
-        "T-Mobile Park": {"runs": 0.92, "hr": 0.88, "type": "pitcher"},
-        "Tropicana Field": {"runs": 0.96, "hr": 0.95, "type": "pitcher"},
-        "Rogers Centre": {"runs": 1.02, "hr": 1.05, "type": "neutral"},
-        "Rogers Center": {"runs": 1.02, "hr": 1.05, "type": "neutral"},
-        "Minute Maid Park": {"runs": 1.00, "hr": 1.05, "type": "neutral"},
-        "Busch Stadium": {"runs": 0.98, "hr": 0.95, "type": "neutral"},
-        "Progressive Field": {"runs": 1.01, "hr": 1.03, "type": "neutral"},
-        "Truist Park": {"runs": 0.99, "hr": 1.02, "type": "neutral"},
-    }
-
-    def get_factor(self, stadium_name: str) -> Dict[str, Any]:
-        factor = self.FACTORS.get(stadium_name, {"runs": 1.0, "hr": 1.0, "type": "neutral"})
-        return {"stadium": stadium_name, **factor}
+# ParkFactors removed — park factors are owned by park_weather_engine.STADIUM_DATABASE.
+# Keeping a duplicate with different values here caused silent divergence.
+# The park_weather_engine reads game_data["park"]["name"] directly from the venue string.
 
 
 # ==========================================================
@@ -1761,8 +1948,7 @@ class MLBDataIntegrator:
     def __init__(self):
         self.mlb_api = MLBStatsAPI()
         self.weather_api = WeatherAPI()
-        self.park_factors = ParkFactors()
-        self.league_avg_rpg = 4.38
+        self.league_avg_rpg = LEAGUE_AVG_RUNS   # single source of truth from config
         self._rpg_cache = {}
 
     def _get_season(self) -> tuple:
@@ -1791,7 +1977,8 @@ class MLBDataIntegrator:
             url = f"{self.mlb_api.BASE_URL}/teams/{team_id}/stats"
             params = {"stats": "season", "season": season,
                      "group": "hitting", "sportId": 1}
-            r = self.mlb_api.session.get(url, params=params, timeout=8)
+            r = self.mlb_api.session.get(url, params=params, timeout=(5, 15))
+            r.raise_for_status()
             data = r.json()
             splits = data.get("stats", [{}])[0].get("splits", [{}])
             if splits:
@@ -1824,22 +2011,38 @@ class MLBDataIntegrator:
         rpg_current = None
         games_current = 0
         if team_id:
-            cache_key = f"{team_id}_{current_season}"
-            try:
-                url = f"{self.mlb_api.BASE_URL}/teams/{team_id}/stats"
-                params = {"stats": "season", "season": current_season,
-                         "group": "hitting", "sportId": 1}
-                r = self.mlb_api.session.get(url, params=params, timeout=8)
-                data = r.json()
-                splits = data.get("stats", [{}])[0].get("splits", [{}])
-                if splits:
-                    stat = splits[0].get("stat", {})
-                    games_current = int(stat.get("gamesPlayed", 0))
-                    runs_current = int(stat.get("runs", 0))
+            # Reuse the cached _fetch_team_rpg path to avoid uncached HTTP calls
+            cache_file = CACHE_DIR / f"team_rpg_{team_id}_{current_season}.json"
+            if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 86400:
+                try:
+                    d = json.loads(cache_file.read_text())
+                    games_current = d.get("games", 0)
                     if games_current >= 35:
-                        rpg_current = round(runs_current / games_current, 3)
-            except Exception:
-                pass
+                        rpg_current = d.get("rpg")
+                except Exception:
+                    pass
+            if rpg_current is None:
+                try:
+                    url = f"{self.mlb_api.BASE_URL}/teams/{team_id}/stats"
+                    params = {"stats": "season", "season": current_season,
+                             "group": "hitting", "sportId": 1}
+                    r = self.mlb_api.session.get(url, params=params, timeout=(5, 15))
+                    r.raise_for_status()
+                    data = r.json()
+                    splits = data.get("stats", [{}])[0].get("splits", [{}])
+                    if splits:
+                        stat = splits[0].get("stat", {})
+                        games_current = int(stat.get("gamesPlayed", 0))
+                        runs_current  = int(stat.get("runs", 0))
+                        if games_current >= 10:
+                            rpg_c = round(runs_current / games_current, 3)
+                            cache_file.write_text(
+                                json.dumps({"rpg": rpg_c, "games": games_current})
+                            )
+                            if games_current >= 35:
+                                rpg_current = rpg_c
+                except Exception:
+                    pass
 
         recent = recent_rpg if recent_rpg and recent_rpg > 0 else rpg_previous
 
@@ -1860,26 +2063,36 @@ class MLBDataIntegrator:
         return round(max(2.5, min(7.0, lambda_base)), 3)
 
     def _enrich_pitchers_concurrent(self, game: Dict[str, Any], season: int) -> Dict[str, Any]:
-        """Enriquecer pitchers en paralelo con fallback."""
+        """Enriquecer pitchers en paralelo con fallback completo de 5 niveles."""
         is_playoff = game.get("is_playoff", False)
+
+        # Use team pitching stats as tier-5 fallback context
+        home_team_pitch = None
+        away_team_pitch = None
+        if game.get("home_team_id"):
+            home_team_pitch = self.mlb_api.get_team_pitching_stats(game["home_team_id"], season)
+        if game.get("away_team_id"):
+            away_team_pitch = self.mlb_api.get_team_pitching_stats(game["away_team_id"], season)
 
         def fetch_home():
             if game.get("home_pitcher_id"):
-                return self.mlb_api.get_pitcher_stats_with_fallback(
+                return self.mlb_api.get_pitcher_stats_full_fallback(
                     pitcher_id=game["home_pitcher_id"],
                     season=season,
+                    team_pitching=home_team_pitch,
+                    is_home=True,
                     is_playoff=is_playoff,
-                    is_home=True
                 )
             return (None, None)
 
         def fetch_away():
             if game.get("away_pitcher_id"):
-                return self.mlb_api.get_pitcher_stats_with_fallback(
+                return self.mlb_api.get_pitcher_stats_full_fallback(
                     pitcher_id=game["away_pitcher_id"],
                     season=season,
+                    team_pitching=away_team_pitch,
+                    is_home=False,
                     is_playoff=is_playoff,
-                    is_home=False
                 )
             return (None, None)
 
@@ -1913,7 +2126,7 @@ class MLBDataIntegrator:
                                 f" qs={game_log.get('quality_start_pct','?'):.0%}"
                                 if game_log.get('era_trend') is not None else ""
                             )
-                            print(
+                            logger.info(
                                 f"  ✅ {side.upper()} game log: ERA_L5={game_log.get('era_last_5','?')}"
                                 f" rest={game_log.get('days_rest','?')}d"
                                 f" avg_IPS={game_log.get('avg_innings_per_start','?')}{trend_str}"
@@ -1922,7 +2135,7 @@ class MLBDataIntegrator:
                         if f5:
                             stats.update(f5)
                             results[key_stats] = stats
-                            print(f"  ✅ {side.upper()} F5 ERA: {f5.get('f5_era','?')} ({f5.get('f5_ip','?')} IP in first 5)")
+                            logger.info(f"  ✅ {side.upper()} F5 ERA: {f5.get('f5_era','?')} ({f5.get('f5_ip','?')} IP in first 5)")
                         # Platoon splits (vs LHB / vs RHB)
                         platoon = self.mlb_api.get_pitcher_platoon_splits(pitcher_id, season)
                         if platoon:
@@ -1930,7 +2143,7 @@ class MLBDataIntegrator:
                             results[key_stats] = stats
                             lhb_w = platoon.get("vs_lhb", {}).get("whip", "?")
                             rhb_w = platoon.get("vs_rhb", {}).get("whip", "?")
-                            print(f"  ✅ {side.upper()} platoon: WHIP vs LHB={lhb_w} vs RHB={rhb_w}")
+                            logger.info(f"  ✅ {side.upper()} platoon: WHIP vs LHB={lhb_w} vs RHB={rhb_w}")
                         if opp_team_id:
                             pvt = self.mlb_api.get_pitcher_vs_team(pitcher_id, opp_team_id, season)
                             if pvt:
@@ -1941,30 +2154,44 @@ class MLBDataIntegrator:
                                 stats["pvt_season"] = pvt["season_used"]
                                 stats["pvt_sample"] = pvt["sample_size"]
                                 results[key_stats] = stats
-                                print(
+                                logger.info(
                                     f"  ✅ {side.upper()} vs opp: ERA={pvt['era']} "
                                     f"WHIP={pvt['whip']} ({pvt['ip']} IP, {pvt['sample_size']}, "
                                     f"season={pvt['season_used']})"
                                 )
                     results[key_source] = source
                     results[key_valid] = True
-                    print(f"  ✅ {side.upper()} pitcher: ERA {stats.get('era','?')} ({source})")
+                    logger.info(f"  ✅ {side.upper()} pitcher: ERA {stats.get('era','?')} ({source})")
                 else:
                     results[key_valid] = False
-                    print(f"  ❌ {side.upper()} pitcher: sin stats válidas")
+                    logger.error(f"  ❌ {side.upper()} pitcher: sin stats válidas")
         return results
 
-    def get_complete_game_data(self, date: Optional[str] = None, season: Optional[int] = None) -> List[Dict[str, Any]]:
-        """
-        Obtiene data COMPLETA con TODAS las features.
+    def get_complete_game_data(
+        self,
+        date: Optional[str] = None,
+        season: Optional[int] = None,
+        game_pk: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Obtiene data completa con todas las features.
+
+        If game_pk is provided, only that game is enriched — avoids processing
+        all games on the schedule when we only need one.
         """
         if season is None:
             season = _current_mlb_season()
-        print("🔍 Obteniendo data completa de juegos MLB...")
+        logger.info("🔍 Obteniendo data completa de juegos MLB...")
         games = self.mlb_api.get_todays_games(date)
         if not games:
-            print("⚠️ No se encontraron juegos")
+            logger.warning("⚠️ No se encontraron juegos")
             return []
+
+        # Filter to the requested game_pk to avoid enriching the entire schedule
+        if game_pk is not None:
+            games = [g for g in games if g.get("game_pk") == game_pk]
+            if not games:
+                logger.warning(f"game_pk={game_pk} not found in schedule for date={date}")
+                return []
 
         enriched_games: List[Dict[str, Any]] = []
 
@@ -1978,15 +2205,16 @@ class MLBDataIntegrator:
                 enriched["pitchers_valid"] = pitcher_data.get("home_pitcher_valid", False) and \
                                              pitcher_data.get("away_pitcher_valid", False)
 
-                # ===== WEATHER =====
+                # ===== WEATHER — forecast for game time =====
                 if game.get("venue"):
-                    weather = self.weather_api.get_weather_for_stadium(game["venue"])
+                    weather = self.weather_api.get_weather_for_stadium(
+                        game["venue"],
+                        game_time=game.get("game_date"),  # ISO string from MLB API
+                    )
                     if weather:
                         enriched["weather"] = weather
 
-                # ===== PARK FACTORS =====
-                if game.get("venue"):
-                    enriched["park_factor"] = self.park_factors.get_factor(game["venue"])
+                # Park factors are applied by park_weather_engine in run_module PASO 2.
 
                 # ===== NUEVAS FEATURES =====
                 # 1) Team Recent Form
@@ -1994,12 +2222,12 @@ class MLBDataIntegrator:
                     home_form = self.mlb_api.get_team_recent_form(game["home_team_id"], games=10)
                     if home_form:
                         enriched["home_team_form"] = home_form
-                        print(f"  ✅ {game['home_team']} form: {home_form['wins']}-{home_form['losses']} (L10)")
+                        logger.info(f"  ✅ {game['home_team']} form: {home_form['wins']}-{home_form['losses']} (L10)")
                 if game.get("away_team_id"):
                     away_form = self.mlb_api.get_team_recent_form(game["away_team_id"], games=10)
                     if away_form:
                         enriched["away_team_form"] = away_form
-                        print(f"  ✅ {game['away_team']} form: {away_form['wins']}-{away_form['losses']} (L10)")
+                        logger.info(f"  ✅ {game['away_team']} form: {away_form['wins']}-{away_form['losses']} (L10)")
 
                 # 2) Team Runs Trends
                 if game.get("home_team_id"):
@@ -2020,7 +2248,7 @@ class MLBDataIntegrator:
                             home_bullpen.update(home_bp_era)
                         enriched["bullpen_home"] = home_bullpen
                         if home_bullpen.get("is_tired"):
-                            print(f"  ⚠️ {game['home_team']} bullpen CANSADO ({home_bullpen['innings_last_n_days']} IP)")
+                            logger.warning(f"  ⚠️ {game['home_team']} bullpen CANSADO ({home_bullpen['innings_last_n_days']} IP)")
                 if game.get("away_team_id"):
                     away_bullpen = self.mlb_api.get_bullpen_workload(game["away_team_id"], days=3)
                     if away_bullpen:
@@ -2029,14 +2257,14 @@ class MLBDataIntegrator:
                             away_bullpen.update(away_bp_era)
                         enriched["bullpen_away"] = away_bullpen
                         if away_bullpen.get("is_tired"):
-                            print(f"  ⚠️ {game['away_team']} bullpen CANSADO ({away_bullpen['innings_last_n_days']} IP)")
+                            logger.warning(f"  ⚠️ {game['away_team']} bullpen CANSADO ({away_bullpen['innings_last_n_days']} IP)")
 
                 # 4) H2H Histórico
                 if game.get("home_team_id") and game.get("away_team_id"):
                     h2h = self.mlb_api.get_head_to_head(game["home_team_id"], game["away_team_id"], season)
                     if h2h and h2h.get("has_history"):
                         enriched["head_to_head"] = h2h
-                        print(f"  ✅ H2H: {game['home_team']} {h2h['team1_wins']}-{h2h['team2_wins']} {game['away_team']}")
+                        logger.info(f"  ✅ H2H: {game['home_team']} {h2h['team1_wins']}-{h2h['team2_wins']} {game['away_team']}")
 
                 # 5) Standings Status
                 if game.get("home_team_id"):
@@ -2044,25 +2272,25 @@ class MLBDataIntegrator:
                     if home_standings:
                         enriched["home_standings"] = home_standings
                         if home_standings["status"] in ["clinched", "eliminated"]:
-                            print(f"  📊 {game['home_team']}: {home_standings['status'].upper()}")
+                            logger.info(f"  📊 {game['home_team']}: {home_standings['status'].upper()}")
                 if game.get("away_team_id"):
                     away_standings = self.mlb_api.get_standings_status(game["away_team_id"], season)
                     if away_standings:
                         enriched["away_standings"] = away_standings
                         if away_standings["status"] in ["clinched", "eliminated"]:
-                            print(f"  📊 {game['away_team']}: {away_standings['status'].upper()}")
+                            logger.info(f"  📊 {game['away_team']}: {away_standings['status'].upper()}")
 
                 # 5b) Team Offensive Stats (wOBA, OPS)
                 if game.get("home_team_id"):
                     home_off = self.mlb_api.get_team_offensive_stats(game["home_team_id"], season)
                     if home_off:
                         enriched["home_offensive_stats"] = home_off
-                        print(f"  ✅ {game['home_team']} offense: wOBA={home_off['woba']} OPS={home_off['ops']}")
+                        logger.info(f"  ✅ {game['home_team']} offense: wOBA={home_off['woba']} OPS={home_off['ops']}")
                 if game.get("away_team_id"):
                     away_off = self.mlb_api.get_team_offensive_stats(game["away_team_id"], season)
                     if away_off:
                         enriched["away_offensive_stats"] = away_off
-                        print(f"  ✅ {game['away_team']} offense: wOBA={away_off['woba']} OPS={away_off['ops']}")
+                        logger.info(f"  ✅ {game['away_team']} offense: wOBA={away_off['woba']} OPS={away_off['ops']}")
 
                 # 6) Travel Fatigue (coordinate-based miles + time zones)
                 if game.get("away_team_id") and game.get("game_date"):
@@ -2077,7 +2305,7 @@ class MLBDataIntegrator:
                         enriched["time_zones_crossed_away"] = travel.get("time_zones_crossed", 0)
                         enriched["back_to_back_away"] = travel.get("back_to_back", False)
                         if travel.get("has_travel_fatigue"):
-                            print(f"  ✈️ {game['away_team']}: {travel['miles_traveled']} mi, {travel['time_zones_crossed']} TZ")
+                            logger.info(f"  ✈️ {game['away_team']}: {travel['miles_traveled']} mi, {travel['time_zones_crossed']} TZ")
 
                 # 7) Days rest (home and away)
                 game_date_str = (game.get("game_date") or "")[:10]
@@ -2091,12 +2319,12 @@ class MLBDataIntegrator:
                     home_pitch = self.mlb_api.get_team_pitching_stats(game["home_team_id"], season)
                     if home_pitch:
                         enriched["home_pitching_stats"] = home_pitch
-                        print(f"  ✅ {game['home_team']} pitching: ERA={home_pitch['team_era']} WHIP={home_pitch['team_whip']}")
+                        logger.info(f"  ✅ {game['home_team']} pitching: ERA={home_pitch['team_era']} WHIP={home_pitch['team_whip']}")
                 if game.get("away_team_id"):
                     away_pitch = self.mlb_api.get_team_pitching_stats(game["away_team_id"], season)
                     if away_pitch:
                         enriched["away_pitching_stats"] = away_pitch
-                        print(f"  ✅ {game['away_team']} pitching: ERA={away_pitch['team_era']} WHIP={away_pitch['team_whip']}")
+                        logger.info(f"  ✅ {game['away_team']} pitching: ERA={away_pitch['team_era']} WHIP={away_pitch['team_whip']}")
 
                 # 8b) Defensive efficiency dicts (DER from pitching stats, OAA absent by default)
                 #     Convention: defense_home = home team's fielding; defense_away = away team's
@@ -2114,7 +2342,7 @@ class MLBDataIntegrator:
                             "bip": _bip,
                             "oaa": None,   # OAA not available from free MLB API
                         }
-                        print(f"  🛡️  {_team_name} defense: DER={_der:.4f}  BIP={_bip}")
+                        logger.info(f"  🛡️  {_team_name} defense: DER={_der:.4f}  BIP={_bip}")
 
                 # 9) Lineup handedness (LHB% per side — used for platoon split adjustment)
                 for _side, _lineup_key, _lhb_key in [
@@ -2131,7 +2359,7 @@ class MLBDataIntegrator:
                         )
                         total_n = len(lineup)
                         enriched[_lhb_key] = round(lhb_n / total_n, 3) if total_n else 0.45
-                        print(
+                        logger.info(
                             f"  ✅ {_side.upper()} lineup: "
                             f"{lhb_n}L/{total_n - lhb_n}R "
                             f"({enriched[_lhb_key]:.0%} LHB) — "
@@ -2146,7 +2374,7 @@ class MLBDataIntegrator:
                     ump_stats = self.mlb_api.get_umpire_historical_stats(hp_ump_id)
                     if ump_stats and ump_stats.get("games_worked", 0) >= 4:
                         enriched["umpire_stats"] = ump_stats
-                        print(
+                        logger.info(
                             f"  ⚖️  HP Ump {enriched.get('hp_umpire_name','?')}: "
                             f"zone_factor={ump_stats['zone_factor']:.3f} "
                             f"strike%={ump_stats['strike_pct']:.1%} "
@@ -2155,24 +2383,24 @@ class MLBDataIntegrator:
 
                 status_icon = "✅" if enriched["pitchers_valid"] else "⚠️"
                 status_msg = "Data completa" if enriched["pitchers_valid"] else "Data incompleta - NO APOSTAR"
-                print(f"{status_icon} {game['away_team']} @ {game['home_team']}: {status_msg}\n")
+                logger.info(f"{status_icon} {game['away_team']} @ {game['home_team']}: {status_msg}\n")
 
                 enriched_games.append(enriched)
                 time.sleep(0.2)
 
             except Exception as e:
-                print(f"❌ Error enriqueciendo {game.get('home_team', 'juego')}: {e}")
+                logger.error(f"❌ Error enriqueciendo {game.get('home_team', 'juego')}: {e}")
                 enriched_games.append(game)
 
         valid_count = sum(1 for g in enriched_games if g.get("pitchers_valid"))
-        print(f"\n🎉 {len(enriched_games)} juegos totales | ✅ {valid_count} VÁLIDOS | ⚠️ {len(enriched_games) - valid_count} SKIP")
+        logger.warning(f"\n🎉 {len(enriched_games)} juegos totales | ✅ {valid_count} VÁLIDOS | ⚠️ {len(enriched_games) - valid_count} SKIP")
         return enriched_games
 
     def save_to_file(self, games: List[Dict[str, Any]], filename: str = "mlb_complete_data.json"):
         filepath = DATA_DIR / filename
         with open(filepath, "w") as f:
             json.dump(games, f, indent=2)
-        print(f"💾 Data guardada en {filepath}")
+        logger.info(f"💾 Data guardada en {filepath}")
 
 
 # ==========================================================

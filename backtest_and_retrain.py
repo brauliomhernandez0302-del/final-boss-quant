@@ -54,14 +54,21 @@ sys.path.insert(0, str(ROOT))
 from math import log as _log, exp as _exp
 from config import DATA_DIR, LEAGUE_AVG_ERA, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP
 from data_fetchers import MLBDataIntegrator, MLBStatsAPI, ParkFactors
-from modules.baseball_module.calibration.auto_calibrator import LambdaCalibrator
 from modules.baseball_module.calibration.learning_engine import LearningEngine
-from modules.baseball_module.context_engine.pitcher_engine import adjust_for_pitchers
-from modules.baseball_module.context_engine.pitchers_regression import (
-    calculate_pitcher_regression,
-)
+from modules.baseball_module.hfa.park_weather_engine import adjust_for_park_and_weather
 from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
+from modules.baseball_module.context_engine.defensive_efficiency_engine import adjust_for_defense
+from modules.baseball_module.context_engine.pitcher_engine import adjust_for_pitchers
+from modules.baseball_module.context_engine.bullpen_engine import adjust_for_bullpen
+from modules.baseball_module.context_engine.contextual_engine import adjust_for_context
 from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced, F5_SCALE
+
+# True Talent Offense Engine
+try:
+    from modules.baseball_module.offense.true_talent_engine import get_true_talent_lambda as _get_tte_lambda
+    _TTE_AVAILABLE = True
+except ImportError:
+    _TTE_AVAILABLE = False
 
 # External enrichment — Savant + FanGraphs (graceful degradation if unavailable)
 try:
@@ -87,11 +94,11 @@ _PLATT_A = 0.547
 _PLATT_B = 0.098
 
 
-def _platt(p: float) -> float:
+def _platt(p: float, a: float = _PLATT_A, b: float = _PLATT_B) -> float:
     """Shrink an over-confident probability toward calibrated range."""
     p = max(0.01, min(p, 0.99))
     logit = _log(p / (1.0 - p))
-    return 1.0 / (1.0 + _exp(-(_PLATT_A * logit + _PLATT_B)))
+    return 1.0 / (1.0 + _exp(-(a * logit + b)))
 
 
 logging.basicConfig(
@@ -388,19 +395,22 @@ def build_game_data(
             "avg_innings_per_start": ps.get("avg_innings_per_start"),
             "f5_era": ps.get("f5_era"),
             # FanGraphs real ERA estimators
-            "xfip":         fg.get("xfip"),
-            "siera":        fg.get("siera"),
-            "war":          fg.get("war"),
-            "k_pct":        fg.get("k_pct"),
-            "bb_pct":       fg.get("bb_pct"),
-            "swstr_pct":    fg.get("swstr_pct"),
-            "hr_fb":        fg.get("hr_fb"),
+            "xfip":            fg.get("xfip"),
+            "siera":           fg.get("siera"),
+            "war":             fg.get("war"),
+            "k_pct":           fg.get("k_pct"),
+            "bb_pct":          fg.get("bb_pct"),
+            "swstr_pct":       fg.get("swstr_pct"),
+            "hr_fb_pct":       fg.get("hr_fb"),
+            "babip":           fg.get("babip"),
+            "lob_pct":         fg.get("lob_pct"),
+            "innings_pitched": fg.get("ip"),   # for Bayesian regression in pitcher_engine
             # Baseball Savant contact quality
-            "est_woba":     sv.get("est_woba"),
-            "xera":         sv.get("xera") or fg.get("xera"),
-            "brl_percent":  sv.get("brl_percent"),
-            "avg_hit_speed": sv.get("avg_hit_speed"),
-            "ev95percent":  sv.get("ev95percent"),
+            "est_woba":        sv.get("est_woba"),
+            "xera":            sv.get("xera") or fg.get("xera"),
+            "brl_percent":     sv.get("brl_percent"),
+            "avg_hit_speed":   sv.get("avg_hit_speed"),
+            "ev95percent":     sv.get("ev95percent"),
         }
 
     venue = TEAM_VENUES.get(home_name, "Unknown")
@@ -447,43 +457,131 @@ def run_pipeline(
     lh: float,
     la: float,
     learning: LearningEngine,
+    season: int,
     n_mc: int = N_MC,
 ) -> Dict[str, Any]:
-    """Run the full pipeline and return prediction dict."""
-    # 1. Calibration
-    calibrator = LambdaCalibrator(learning_engine=learning)
-    # tte_active=False: backtest uses legacy λ_base (no TTE), so offense_mult
-    # should apply as the primary quality signal in the fallback path.
-    lh, la = calibrator.calibrate(lh, la, game_data, tte_active=False)
+    """Run the full pipeline identical to run_module.py.
 
-    # 2. HFA
-    lh, la, _ = get_adjusted_lambdas(lh, la, game_data)
+    Returns a dict with keys:
+      lh, la            — final post-pipeline lambdas
+      p_home, p_away    — Platt-calibrated win probabilities (sum to 1)
+      p_home_raw        — raw Monte Carlo p_home *before* Platt (for clean Platt refitting)
+      p_away_raw        — raw Monte Carlo p_away *before* Platt
+      stage_factors     — per-stage raw adjustment ratios (for gradient descent)
+      n_mc              — actual simulations run
+    """
+    home_team = game_data.get("home_team", {}).get("name", "")
+    away_team = game_data.get("away_team", {}).get("name", "")
+    _sf: Dict[str, float] = {}   # stage factors — raw ratios, weight-independent
 
-    # 3. Pitcher adjustments
-    lh, la, _ = adjust_for_pitchers(lh, la, game_data)
+    # ── TTE base lambda (fallback to legacy get_team_lambda) ─────────────────
+    htid = game_data.get("home_team_id")
+    atid = game_data.get("away_team_id")
+    tte_active = False
+    if _TTE_AVAILABLE and htid and atid:
+        try:
+            lh, _ = _get_tte_lambda(htid, home_team, season)
+            la, _ = _get_tte_lambda(atid, away_team, season)
+            tte_active = True
+        except Exception:
+            pass  # TTE failed — lh/la remain from build_game_data
 
-    # 4. Pitcher regression
-    factor_away, _ = calculate_pitcher_regression(
-        pitcher_stats=game_data.get("pitcher_away", {}),
-        opponent_stats=game_data.get("home_team", {}),
+    # ── Kalman adjustment (walk-forward: only sees games prior to this one) ───
+    lh = learning.get_kalman_lambda_adjustment(home_team, "offense_home", season, lh)
+    la = learning.get_kalman_lambda_adjustment(away_team, "offense_away", season, la)
+
+    # ── Learned pipeline weights ──────────────────────────────────────────────
+    _w = learning.get_pipeline_weights(season)
+
+    # ── Team bias (LearningEngine) ────────────────────────────────────────────
+    lh *= learning.compute_team_bias_kalman_adjusted(
+        game_data.get("home_team", {}).get("name", ""), season, "offense_home"
     )
-    factor_home, _ = calculate_pitcher_regression(
-        pitcher_stats=game_data.get("pitcher_home", {}),
-        opponent_stats=game_data.get("away_team", {}),
+    la *= learning.compute_team_bias_kalman_adjusted(
+        game_data.get("away_team", {}).get("name", ""), season, "offense_away"
     )
-    lh *= factor_away
-    la *= factor_home
 
-    # 5. F5 lambdas — derived from post-pitcher λ (same as production pipeline).
-    # analyze_f5=False so these are not used in this backtest (moneyline only).
+    # ── PASO 2: Park + Weather ────────────────────────────────────────────────
+    _lh_pre, _la_pre = lh, la
+    lh_park, la_park, _ = adjust_for_park_and_weather(lh, la, game_data)
+    _raw_h = lh_park / _lh_pre if _lh_pre else 1.0
+    _raw_a = la_park / _la_pre if _la_pre else 1.0
+    _w_park = _w.get("park", 1.0)
+    lh = _lh_pre * (1.0 + _w_park * (_raw_h - 1.0))
+    la = _la_pre * (1.0 + _w_park * (_raw_a - 1.0))
+    _sf["home_park"] = _raw_h
+    _sf["away_park"] = _raw_a
+
+    # ── PASO 3: HFA (crowd + travel asymmetric) ───────────────────────────────
+    _lh_pre, _la_pre = lh, la
+    lh_hfa, la_hfa, _ = get_adjusted_lambdas(lh, la, game_data)
+    _raw_h = lh_hfa / _lh_pre if _lh_pre else 1.0
+    _raw_a = la_hfa / _la_pre if _la_pre else 1.0
+    _w_hfa = _w.get("hfa", 1.0)
+    lh = _lh_pre * (1.0 + _w_hfa * (_raw_h - 1.0))
+    la = _la_pre * (1.0 + _w_hfa * (_raw_a - 1.0))
+    _sf["home_hfa"] = _raw_h
+    _sf["away_hfa"] = _raw_a
+
+    # ── PASO 4: Defensive Efficiency ──────────────────────────────────────────
+    _lh_pre, _la_pre = lh, la
+    if game_data.get("defense_home") or game_data.get("defense_away"):
+        lh_def, la_def, _ = adjust_for_defense(lh, la, game_data)
+        _raw_h = lh_def / _lh_pre if _lh_pre else 1.0
+        _raw_a = la_def / _la_pre if _la_pre else 1.0
+    else:
+        _raw_h = _raw_a = 1.0
+    _w_def = _w.get("defense", 1.0)
+    lh = _lh_pre * (1.0 + _w_def * (_raw_h - 1.0))
+    la = _la_pre * (1.0 + _w_def * (_raw_a - 1.0))
+    _sf["home_defense"] = _raw_h
+    _sf["away_defense"] = _raw_a
+
+    # ── PASO 5: Pitcher Engine ────────────────────────────────────────────────
+    _lh_pre, _la_pre = lh, la
+    lh_pit, la_pit, _ = adjust_for_pitchers(lh, la, game_data)
+    _raw_h = lh_pit / _lh_pre if _lh_pre else 1.0
+    _raw_a = la_pit / _la_pre if _la_pre else 1.0
+    _w_pit = _w.get("pitcher", 1.0)
+    lh = _lh_pre * (1.0 + _w_pit * (_raw_h - 1.0))
+    la = _la_pre * (1.0 + _w_pit * (_raw_a - 1.0))
+    _sf["home_pitcher"] = _raw_h
+    _sf["away_pitcher"] = _raw_a
+
+    # ── F5 lambda — snapshot post-pitcher, pre-bullpen ────────────────────────
     lh_f5 = round(lh * F5_SCALE, 3)
     la_f5 = round(la * F5_SCALE, 3)
 
-    # Clamp lambdas: only block physically absurd values.
+    # ── PASO 6: Bullpen Engine ────────────────────────────────────────────────
+    _lh_pre, _la_pre = lh, la
+    if game_data.get("bullpen_home") or game_data.get("bullpen_away"):
+        lh_bp, la_bp, _ = adjust_for_bullpen(lh, la, game_data)
+        _raw_h = lh_bp / _lh_pre if _lh_pre else 1.0
+        _raw_a = la_bp / _la_pre if _la_pre else 1.0
+    else:
+        _raw_h = _raw_a = 1.0
+    _w_bp = _w.get("bullpen", 1.0)
+    lh = _lh_pre * (1.0 + _w_bp * (_raw_h - 1.0))
+    la = _la_pre * (1.0 + _w_bp * (_raw_a - 1.0))
+    _sf["home_bullpen"] = _raw_h
+    _sf["away_bullpen"] = _raw_a
+
+    # ── PASO 7: Contextual Engine (rest / B2B / umpire) ──────────────────────
+    _lh_pre, _la_pre = lh, la
+    lh_ctx, la_ctx, _ = adjust_for_context(lh, la, game_data)
+    _raw_h = lh_ctx / _lh_pre if _lh_pre else 1.0
+    _raw_a = la_ctx / _la_pre if _la_pre else 1.0
+    _w_ctx = _w.get("context", 1.0)
+    lh = _lh_pre * (1.0 + _w_ctx * (_raw_h - 1.0))
+    la = _la_pre * (1.0 + _w_ctx * (_raw_a - 1.0))
+    _sf["home_context"] = _raw_h
+    _sf["away_context"] = _raw_a
+
+    # ── Sanity clamp ──────────────────────────────────────────────────────────
     lh = max(1.5, min(lh, 12.0))
     la = max(1.5, min(la, 12.0))
 
-    # 6. Monte Carlo — block must be <= n_max per simulator validation
+    # ── PASO 8: Monte Carlo ───────────────────────────────────────────────────
     mc = monte_carlo_advanced(
         lh=lh, la=la, n_max=n_mc,
         block=min(10_000, n_mc),
@@ -491,23 +589,28 @@ def run_pipeline(
         lh_f5=lh_f5, la_f5=la_f5,
     )
 
-    # Fix 1: Platt calibration — shrinks over-confident extremes.
-    # Fitted on 4 859-game backtest: logit-slope=0.534 (should be 1.0).
-    # Renormalize so p_home + p_away = 1.0 exactly; applying Platt independently
-    # with a non-zero intercept (b=0.098) inflates the sum to ~1.049, creating a
-    # phantom +4.8% edge against any fair market that sums to 1.0.
-    _p_home_raw = _platt(mc["p_home"])
-    _p_away_raw = _platt(mc["p_away"])
-    _platt_total = _p_home_raw + _p_away_raw
-    p_home_cal = round(_p_home_raw / _platt_total, 5)
-    p_away_cal = round(_p_away_raw / _platt_total, 5)
+    # Capture raw MC probabilities BEFORE Platt — needed for clean Platt refitting.
+    # Using post-Platt values as training targets creates a circular dependency.
+    p_home_mc = mc["p_home"]
+    p_away_mc = mc["p_away"]
+
+    # ── Platt calibration (dynamic params from learning engine) ───────────────
+    _pa, _pb = learning.get_platt_params(season)
+    _p_h = _platt(p_home_mc, _pa, _pb)
+    _p_a = _platt(p_away_mc, _pa, _pb)
+    _total = _p_h + _p_a  # renormalize so home + away = 1.0 exactly
+    p_home_cal = round(_p_h / _total, 5)
+    p_away_cal = round(_p_a / _total, 5)
 
     return {
-        "lh": round(lh, 4),
-        "la": round(la, 4),
-        "p_home": p_home_cal,
-        "p_away": p_away_cal,
-        "n_mc": mc["n"],
+        "lh":          round(lh, 4),
+        "la":          round(la, 4),
+        "p_home":      p_home_cal,
+        "p_away":      p_away_cal,
+        "p_home_raw":  round(p_home_mc, 5),   # pre-Platt, for Platt refitting
+        "p_away_raw":  round(p_away_mc, 5),
+        "stage_factors": _sf,
+        "n_mc":        mc["n"],
     }
 
 
@@ -533,17 +636,23 @@ def update_game_outcomes(
     game_pk: int,
     lh: float, la: float,
     p_home: float, p_away: float,
+    p_home_raw: Optional[float] = None,
+    p_away_raw: Optional[float] = None,
+    stage_factors: Optional[Dict] = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
+    sf_json = json.dumps(stage_factors) if stage_factors else None
     conn.execute(
         """
         UPDATE game_outcomes
         SET lambda_home = ?, lambda_away = ?,
             p_home = ?, p_away = ?,
+            p_home_raw = ?, p_away_raw = ?,
+            stage_factors_json = ?,
             backtest_run_at = ?
         WHERE game_pk = ?
         """,
-        (lh, la, p_home, p_away, now, game_pk),
+        (lh, la, p_home, p_away, p_home_raw, p_away_raw, sf_json, now, game_pk),
     )
 
 
@@ -654,6 +763,7 @@ def generate_report(
     roi_table: Dict[float, Dict] = {}
     for thr in thresholds:
         bets = staked = profit = 0
+        clv_values: list = []
         for r in bettable_rows:
             edge_home = r.get("model_edge")
             edge_away = r.get("model_edge_away")
@@ -663,23 +773,36 @@ def generate_report(
                 best_edge = edge_home
                 odds = r["ml_home_pin"]
                 won = bool(r["home_won"])
+                clv = r.get("clv_home")
             elif (edge_away or -1) >= thr:
                 best_edge = edge_away
                 odds = r["ml_away_pin"]
                 won = not bool(r["home_won"])
+                clv = r.get("clv_away")
             else:
                 continue
 
             bets += 1
             staked += 1.0
             profit += (odds - 1) if won else -1.0
+            if clv is not None:
+                clv_values.append(clv)
 
+        mean_clv = sum(clv_values) / len(clv_values) if clv_values else None
+        pos_clv_pct = (
+            sum(1 for c in clv_values if c > 0) / len(clv_values) * 100
+            if clv_values else None
+        )
         roi_table[thr] = {
             "bets": bets,
             "staked": round(staked, 2),
             "profit": round(profit, 4),
             "roi_pct": round(profit / staked * 100, 2) if staked > 0 else 0.0,
             "n_extreme_filtered": n_extreme_filtered,
+            # CLV: model probability / Pinnacle fair probability - 1
+            # Positive → model was pricing ahead of closing line (real edge signal)
+            "mean_clv_pct": round(mean_clv * 100, 3) if mean_clv is not None else None,
+            "pos_clv_pct":  round(pos_clv_pct, 1) if pos_clv_pct is not None else None,
         }
 
     # ── season breakdown ────────────────────────────────────────────────────
@@ -808,11 +931,14 @@ def generate_report(
     _n_filt = next(iter(report["roi_simulation"].values()), {}).get("n_extreme_filtered", 0)
     print(f"\n  ROI SIMULATION (flat 1-unit, best-edge side @ Pinnacle)")
     print(f"  Extreme-odds games filtered (pin>4.0): {_n_filt}")
-    print(f"  {'Edge threshold':16s}  {'Bets':>6s}  {'Profit':>8s}  {'ROI':>8s}")
+    print(f"  {'Edge threshold':16s}  {'Bets':>6s}  {'Profit':>8s}  {'ROI':>8s}  {'Mean CLV':>9s}  {'CLV>0':>6s}")
     for label, rt in report["roi_simulation"].items():
         if rt["bets"] == 0:
             continue
-        print(f"  {label:16s}  {rt['bets']:>6d}  {rt['profit']:>+8.2f}u  {rt['roi_pct']:>+7.2f}%")
+        clv_str = f"{rt['mean_clv_pct']:>+8.3f}%" if rt.get("mean_clv_pct") is not None else "      N/A"
+        pos_str = f"{rt['pos_clv_pct']:>5.1f}%" if rt.get("pos_clv_pct") is not None else "   N/A"
+        print(f"  {label:16s}  {rt['bets']:>6d}  {rt['profit']:>+8.2f}u  "
+              f"{rt['roi_pct']:>+7.2f}%  {clv_str}  {pos_str}")
 
     print(f"\n  BY SEASON")
     for s, sv in report["by_season"].items():
@@ -935,6 +1061,10 @@ def main() -> None:
                 "ml_away_pin":     r["ml_away_pin"],
                 "model_edge":      (r["p_home"] - pin_fh) if pin_fh else None,
                 "model_edge_away": (r["p_away"] - pin_fa) if pin_fa else None,
+                # CLV: how much model probability exceeds Pinnacle fair probability (%).
+                # Positive CLV → model was pricing ahead of where market closed.
+                "clv_home": (r["p_home"] / pin_fh - 1.0) if (pin_fh and pin_fh > 0) else None,
+                "clv_away": (r["p_away"] / pin_fa - 1.0) if (pin_fa and pin_fa > 0) else None,
             })
         generate_report(results, REPORT_DIR)
         conn.close()
@@ -942,6 +1072,29 @@ def main() -> None:
 
     # ── pre-warm team stats ─────────────────────────────────────────────────
     prefetch_team_stats(api, seasons)
+
+    # ── walk-forward learning state reset ──────────────────────────────────
+    # Three adaptive structures must be reset before the walk-forward loop:
+    #
+    #   1. Kalman states  — were built from full-season data (look-ahead bias).
+    #      Each game will call update_kalman() *after* its prediction, so the
+    #      filter sees only past observations.
+    #
+    #   2. Pipeline weights — were optimised on Kalman-look-ahead-biased
+    #      predictions.  Gradient descent re-learns from clean walk-forward data.
+    #
+    #   3. Platt params — were fitted on the old 3-engine pipeline outputs.
+    #      recalibrate_platt() at the end will fit on the new 7-engine p_home_raw.
+    #      Using old params during the forward pass would distort predictions.
+    #
+    log.info("Resetting walk-forward learning state for seasons %s …", list(seasons))
+    n_kal_deleted = learning.reset_kalman_for_seasons(list(seasons))
+    n_wt_reset    = learning.reset_pipeline_weights(list(seasons))
+    n_plt_deleted = learning.reset_platt_params(list(seasons))
+    log.info(
+        "  Kalman: %d rows deleted | weights: %d seasons reset | Platt: %d rows deleted",
+        n_kal_deleted, n_wt_reset, n_plt_deleted,
+    )
 
     # ── main backtest loop ──────────────────────────────────────────────────
     results: List[Dict] = []
@@ -969,15 +1122,25 @@ def main() -> None:
                 savant_stats=savant_by_season.get(season),
                 fg_stats=fg_by_season.get(season),
             )
-            pred = run_pipeline(game_data, lh, la, learning, N_MC)
+            pred = run_pipeline(game_data, lh, la, learning, season, N_MC)
 
             # persist to DB
             update_game_outcomes(
                 conn, game_pk,
                 pred["lh"], pred["la"],
                 pred["p_home"], pred["p_away"],
+                p_home_raw=pred.get("p_home_raw"),
+                p_away_raw=pred.get("p_away_raw"),
+                stage_factors=pred.get("stage_factors"),
             )
             conn.commit()
+
+            # Walk-forward Kalman: update *after* writing results so subsequent
+            # games in this loop see the current observation — zero look-ahead.
+            learning.update_kalman(home_name, "offense_home", season, float(row["actual_home_runs"]))
+            learning.update_kalman(away_name, "offense_away", season, float(row["actual_away_runs"]))
+            learning.update_kalman(home_name, "defense_home", season, float(row["actual_away_runs"]))
+            learning.update_kalman(away_name, "defense_away", season, float(row["actual_home_runs"]))
 
             # Pinnacle fair prob
             pin_fh = pin_fa = None
@@ -999,6 +1162,8 @@ def main() -> None:
                 "ml_away_pin":    row["ml_away_pin"],
                 "model_edge":     (pred["p_home"] - pin_fh) if pin_fh else None,
                 "model_edge_away": (pred["p_away"] - pin_fa) if pin_fa else None,
+                "clv_home": (pred["p_home"] / pin_fh - 1.0) if (pin_fh and pin_fh > 0) else None,
+                "clv_away": (pred["p_away"] / pin_fa - 1.0) if (pin_fa and pin_fa > 0) else None,
             })
             n_ok += 1
 
@@ -1017,8 +1182,8 @@ def main() -> None:
                 "pin_fair_home":   None, "pin_fair_away": None,
                 "ml_home_pin":     row["ml_home_pin"],
                 "ml_away_pin":     row["ml_away_pin"],
-                "model_edge":      None,
-                "model_edge_away": None,
+                "model_edge":      None, "model_edge_away": None,
+                "clv_home":        None, "clv_away":        None,
             })
 
         # progress log every 250 games
@@ -1055,26 +1220,8 @@ def main() -> None:
 
     log.info("  %d teams | %d non-neutral biases written to ml_state", len(teams), refreshed)
 
-    # ── step 4b: seed Kalman filter from historical outcomes ────────────────
-    log.info("Seeding Kalman filter states from historical outcomes …")
-    kalman_rows = conn.execute(
-        """
-        SELECT home_team, away_team, season,
-               actual_home_runs, actual_away_runs
-        FROM game_outcomes
-        WHERE actual_home_runs IS NOT NULL
-        ORDER BY game_date ASC
-        """
-    ).fetchall()
-    for kr in kalman_rows:
-        s = kr["season"]
-        learning.update_kalman(kr["home_team"], "offense_home", s, float(kr["actual_home_runs"]))
-        learning.update_kalman(kr["away_team"], "offense_away", s, float(kr["actual_away_runs"]))
-        learning.update_kalman(kr["home_team"], "defense_home", s, float(kr["actual_away_runs"]))
-        learning.update_kalman(kr["away_team"], "defense_away", s, float(kr["actual_home_runs"]))
-    log.info("  Kalman: %d game observations replayed", len(kalman_rows))
-
-    # ── step 4c: Platt recalibration per season ─────────────────────────────
+    # ── step 4b: Platt recalibration per season ─────────────────────────────
+    # Kalman states are now fully populated by the walk-forward loop above.
     log.info("Running Platt recalibration per season …")
     for season in seasons:
         try:

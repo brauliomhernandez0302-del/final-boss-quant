@@ -28,6 +28,16 @@ class GameData(TypedDict, total=False):
     away: str
     home_odds: float
     away_odds: float
+    # Sharp reference (Pinnacle devigged = best fair-line)
+    pin_home: float
+    pin_away: float
+    # Totals market
+    total_line: float
+    total_over: float
+    total_under: float
+    # Run line / spreads (±1.5 for MLB)
+    runline_home: float
+    runline_away: float
     commence_time: str
     raw_row: Any  # pd.Series — kept as Any to avoid pandas coupling
 

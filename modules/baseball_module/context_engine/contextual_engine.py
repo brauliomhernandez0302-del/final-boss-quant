@@ -18,10 +18,9 @@ Factors:
        Clipped to [0.96, 1.04]; requires ≥ 4 game sample.
 
 Why here and not in AutoCalibrator?
-  AutoCalibrator applies a ±15 % hard cap AFTER combining five
-  multiplicative factors — rest's ±4 % signal gets compressed to
-  whatever budget remains inside the cap.  Moving it out gives it
-  clean, uncapped accounting at its true empirical value.
+  AutoCalibrator applies a ±8 % hard cap on form + season context.
+  Moving rest out gives it clean, uncapped accounting at its true
+  empirical value without competing for budget inside that cap.
 
 Pipeline position: PASO 7 (after Bullpen, before Monte Carlo).
 """
@@ -29,9 +28,7 @@ Pipeline position: PASO 7 (after Bullpen, before Monte Carlo).
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Tuple
-
-import numpy as np
+from typing import Any, Dict, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -137,7 +134,7 @@ class ContextualEngine:
         Returns factor=1.0 when umpire data is absent or sample too small.
         """
         stats = game_data.get("umpire_stats") or {}
-        games = int(stats.get("games_worked", 0))
+        _gw   = stats.get("games_worked"); games = int(_gw if _gw is not None else 0)
 
         if games < _UMP_MIN_GAMES:
             return {
@@ -147,8 +144,8 @@ class ContextualEngine:
                 "skipped": True,
             }
 
-        raw_factor   = float(stats.get("zone_factor", 1.0))
-        clipped      = float(np.clip(raw_factor, _UMP_CLIP_LOW, _UMP_CLIP_HIGH))
+        _zf          = stats.get("zone_factor"); raw_factor = float(_zf if _zf is not None else 1.0)
+        clipped      = max(_UMP_CLIP_LOW, min(_UMP_CLIP_HIGH, raw_factor))
         strike_pct   = stats.get("strike_pct")
 
         return {
@@ -164,7 +161,7 @@ class ContextualEngine:
 
 # ── Module-level singleton + public interface ─────────────────────────────────
 
-_engine: ContextualEngine | None = None
+_engine: Optional[ContextualEngine] = None
 
 
 def adjust_for_context(

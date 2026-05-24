@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 _FG_URL    = "https://www.fangraphs.com/api/leaders/major-league/data"
 _CACHE_TTL = 86_400   # 24 h
-_TIMEOUT   = 15
+_TIMEOUT   = (5, 30)
 _TAG_RE    = re.compile(r"<[^>]+>")
 
 

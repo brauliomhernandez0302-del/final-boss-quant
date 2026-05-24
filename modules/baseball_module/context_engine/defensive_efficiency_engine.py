@@ -34,13 +34,11 @@ Pipeline position: PASO 4 (after HFA, before Pitcher Engine).
 
 from __future__ import annotations
 
-import csv
-import io
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-import numpy as np
+from config import LEAGUE_AVG_RUNS
 
 log = logging.getLogger(__name__)
 
@@ -59,12 +57,6 @@ _OAA_WEIGHT   = 0.45
 
 # Hard cap on total fielding adjustment: ±5 %
 _MAX_DEF_ADJ  = 0.05
-
-# Savant team OAA leaderboard URL (season-level, CSV)
-_SAVANT_OAA_URL = (
-    "https://baseballsavant.mlb.com/leaderboard/outs_above_average"
-    "?type=team&year={year}&min=0&position=&team=&export=csv"
-)
 
 
 # ── Data classes ─────────────────────────────────────────────────────────────
@@ -93,7 +85,6 @@ class DefensiveEfficiencyEngine:
 
     def __init__(self) -> None:
         self.name = "DefensiveEfficiencyEngine"
-        self._oaa_cache: Dict[int, Dict[str, Any]] = {}   # season → {team_id: oaa}
 
     # ── Public interface ─────────────────────────────────────────────────────
 
@@ -126,8 +117,8 @@ class DefensiveEfficiencyEngine:
         # Away defence → multiplier on λ_home (home batters face away fielders)
         away_mult, away_meta = self._fielding_mult(away_td, label="away")
 
-        lh_new = float(np.clip(lh * away_mult, lh * (1 - _MAX_DEF_ADJ), lh * (1 + _MAX_DEF_ADJ)))
-        la_new = float(np.clip(la * home_mult, la * (1 - _MAX_DEF_ADJ), la * (1 + _MAX_DEF_ADJ)))
+        lh_new = lh * away_mult  # cap already enforced inside _fielding_mult
+        la_new = la * home_mult
 
         meta = {
             "home_defense": home_meta,
@@ -185,7 +176,7 @@ class DefensiveEfficiencyEngine:
             # Negative OAA → more runs for opponent  → factor > 1
             # λ_avg ≈ 4.5 runs/game; 0.80 runs/162 ≈ 0.005 per game
             # Adjust relative to league-average λ; clip to ±8%
-            oaa_factor = float(np.clip(1.0 - oaa_run_pg / 4.5, 0.92, 1.08))
+            oaa_factor = max(0.92, min(1.08, 1.0 - oaa_run_pg / LEAGUE_AVG_RUNS))
 
         # ── Combined multiplier ──────────────────────────────────────────────
         if oaa_factor is not None:
@@ -194,7 +185,7 @@ class DefensiveEfficiencyEngine:
             raw_mult = der_factor   # DER only
 
         # Apply ±5% hard cap
-        mult = float(np.clip(raw_mult, 1.0 - _MAX_DEF_ADJ, 1.0 + _MAX_DEF_ADJ))
+        mult = max(1.0 - _MAX_DEF_ADJ, min(1.0 + _MAX_DEF_ADJ, raw_mult))
 
         meta = {
             "der_observed":  round(td.der, 4),

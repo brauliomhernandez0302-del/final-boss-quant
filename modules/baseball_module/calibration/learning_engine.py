@@ -45,11 +45,17 @@ _PLATT_B_DEFAULT    = 0.0
 _KALMAN_BLEND = 0.35
 
 # Pipeline gradient-descent weights — one per engine stage.
-# Only stages that are tracked in stage_factors_json should appear here;
-# "regression" and "learning_bias" were planned but never implemented in
-# run_module.py's stage_factors recorder, so they stay at 1.0 forever and
-# waste gradient cycles.
-_STAGE_KEYS = ["calibration", "hfa", "pitcher"]
+# Must match the keys emitted in stage_factors_json by run_module.py and
+# backtest_and_retrain.py.  Add a stage here only when its factors are
+# actually recorded; otherwise it stays at 1.0 and wastes gradient cycles.
+_STAGE_KEYS = [
+    "park",         # Park + Weather engine
+    "hfa",          # Home Field Advantage engine
+    "defense",      # Defensive Efficiency engine
+    "pitcher",      # Pitcher engine
+    "bullpen",      # Bullpen engine
+    "context",      # Contextual engine (rest / B2B / umpire)
+]
 _LR         = 0.01    # gradient step size
 _MIN_WEIGHT = 0.30    # floor: never fully bypass a stage
 _MAX_WEIGHT = 1.50    # ceiling
@@ -484,6 +490,80 @@ class LearningEngine:
     # Kalman filter
     # ------------------------------------------------------------------
 
+    def reset_kalman_for_seasons(self, seasons: List[int]) -> int:
+        """Delete all Kalman states for the given seasons.
+
+        Called by the backtest before it starts processing so that the
+        walk-forward loop begins from a neutral state rather than from
+        whatever stale (and potentially look-ahead-biased) states the
+        live system accumulated.
+
+        Returns the number of rows deleted.
+        """
+        if not seasons:
+            return 0
+        placeholders = ",".join("?" * len(seasons))
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                f"DELETE FROM kalman_state WHERE season IN ({placeholders})",
+                seasons,
+            )
+            deleted = cursor.rowcount
+        logger.info(
+            "[learning] Kalman reset: deleted %d states for seasons %s",
+            deleted, seasons,
+        )
+        return deleted
+
+    def reset_pipeline_weights(self, seasons: List[int]) -> int:
+        """Reset learned pipeline weights to 1.0 for the given seasons.
+
+        Called by the backtest before the walk-forward loop so that weights
+        trained on Kalman-look-ahead-biased data are discarded.  Gradient
+        descent re-learns optimal weights from clean walk-forward predictions.
+
+        Returns the number of seasons reset.
+        """
+        if not seasons:
+            return 0
+        defaults = {k: 1.0 for k in _STAGE_KEYS}
+        for season in seasons:
+            self.save_state("pipeline_weights", "weights", defaults, 0, season)
+        logger.info(
+            "[learning] Pipeline weights reset to 1.0 for seasons %s", seasons
+        )
+        return len(seasons)
+
+    def reset_platt_params(self, seasons: List[int]) -> int:
+        """Seed identity Platt params (a=1.0, b=0.0) for the given seasons.
+
+        We UPSERT rather than DELETE.  If we deleted, get_platt_params() would
+        immediately try to recalibrate_platt() and find all the historical
+        home_won rows — fitting Platt on the *old* pipeline's p_home values
+        (p_home_raw is NULL at the start of the backtest).  By writing fresh
+        identity params, the 7-day TTL in get_platt_params() keeps them in
+        place for the entire backtest forward pass.
+
+        The explicit recalibrate_platt() call at the end of the backtest then
+        overwrites these with correctly fitted params using the new p_home_raw.
+
+        Returns the number of seasons reset.
+        """
+        if not seasons:
+            return 0
+        for season in seasons:
+            self.save_state(
+                "platt_params", "calibration",
+                {"a": _PLATT_A_DEFAULT, "b": _PLATT_B_DEFAULT, "n": 0},
+                sample_count=0,
+                season=season,
+            )
+        logger.info(
+            "[learning] Platt params reset to identity (a=1.0, b=0.0) for seasons %s",
+            seasons,
+        )
+        return len(seasons)
+
     def get_kalman_estimate(
         self,
         team: str,
@@ -578,7 +658,9 @@ class LearningEngine:
             return model_lambda
         kalman_lam = state["x_est"]
         result = (1.0 - _KALMAN_BLEND) * model_lambda + _KALMAN_BLEND * kalman_lam
-        return max(2.0, min(9.0, result))
+        # Clip to realistic single-game MLB run range.
+        # 1.0 floor (not 2.0) allows elite-pitcher/weak-offense matchups through.
+        return max(1.0, min(12.0, result))
 
     # ------------------------------------------------------------------
     # Platt recalibration
@@ -642,11 +724,14 @@ class LearningEngine:
 
         except ImportError:
             # sklearn not available — use moment-matching on training set
-            return self._platt_moment_match(rows)
+            a, b = self._platt_moment_match(rows)
+            # Save result so TTL cache kicks in and prevents repeated recomputation.
+            self.save_state("platt_params", "calibration",
+                            {"a": a, "b": b, "n": n}, n, season)
+            return a, b
 
     def _platt_moment_match(self, rows) -> Tuple[float, float]:
         """Fallback: shrink toward 50% using empirical calibration error."""
-        import math
         probs    = [max(0.01, min(0.99, r["p_home"])) for r in rows]
         outcomes = [r["home_won"] for r in rows]
         n        = len(rows)

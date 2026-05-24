@@ -77,6 +77,10 @@ class HFAEngine:
             "Nationals Park":            0.0275,
             "Tropicana Field":           0.0250,  # worst attendance in MLB
             "loanDepot park":            0.0250,
+            # A's relocated to Sacramento 2025 — new fanbase, low initial HFA
+            "Sutter Health Park":        0.0250,
+            # Rogers Centre alias (MLB API returns both spellings)
+            "Rogers Center":             0.0275,
         }
 
     # ── Public interface ───────────────────────────────────────────────────────
@@ -100,12 +104,18 @@ class HFAEngine:
         Returns:
             (lh_adjusted, la_adjusted, metadata_dict)
         """
-        park_name = game_data.get("park", {}).get("name", "Unknown")
+        park_name = (game_data.get("park") or {}).get("name", "Unknown")
 
         logger.debug("HFA Engine | park=%s  λh=%.3f  λa=%.3f", park_name, lh, la)
 
         # ── Step 1: Home crowd / familiarity boost (asymmetric, λ_home only) ──
-        hfa_boost = self.hfa_base.get(park_name, 0.0325)
+        _default_hfa = 0.0325  # MLB average crowd boost
+        if park_name not in self.hfa_base:
+            logger.warning(
+                "HFA Engine: park '%s' not in hfa_base — using default %.4f runs",
+                park_name, _default_hfa,
+            )
+        hfa_boost = self.hfa_base.get(park_name, _default_hfa)
         hfa_mult  = 1.0 + hfa_boost / LEAGUE_AVG_RUNS
         lh_new    = lh * hfa_mult
         la_new    = la   # away unchanged by crowd boost
@@ -149,8 +159,10 @@ class HFAEngine:
           • In practice travel fields are rarely populated by the free MLB API;
             the penalty fires mainly when game_data is enriched externally.
         """
-        miles      = game_data.get("miles_traveled_away",     0)
-        time_zones = game_data.get("time_zones_crossed_away", 0)
+        _mi = game_data.get("miles_traveled_away")
+        miles      = float(_mi if _mi is not None else 0)
+        _tz = game_data.get("time_zones_crossed_away")
+        time_zones = int(_tz   if _tz is not None else 0)
 
         penalty = 0.0
 

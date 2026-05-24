@@ -41,10 +41,8 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
-
-import numpy as np
 
 log = logging.getLogger(__name__)
 
@@ -133,6 +131,10 @@ STADIUM_DATABASE: Dict[str, StadiumFactors] = {
     "RingCentral Coliseum":
         StadiumFactors(runs_factor=0.96, hr_factor=0.90, hits_factor=0.96,
                        altitude=4,   cf_direction=0),
+    # A's moved to Sacramento for 2025 season (new stadium, neutral prior)
+    "Sutter Health Park":
+        StadiumFactors(runs_factor=1.00, hr_factor=1.00, hits_factor=1.00,
+                       altitude=12,  cf_direction=0),
     # ── National League East ──────────────────────────────────────────────────
     "Citizens Bank Park":
         StadiumFactors(runs_factor=1.01, hr_factor=1.05, hits_factor=1.01,
@@ -199,8 +201,10 @@ class ParkWeatherEngine:
     ) -> Tuple[float, float, Dict[str, Any]]:
         """Returns (lh_adjusted, la_adjusted, metadata)."""
 
-        park_name = game_data.get("park", {}).get("name", "Unknown")
+        park_name = (game_data.get("park") or {}).get("name", "Unknown")
         stadium   = STADIUM_DATABASE.get(park_name)
+        if stadium is None:
+            log.warning("Park '%s' not in STADIUM_DATABASE — using neutral factor 1.00", park_name)
         park_mult = stadium.runs_factor if stadium else 1.00
 
         # Determine if park is sheltered today
@@ -216,11 +220,13 @@ class ParkWeatherEngine:
         la_new     = la * total_mult
 
         meta = {
-            "park_name":    park_name,
-            "park_factor":  round(park_mult,    4),
-            "weather_mult": round(weather_mult, 4),
-            "total_mult":   round(total_mult,   4),
-            "roof_closed":  roof_closed,
+            "park_name":         park_name,
+            "park_factor":       round(park_mult,    4),
+            "weather_mult":      round(weather_mult, 4),
+            "total_mult":        round(total_mult,   4),
+            "roof_closed":       roof_closed,
+            "postponement_risk": weather.get("postponement_risk",
+                                             float(weather.get("rain_mm", 0)) > 10.0),
             **wx_meta,
         }
 
@@ -247,15 +253,14 @@ class ParkWeatherEngine:
         if roof_closed or not weather:
             return 1.0, {"temp_mult": 1.0, "wind_mult": 1.0, "rain_mult": 1.0}
 
-        temp_mult = self._temp_mult(weather.get("temp_f", _NEUTRAL_TEMP_F))
-        wind_mult = self._wind_mult(
-            weather.get("wind_speed_mph", 0),
-            weather.get("wind_direction",  0),
-            stadium,
-        )
-        rain_mult = self._rain_mult(weather.get("conditions", ""))
+        _tf  = weather.get("temp_f");         tf  = float(_tf  if _tf  is not None else _NEUTRAL_TEMP_F)
+        _ws  = weather.get("wind_speed_mph"); ws  = float(_ws  if _ws  is not None else 0.0)
+        _wd  = weather.get("wind_direction"); wd  = float(_wd  if _wd  is not None else 0.0)
+        temp_mult = self._temp_mult(tf)
+        wind_mult = self._wind_mult(ws, wd, stadium)
+        rain_mult = self._rain_mult(weather)  # full dict — uses rain_mm + pop when available
 
-        combined = float(np.clip(temp_mult * wind_mult * rain_mult, 0.90, 1.12))
+        combined = max(0.90, min(1.12, temp_mult * wind_mult * rain_mult))
 
         return combined, {
             "temp_f":    weather.get("temp_f"),
@@ -274,7 +279,7 @@ class ParkWeatherEngine:
         Neutral: 72°F. Range: ~[0.96, 1.05] for typical game-day temps.
         """
         delta = (float(temp_f) - _NEUTRAL_TEMP_F) / 5.0
-        return float(np.clip(1.0 + delta * _TEMP_RATE, 0.94, 1.06))
+        return max(0.94, min(1.06, 1.0 + delta * _TEMP_RATE))
 
     @staticmethod
     def _wind_mult(
@@ -317,19 +322,47 @@ class ParkWeatherEngine:
         else:                   # crosswind
             rate = 0.003
 
-        return float(np.clip(1.0 + speed_factor * rate, 0.94, 1.10))
+        return max(0.94, min(1.10, 1.0 + speed_factor * rate))
 
     @staticmethod
-    def _rain_mult(conditions: str) -> float:
+    def _rain_mult(weather: Dict[str, Any]) -> float:
         """
-        Light rain / drizzle → pitchers gain slight grip advantage.
-        Heavy rain = postponement (not modelled here).
+        Precipitation effect on run scoring, scaled by actual intensity.
+
+        Uses rain_mm (total mm across game window) when available;
+        falls back to conditions string for backwards compatibility.
+
+        Effect: wet ball + slick grip → pitchers lose movement on breaking
+        balls but batters also struggle.  Net: slight scoring reduction.
+        Intensity tiers (mm across ~3h game window):
+            0–1  mm  → -1%  (drizzle / light mist)
+            1–5  mm  → -3%  (light rain, playable)
+            5–10 mm  → -5%  (moderate rain, pitcher severely hampered)
+            >10  mm  → postponement — should not reach this engine
+        Probability-weighted: effect × precip_probability so a 30% chance
+        of light rain contributes less than a 90% chance.
         """
-        cond = str(conditions).lower()
-        if any(c in cond for c in ("rain", "drizzle", "shower")):
-            return 0.97
+        rain_mm = float(weather.get("rain_mm", 0.0))
+        pop     = float(weather.get("precip_probability", 1.0))  # default 1.0 for string fallback
+
+        if rain_mm > 0:
+            if rain_mm <= 1.0:
+                raw = 0.99
+            elif rain_mm <= 5.0:
+                raw = 0.97
+            else:
+                raw = 0.95
+            # Weight effect by precipitation probability
+            return 1.0 + (raw - 1.0) * pop
+
+        # Fallback: conditions string (no rain_mm available)
+        cond = str(weather.get("conditions", "")).lower()
         if any(c in cond for c in ("thunderstorm", "storm")):
-            return 0.96
+            return 0.95
+        if any(c in cond for c in ("rain", "shower")):
+            return 0.97
+        if "drizzle" in cond:
+            return 0.99
         return 1.0
 
 

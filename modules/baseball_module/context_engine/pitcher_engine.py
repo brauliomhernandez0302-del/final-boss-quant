@@ -22,19 +22,20 @@ Does NOT handle:
   Travel fatigue of position players — HFA Engine
 """
 
-import numpy as np
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple
 import logging
 from config import PITCHER_ENGINE_WEIGHTS, LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP
 
 logger = logging.getLogger(__name__)
 
 # League averages for normalisation (2024/2025 combined)
-_LG_ERA      = LEAGUE_AVG_ERA     # 4.15
-_LG_WHIP     = LEAGUE_AVG_WHIP    # 1.30
-_LG_K_PCT    = 0.220              # starter league-avg K%
-_LG_BB_PCT   = 0.080              # starter league-avg BB%
-_LG_K_BB     = _LG_K_PCT - _LG_BB_PCT   # 0.140
+_LG_ERA            = LEAGUE_AVG_ERA     # 4.15
+_LG_WHIP           = LEAGUE_AVG_WHIP    # 1.30
+_LG_K_PCT          = 0.220              # starter league-avg K%
+_LG_BB_PCT         = 0.080              # starter league-avg BB%
+_LG_K_BB           = _LG_K_PCT - _LG_BB_PCT   # 0.140
+_LG_XWOBA_ALLOWED  = 0.320              # Statcast xwOBA allowed, starter avg
+_LG_BRL_PCT        = 8.0               # barrel% allowed, starter avg
 
 # Bayesian stabilisation constant for ERA estimators (TBF at 50% reliability).
 # Research-based: FIP/xFIP stabilise around 300-400 TBF; SIERA around 250.
@@ -70,8 +71,8 @@ class PitcherEngine:
         logger.info("Pitcher Engine — adjusting lambdas")
         logger.info("   Input: λ_h=%.3f  λ_a=%.3f", lh, la)
 
-        pitcher_home = game_data.get("pitcher_home", {})
-        pitcher_away = game_data.get("pitcher_away", {})
+        pitcher_home = game_data.get("pitcher_home") or {}
+        pitcher_away = game_data.get("pitcher_away") or {}
 
         # Away starter holds down the home lineup
         adj_away = self._calculate_pitcher_adjustment(pitcher_away, game_data, is_home=False)
@@ -127,7 +128,7 @@ class PitcherEngine:
             "matchup_mult":     matchup,
             "platoon_mult":     platoon,
             "fatigue_mult":     fatigue,
-            "total_multiplier": float(np.clip(total, 0.65, 1.45)),
+            "total_multiplier": max(0.65, min(1.45, total)),
         }
 
     # ── Quality ───────────────────────────────────────────────────────────────
@@ -150,7 +151,8 @@ class PitcherEngine:
 
         Output clamped to [0.70, 1.35].
         """
-        era   = float(pitcher.get("era",   _LG_ERA))
+        _era  = pitcher.get("era")
+        era   = float(_era if _era is not None else _LG_ERA)
         fip   = pitcher.get("fip")
         xfip  = pitcher.get("xfip")
         xera  = pitcher.get("xera")
@@ -173,17 +175,17 @@ class PitcherEngine:
         primary_reg = primary * (1.0 - shrink_w) + _LG_ERA * shrink_w
         skill_mult  = primary_reg / _LG_ERA
 
-        # xwOBA allowed overlay — each 0.010 above avg (0.320) ≈ +3% runs allowed
+        # xwOBA allowed overlay — each 0.010 above avg ≈ +3% runs allowed
         est_woba = pitcher.get("est_woba")
         woba_mult = (
-            1.0 + (float(est_woba) - 0.320) * 3.0
+            1.0 + (float(est_woba) - _LG_XWOBA_ALLOWED) * 3.0
             if est_woba is not None else 1.0
         )
 
-        # Barrel% allowed overlay — each 1 ppt above avg (8%) ≈ +1.2% runs allowed
+        # Barrel% allowed overlay — each 1 ppt above avg ≈ +1.2% runs allowed
         brl_pct = pitcher.get("brl_percent")
         brl_mult = (
-            1.0 + max(0.0, float(brl_pct) - 8.0) * 0.012
+            1.0 + max(0.0, float(brl_pct) - _LG_BRL_PCT) * 0.012
             if brl_pct is not None else 1.0
         )
 
@@ -193,19 +195,16 @@ class PitcherEngine:
         bb_pct = pitcher.get("bb_pct")
         if k_pct is not None and bb_pct is not None:
             k_bb_diff = (float(k_pct) - float(bb_pct)) - _LG_K_BB
-            kbb_mult  = float(np.clip(1.0 - k_bb_diff * 1.5, 0.88, 1.12))
+            kbb_mult  = max(0.88, min(1.12, 1.0 - k_bb_diff * 1.5))
         else:
             kbb_mult = 1.0
 
-        multiplier = float(np.clip(
-            skill_mult * woba_mult * brl_mult * kbb_mult,
-            0.70, 1.35,
-        ))
+        multiplier = max(0.70, min(1.35, skill_mult * woba_mult * brl_mult * kbb_mult))
         logger.debug(
             "   quality: prim=%.2f→%.2f(reg)  xwOBA=%.3f  brl=%.1f  kbb_mult=%.3f  → %.3f",
             primary, primary_reg,
-            float(est_woba) if est_woba is not None else 0.320,
-            float(brl_pct)  if brl_pct  is not None else 8.0,
+            float(est_woba) if est_woba is not None else _LG_XWOBA_ALLOWED,
+            float(brl_pct)  if brl_pct  is not None else _LG_BRL_PCT,
             kbb_mult, multiplier,
         )
         return multiplier
@@ -221,10 +220,12 @@ class PitcherEngine:
 
         Clamped to [0.85, 1.15].
         """
-        recent_era = pitcher.get("era_last_5", pitcher.get("era", _LG_ERA))
-        season_era = pitcher.get("era",          _LG_ERA)
+        _era_last  = pitcher.get("era_last_5")
+        _era_seas  = pitcher.get("era")
+        season_era = float(_era_seas  if _era_seas  is not None else _LG_ERA)
+        recent_era = float(_era_last  if _era_last  is not None else season_era)
 
-        level_diff = float(recent_era) - float(season_era)
+        level_diff = recent_era - season_era
         level_adj  = 1.0 + level_diff * 0.06
 
         era_trend = pitcher.get("era_trend", 0.0)
@@ -234,7 +235,7 @@ class PitcherEngine:
         qs_adj  = 1.0 - (float(qs_pct or 0.50) - 0.50) * 0.06
 
         form_adj = level_adj * trend_adj * qs_adj
-        return float(np.clip(form_adj, 0.85, 1.15))
+        return max(0.85, min(1.15, form_adj))
 
     # ── Matchup ───────────────────────────────────────────────────────────────
 
@@ -252,15 +253,17 @@ class PitcherEngine:
         if era_vs_team is None:
             return 1.0
 
-        season_era = float(pitcher.get("era", _LG_ERA))
-        ip_vs_opp  = pitcher.get("ip_vs_opp", 0)
+        _se         = pitcher.get("era")
+        season_era  = float(_se if _se is not None else _LG_ERA)
+        _ip         = pitcher.get("ip_vs_opp")
+        ip_vs_opp   = float(_ip if _ip is not None else 0)
 
-        if ip_vs_opp and float(ip_vs_opp) < 15:
-            w = float(ip_vs_opp) / 15.0
+        if ip_vs_opp < 15:
+            w = ip_vs_opp / 15.0
             era_vs_team = float(era_vs_team) * w + season_era * (1.0 - w)
 
         diff = float(era_vs_team) - season_era
-        return float(np.clip(1.0 + diff * 0.06, 0.85, 1.15))
+        return max(0.85, min(1.15, 1.0 + diff * 0.06))
 
     # ── Platoon ───────────────────────────────────────────────────────────────
 
@@ -284,10 +287,9 @@ class PitcherEngine:
         if not vs_lhb or not vs_rhb:
             return 1.0
 
-        opp_lhb_pct = float(
-            game_data.get("away_lineup_lhb_pct", 0.45) if is_home
-            else game_data.get("home_lineup_lhb_pct", 0.45)
-        )
+        _lhb_key    = "away_lineup_lhb_pct" if is_home else "home_lineup_lhb_pct"
+        _lhb_raw    = game_data.get(_lhb_key)
+        opp_lhb_pct = float(_lhb_raw if _lhb_raw is not None else 0.45)
         opp_rhb_pct = 1.0 - opp_lhb_pct
 
         lhb_whip    = float(vs_lhb.get("whip", _LG_WHIP))
@@ -298,7 +300,7 @@ class PitcherEngine:
         if overall_whip <= 0:
             return 1.0
 
-        return float(np.clip(lineup_whip / overall_whip, 0.93, 1.07))
+        return max(0.93, min(1.07, lineup_whip / overall_whip))
 
     # ── Fatigue ───────────────────────────────────────────────────────────────
 
@@ -319,7 +321,8 @@ class PitcherEngine:
         Pitch count (above 100 in last start):
           +0.12% per pitch above 100; capped at +4.8% (at 140 pitches).
         """
-        days_rest = int(pitcher.get("days_rest", 4))
+        _dr       = pitcher.get("days_rest")
+        days_rest = int(_dr if _dr is not None else 4)
 
         if days_rest == 0:
             rest_adj = 1.090
@@ -330,13 +333,14 @@ class PitcherEngine:
         else:
             rest_adj = 1.0   # 4–5 days: optimal
 
-        last_pc  = float(pitcher.get("last_pitch_count", 90))
+        _lpc     = pitcher.get("last_pitch_count")
+        last_pc  = float(_lpc if _lpc is not None else 90)
         pc_mult  = (
             1.0 + min((last_pc - 100.0) * 0.0012, 0.048)
             if last_pc > 100 else 1.0
         )
 
-        return float(np.clip(rest_adj * pc_mult, 0.95, 1.12))
+        return max(0.95, min(1.12, rest_adj * pc_mult))
 
 
 # ── Module-level helper ────────────────────────────────────────────────────────

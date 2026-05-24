@@ -54,43 +54,55 @@ class BaseAnalyzer:
     def save_value_picks(
         self,
         game_info: Dict[str, str],
+        best_bets: list,
         probabilities: Dict[str, float],
-        odds: Dict[str, float],
         notes: str = "",
     ) -> int:
-        """Evaluate ML home/away and save any positive-EV picks. Returns count saved."""
-        min_ev       = self.settings.get("min_ev", CONFIG.DEFAULT_MIN_EV) / 100
+        """Save positive-EV picks from the pipeline's value detector.
+
+        Uses result['best_bets'] (all markets) rather than recomputing EV
+        with only ML odds. Returns the number of rows saved.
+        """
+        min_ev_pct   = self.settings.get("min_ev", CONFIG.DEFAULT_MIN_EV)
         kelly_factor = self.settings.get("kelly_factor", CONFIG.DEFAULT_KELLY_FACTOR)
 
-        home  = game_info["home"]
-        away  = game_info["away"]
-        p_home = probabilities["home_win"]
-        p_away = probabilities["away_win"]
+        home   = game_info["home"]
+        away   = game_info["away"]
+        p_home = probabilities.get("home_win", 0.5)
+        p_away = probabilities.get("away_win", 0.5)
 
         saved = 0
-        for side, team, p, o in [
-            ("home", home, p_home, odds["home"]),
-            ("away", away, p_away, odds["away"]),
-        ]:
-            ev = calculate_ev(o, p)
-            if not np.isnan(ev) and ev > min_ev:
-                self.db.save(PredictionData(
-                    timestamp     = datetime.now().isoformat(),
-                    sport         = self.config.name,
-                    home_team     = home,
-                    away_team     = away,
-                    p_home        = p_home,
-                    p_away        = p_away,
-                    pick_type     = f"{team} ML",
-                    pick_value    = str(o),
-                    ev            = ev,
-                    kelly         = calculate_kelly(o, p, kelly_factor),
-                    confidence    = p,
-                    rating        = calculate_rating(ev),
-                    model_version = f"{self.config.name} {CONFIG.APP_VERSION}",
-                    notes         = notes,
-                ))
-                saved += 1
+        for bet in best_bets:
+            ev_pct = float(bet.get("ev", 0.0))
+            if ev_pct < min_ev_pct:
+                continue
+
+            market   = bet.get("market", "ML")
+            side     = bet.get("side", "")
+            kelly    = float(bet.get("kelly", 0.0))
+            score    = float(bet.get("score", bet.get("composite_score", 0.0)))
+            tier_grade = bet.get("tier_grade", "C")
+
+            # Rescale composite score (0-100) to rating (0-10) for the history table
+            rating = min(score / 10.0, 10.0)
+
+            self.db.save(PredictionData(
+                timestamp     = datetime.now().isoformat(),
+                sport         = self.config.name,
+                home_team     = home,
+                away_team     = away,
+                p_home        = p_home,
+                p_away        = p_away,
+                pick_type     = f"{market} {side}".strip(),
+                pick_value    = tier_grade,
+                ev            = ev_pct / 100.0,
+                kelly         = kelly * (kelly_factor / CONFIG.DEFAULT_KELLY_FACTOR),
+                confidence    = float(bet.get("confidence", 0.5)),
+                rating        = rating,
+                model_version = f"{self.config.name} {CONFIG.APP_VERSION}",
+                notes         = notes,
+            ))
+            saved += 1
 
         return saved
 
@@ -135,14 +147,30 @@ class MLBAnalyzer(BaseAnalyzer):
                     st.warning("⚠️ No se encontró Game ID — usando modo simulado")
                     game_id = CONFIG.MLB_FALLBACK_GAME_ID
 
+            # Build market_odds from the selector's GameData so run_module()
+            # doesn't need a second API call (and won't miss on fuzzy-match).
+            market_odds = None
+            if game_data.get("home_odds") and game_data.get("away_odds"):
+                market_odds = {
+                    "ml_home":      game_data.get("home_odds"),
+                    "ml_away":      game_data.get("away_odds"),
+                    "pin_home":     game_data.get("pin_home"),
+                    "pin_away":     game_data.get("pin_away"),
+                    "total_line":   game_data.get("total_line"),
+                    "total_over":   game_data.get("total_over"),
+                    "total_under":  game_data.get("total_under"),
+                    "runline_home": game_data.get("runline_home"),
+                    "runline_away": game_data.get("runline_away"),
+                }
+
             with st.spinner("⚡ Ejecutando análisis MLB G10 Ultra Pro..."):
                 result = run_module(
-                    game_id        = game_id,
-                    use_calibration = True,
-                    use_hfa        = True,
-                    use_pitcher    = True,
-                    analyze_f5     = True,
-                    n_max          = self.config.simulations,
+                    game_id         = game_id,
+                    use_hfa         = True,
+                    use_pitcher     = True,
+                    analyze_f5      = True,
+                    n_max           = self.config.simulations,
+                    market_odds     = market_odds,
                 )
 
             return result
@@ -215,11 +243,14 @@ def render_mlb_results(
 
     st.markdown(f"### 🏟️ {away} @ {home}")
 
-    # Final λ — last pipeline stage present (umpire → pitcher → hfa → ...)
+    # Final λ — last pipeline stage present (most recent first)
     _hist   = result.get("lambdas_history", {})
-    lambdas = (_hist.get("umpire") or _hist.get("pitcher") or
-               _hist.get("hfa")   or _hist.get("calibration") or
-               _hist.get("base")  or {})
+    lambdas = (
+        _hist.get("contextual") or _hist.get("bullpen") or
+        _hist.get("pitcher")    or _hist.get("defense") or
+        _hist.get("hfa")        or _hist.get("park_weather") or
+        _hist.get("calibration") or _hist.get("base") or {}
+    )
     lh = float(lambdas.get("lh", 0.0))
     la = float(lambdas.get("la", 0.0))
 
@@ -247,21 +278,25 @@ def render_mlb_results(
 
     st.markdown("---")
 
+    # Show ML EV cards using the odds from the selector (quick visual reference)
     render_value_analysis(
         home=home, away=away,
         p_home=p_home, p_away=p_away,
-        home_odds=game_data["home_odds"],
-        away_odds=game_data["away_odds"],
+        home_odds=game_data.get("home_odds", 2.0),
+        away_odds=game_data.get("away_odds", 2.0),
         settings=settings,
     )
 
-    # Save positive-EV picks
+    # Best bets from the pipeline's full value detector (all markets)
+    best_bets = result.get("best_bets", [])
+
+    # Save positive-EV picks driven by the pipeline's value detector
     analyzer    = MLBAnalyzer(sport_config, settings, db)
     picks_saved = analyzer.save_value_picks(
-        game_info    = {"home": home, "away": away},
+        game_info     = {"home": home, "away": away},
+        best_bets     = best_bets,
         probabilities = {"home_win": p_home, "away_win": p_away},
-        odds         = {"home": game_data["home_odds"], "away": game_data["away_odds"]},
-        notes        = f"λh={lh:.3f}, λa={la:.3f}",
+        notes         = f"λh={lh:.3f}, λa={la:.3f}",
     )
 
     if picks_saved:
@@ -269,22 +304,33 @@ def render_mlb_results(
     else:
         st.info("ℹ️ No se encontraron value bets que cumplan los criterios mínimos")
 
-    # Best bets from model's value_detector
-    best_bets = result.get("best_bets", [])
     if best_bets:
         st.markdown("---")
         st.markdown("### 🎯 Value Bets del Modelo")
+
+        # Show Pinnacle reference if available
+        _mkt_odds = result.get("metadata", {}).get("market_odds", {})
+        if _mkt_odds.get("pin_home") and _mkt_odds.get("pin_away"):
+            st.caption(
+                f"📌 Referencia Pinnacle: {home} {_mkt_odds['pin_home']} / "
+                f"{away} {_mkt_odds['pin_away']}"
+            )
+
         for i, bet in enumerate(best_bets[:5], 1):
             market = bet.get("market", "Unknown")
+            side   = bet.get("side", "")
             ev     = bet.get("ev", 0.0)
-            rating = bet.get("rating", "C")
-            color  = (ThemeColors.SUCCESS.value
-                      if rating in ("A+", "A") else ThemeColors.PRIMARY.value)
+            grade  = bet.get("tier_grade", "C")
+            kelly  = bet.get("kelly", 0.0)
+            # S/A = high value (green), B/C = moderate (blue)
+            color  = (ThemeColors.SUCCESS.value if grade in ("S", "A")
+                      else ThemeColors.PRIMARY.value)
             st.markdown(
                 f"""
                 <div class='value-card' style='border-left:4px solid {color};'>
-                    <b>#{i} {market}</b> [{rating}] — EV:
+                    <b>#{i} {market} — {side}</b> [{grade}] — EV:
                     <b style='color:{color}'>{ev:+.1f}%</b>
+                    &nbsp;·&nbsp; Kelly: {kelly*100:.1f}%
                 </div>
                 """,
                 unsafe_allow_html=True,

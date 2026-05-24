@@ -43,6 +43,7 @@ LEAGUE_AVG_RUNS = 4.5
 LEAGUE_AVG_OPS  = 0.735
 LEAGUE_AVG_ERA  = 4.15
 LEAGUE_AVG_WHIP = 1.30
+LEAGUE_AVG_WOBA = 0.310  # FanGraphs Guts! 2024
 
 # ── Odds API / caching ─────────────────────────────────────────────────────
 ODDS_CACHE_TTL       = 300   # seconds — Streamlit function-cache TTL
