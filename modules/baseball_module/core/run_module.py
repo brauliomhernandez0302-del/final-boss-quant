@@ -681,37 +681,15 @@ def run_module(
         lh = max(1.5, min(lh, 12.0))
         la = max(1.5, min(la, 12.0))
 
-        # ── Pinnacle total anchor ──────────────────────────────────────────
-        # Scale λ_h and λ_a proportionally so the expected total moves 30% toward
-        # the Pinnacle O/U line.  The home/away ratio (our model's edge: pitcher
-        # matchup, HFA, park asymmetry) is preserved.  Applied after all engines
-        # so adjustments are not double-counted against the market.
-        _pin_total = (_fetched_odds or {}).get('pin_total') or _market_total_line
-        if _pin_total:
-            _model_total    = lh + la
-            _w_pin          = 0.30   # 30% Pinnacle, 70% model
-            _anchored_total = (1.0 - _w_pin) * _model_total + _w_pin * float(_pin_total)
-            _anchor_scale   = _anchored_total / _model_total if _model_total > 0 else 1.0
-            lh = lh * _anchor_scale
-            la = la * _anchor_scale
-            results['lambdas_history']['market_anchor'] = {
-                'lh': round(lh, 4), 'la': round(la, 4),
-                'pin_total': _pin_total, 'model_total': round(_model_total, 3),
-                'anchored_total': round(_anchored_total, 3), 'scale': round(_anchor_scale, 4),
-            }
-            logger.info(
-                f"   📌 Pinnacle anchor: total={_pin_total}  model={_model_total:.2f}  "
-                f"→ {_anchored_total:.2f} (×{_anchor_scale:.3f})  "
-                f"λ_h={lh:.3f}  λ_a={la:.3f}"
-            )
-
         _has_real_pitcher = bool(
             game_data.get('pitcher_home', {}).get('fip') or
             game_data.get('pitcher_away', {}).get('fip')
         )
         _lambda_noise = _compute_lambda_noise(_TTE_AVAILABLE, _ENRICHMENT_AVAILABLE, _has_real_pitcher)
-        if _pin_total:
-            _lambda_noise = max(0.03, _lambda_noise - 0.01)  # market data reduces epistemic noise
+        logger.info(
+            f"   λ finales pre-MC: λ_h={lh:.3f}  λ_a={la:.3f}  "
+            f"total={lh+la:.3f}  noise={_lambda_noise:.2f}"
+        )
 
         mc_results = monte_carlo_advanced(
             lh=lh,
