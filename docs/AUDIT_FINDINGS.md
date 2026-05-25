@@ -9,12 +9,12 @@ Estado: EN PROGRESO
 
 *(Se actualiza después de cada motor)*
 
-- Motores auditados: 5/10
-- Bugs CRÍTICOS: 3
+- Motores auditados: 6/10
+- Bugs CRÍTICOS: 4
 - Bugs MEDIOS: 11
-- Bugs BAJOS: 11
-- Áreas oscuras: 5
-- Magic numbers sin justificación: 30
+- Bugs BAJOS: 13
+- Áreas oscuras: 6
+- Magic numbers sin justificación: 34
 
 ---
 
@@ -577,7 +577,98 @@ la_new *= (1 + hnd_away)
 
 ## MOTOR #6 — DEFENSIVE EFFICIENCY ENGINE
 
-Estado: PENDIENTE
+Estado: AUDITADO ✓
+Archivo: `modules/baseball_module/context_engine/defensive_efficiency_engine.py`
+
+### A. Interface Contract
+
+- **Entradas requeridas:** `game_data['defense_home']` y `game_data['defense_away']` — dicts con
+  claves `der` (float), `bip` (int), `oaa` (float, opcional)
+- **Salidas:** (lh_new, la_new, metadata) con multiplicador ∈ [0.95, 1.05]
+- **Orientación:** home defence → λ_away; away defence → λ_home (idéntico a Bullpen Engine)
+- **Señal de datos:** DER (Defensive Efficiency Ratio = 1−BABIP_allowed) + OAA (Outs Above Average)
+
+### B. Fórmulas internas
+
+```
+# DER factor (fielding puro):
+shrink_w = 500 / (500 + bip)                    # Bayesian hacia LG_DER=0.715
+der_reg  = der × (1-shrink_w) + 0.715 × shrink_w
+der_factor = 0.715 / der_reg                     # <1 = buen campo → menos runs
+
+# OAA factor (opcional, rango puro):
+oaa_run_pg = oaa × 0.80 / 162                   # runs_saved per game
+oaa_factor  = clamp(1 - oaa_run_pg / LEAGUE_AVG_RUNS, [0.92, 1.08])
+
+# Combinación:
+if oaa available: raw = der_factor×0.55 + oaa_factor×0.45
+else:             raw = der_factor
+mult = clamp(raw, [0.95, 1.05])
+```
+
+### C. Bugs encontrados
+
+**BUG CRÍTICO #1 — Motor completamente muerto: datos nunca llegan a game_data**
+- Evidencia: `home_defense = away_defense = 1.000000` en 5,422/5,422 juegos (100%).
+- Causa raíz: ningún fetcher en `data_fetchers.py` ni en el pipeline popula
+  `game_data['defense_home']` o `game_data['defense_away']` con datos reales.
+- grep en todo el codebase: solo `run_module.py` (que los lee) y
+  `defensive_efficiency_engine.py` (que los consume) referencian estas claves.
+  `data_fetchers.py` no tiene ninguna referencia a estas claves.
+- Bypass explícito en run_module.py línea 628:
+  `if _def_home or _def_away:` → siempre False → engine nunca ejecuta.
+- **El motor fue diseñado y escrito completamente (código correcto, fórmulas válidas)
+  pero la fuente de datos nunca fue implementada.**
+
+**BUG BAJO #2 — `calculate_der()` en el mismo archivo es dead code**
+- La función `calculate_der(hits, at_bats, strikeouts, home_runs, sac_flies)` está
+  implementada en el mismo archivo (línea 212) pero no es importada por ningún otro módulo.
+- No aparece en data_fetchers.py, enrichment, ni backtest.
+- Fue diseñada para ser usada en el enriquecimiento de datos — ese paso nunca se construyó.
+
+**BUG BAJO #3 — Naming collision conceptual con Kalman "defense_home"**
+- Kalman usa el string `"defense_home"` como contexto (clave en kalman_state DB).
+- DEE usa `game_data['defense_home']` como dict de datos de campo (DER/OAA).
+- Mismo término, dos significados completamente distintos.
+- No hay colisión en ejecución (son namespaces distintos), pero confunde el análisis.
+
+### D. Área oscura
+
+**ÁREA OSCURA #1 — ¿Triple counting si DEE se activara?**
+Si el motor se activara con datos reales, habría correlación parcial con:
+- **Pitcher Engine:** K-heavy pitchers tienen menor BABIP → mayor DER → DEE les da crédito.
+  Overlap con era_factor y kbb_factor del Pitcher Engine.
+- **Kalman defense_home:** rastrea runs_allowed históricos (que incluyen fielding + pitching).
+  Overlap con DER, que también correlaciona con runs_allowed.
+
+Las señales NO son triples-counted exactamente (son ortogonales en teoría), pero tienen
+correlación parcial no-nula. El impacto real requeriría correr backtest con DEE activo.
+
+### E. Evidencia empírica
+
+| Métrica | Valor |
+|---------|-------|
+| home_defense == 1.0 exactamente | **5422/5422 (100%)** |
+| away_defense == 1.0 exactamente | **5422/5422 (100%)** |
+| std dentro de todos los juegos | **0.000000** |
+| Valores únicos | **1** (solo: 1.000000) |
+| Referencias a defense_home en data_fetchers.py | **0** |
+
+### F. Acoplamiento
+
+- Motor correctamente posicionado en pipeline (PASO 6, después de HFA, antes de Pitcher)
+- No acopla con nada porque NUNCA SE EJECUTA
+- Kalman defense_home (Motor #2) es la ÚNICA señal defensiva que actualmente llega al pipeline
+- La diferencia: Kalman defense = histórico de runs allowed; DEE = fielding puro (DER/OAA)
+  Son señales ortogonales que deberían complementarse, no redundantes.
+
+### G. Magic numbers
+
+- `_LG_DER = 0.715` (citado como "2024 MLB average")
+- `_LG_OAA_RUN = 0.80` ("Dewan/StatCast research" sin cita)
+- `_K_BIP_DER = 500` (citado como "estabiliza ≈500 BIP" — cercano a investigación real)
+- `_DER_WEIGHT = 0.55`, `_OAA_WEIGHT = 0.45` (sin justificación)
+- `_MAX_DEF_ADJ = 0.05` (sin justificación)
 
 ---
 
@@ -672,6 +763,30 @@ estructural y eliminar el comportamiento errático del bucket <40% sin necesidad
 
 ---
 
+### HIPÓTESIS H3 — MOTORES MUERTOS / DECORATIVOS
+
+**Estado:** Activa. Verificar con cada motor restante.
+
+**Patrón detectado:** múltiples componentes del pipeline producen std=0.000000 en
+stage_factors o Pearson ≈ 0 con outcomes reales, indicando que no producen señal.
+
+**Lista de "motores muertos" (confirmados y sospechados):**
+
+| Motor | Estado | Causa |
+|-------|--------|-------|
+| Weather (Motor #5) | **CONFIRMADO MUERTO** | game_data.weather siempre {} o roof_closed |
+| Defensive Efficiency Engine (Motor #6) | **CONFIRMADO MUERTO** | defense_home/away nunca poblados en game_data — data pipeline faltante |
+| Kalman defense en stage_factors (Motor #2) | **CONFIRMADO MUERTO** | Se aplica ANTES de inicializar stage_factors → gradient blind |
+| HFA away_hfa factor (Motor #7) | **SOSPECHA** | std=0.0 en stage_factors, pendiente audit |
+| Contextual Engine (Motor #8) | **SOSPECHA** | std=0.0 en stage_factors, pendiente audit |
+
+**Implicación:** Si H3 se confirma completamente, el sistema declara hacer cosas que
+no hace. Revivir motores muertos tiene mayor impacto esperado que ajustar magic numbers
+de motores que sí funcionan. Un motor dead-but-correct (DEE) es más valioso que un
+motor activo-pero-sin-señal (Pitcher Engine Pearson ≈ 0).
+
+---
+
 ### HIPÓTESIS H2 — BACKTEST CONTAMINADO POR LOOK-AHEAD (Bullpen Engine)
 
 **Estado:** Confirmada. Severidad ALTA.
@@ -749,5 +864,12 @@ este bug, re-correr backtest completo para calibrar expectativas reales.
 | Park | rain multipliers | 0.99 / 0.97 / 0.95 | Ninguna |
 
 **Total magic numbers hasta Motor #5: 34**
+| DEE | _LG_DER | 0.715 | "2024 MLB average" sin cita |
+| DEE | _LG_OAA_RUN | 0.80 | "Dewan/StatCast" sin URL |
+| DEE | _K_BIP_DER | 500 | Cercano a investigación real |
+| DEE | _DER_WEIGHT / _OAA_WEIGHT | 0.55 / 0.45 | Ninguna |
+| DEE | _MAX_DEF_ADJ | 0.05 | Ninguna |
+
+**Total magic numbers hasta Motor #6: 39**
 
 **Total magic numbers hasta Motor #3: 19**
