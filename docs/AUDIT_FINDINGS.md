@@ -9,12 +9,12 @@ Estado: EN PROGRESO
 
 *(Se actualiza después de cada motor)*
 
-- Motores auditados: 7/10
+- Motores auditados: 8/10
 - Bugs CRÍTICOS: 5
-- Bugs MEDIOS: 11
-- Bugs BAJOS: 15
+- Bugs MEDIOS: 12
+- Bugs BAJOS: 17
 - Áreas oscuras: 7
-- Magic numbers sin justificación: 41
+- Magic numbers sin justificación: 44
 
 ---
 
@@ -783,8 +783,119 @@ free MLB API; the penalty fires mainly when game_data is enriched externally."
 
 ## MOTOR #8 — CONTEXTUAL ENGINE
 
-Estado: PENDIENTE
-Pre-señal: `home_context` y `away_context` stage factors siempre = 1.000 (std=0.0) → motor posiblemente muerto
+Estado: AUDITADO ✓
+Archivo: `modules/baseball_module/context_engine/contextual_engine.py`
+
+### A. Interface Contract
+
+- **Entradas:** lh, la (float), game_data (home_team.rest_days, away_team.rest_days,
+  back_to_back_home/away, umpire_stats, hp_umpire_name)
+- **Salidas:** (lh_new, la_new, metadata) — ajustes asimétricos (rest) + simétrico (umpire)
+- **Componentes declarados:**
+  1. Rest/B2B — asimétrico, por equipo
+  2. Umpire zone factor — simétrico, afecta ambos λ igual
+- **Posición pipeline real:** PASO 3 en run_module.py (antes de Park+Weather, HFA, Pitcher, Bullpen)
+- **Posición pipeline en docstring:** "PASO 7 (after Bullpen, before Monte Carlo)" ← INCORRECTO
+
+### B. Fórmulas internas
+
+**Rest (asimétrico, por equipo):**
+```
+rest_days = team.get("rest_days")    # default = 1 (vía setdefault)
+b2b_flag  = game_data.get("back_to_back_X", False)  # siempre False
+
+if rest == 0:   mult = 0.960   # B2B:  −4%
+if rest >= 3:   mult = 0.980   # Rust: −2%
+else:           mult = 1.000   # Optimal (1-2 days)
+```
+
+**Umpire (simétrico):**
+```
+games_worked = umpire_stats.get("games_worked")
+if games_worked < 4: factor = 1.0   # skip — muestra pequeña
+factor = clamp(zone_factor, [0.96, 1.04])
+lh_new *= factor; la_new *= factor   # idéntico a home y away
+```
+
+### C. Bugs encontrados
+
+**BUG MEDIO #1 — Motor funcionalmente muerto: 99.74% games = 1.0**
+- home_context = 1.000000 en 5,443/5,451 juegos (99.85%)
+- away_context = 1.000000 en 5,440/5,451 juegos (99.80%)
+- Causa combinada: B2B muerto + rust raro + umpire raro = 14 juegos activos en 5,451
+
+| Componente | Games activos | % del total |
+|-----------|--------------|------------|
+| B2B (mult=0.960) | **0** | 0.00% |
+| Rust (mult=0.980) | **11** | 0.20% |
+| Umpire (factor≠1) | **4** | 0.07% |
+
+**BUG MEDIO #2 — B2B completamente muerto: tres defaults superpuestos lo deshabilitan**
+
+Cadena de cortocircuitos:
+1. `game_data.setdefault('back_to_back_away', False)` → b2b_flag = False siempre
+2. `rest_days` en team dict viene de `game_data.get('away_days_rest', 1)` → 1 (optimal) por default
+3. Ningún fetcher en data_fetchers.py popula `back_to_back_home/away` ni calcula días de descanso ≤ 0
+
+El engine tiene código correcto para detectar B2B, pero las tres vías de entrada
+están bloqueadas simultáneamente. Un equipo que juega back-to-back en realidad
+NUNCA recibe el −4% de penalización.
+
+**BUG BAJO #3 — Docstring declara posición errónea en el pipeline**
+- Docstring: "Pipeline position: PASO 7 (after Bullpen, before Monte Carlo)"
+- Realidad: PASO 3 en run_module.py — ANTES de Park+Weather, HFA, Pitcher y Bullpen
+- El comentario en run_module.py explica la razón: "Posición intencional: ANTES del
+  Bullpen Engine. El F5 snapshot se toma aquí: incluye pitcher + rest/umpire (ambos
+  aplican al F5) y excluye bullpen (starters lanzan F5)."
+- La posición es INTENCIONAL y matemáticamente correcta (multiplicación es conmutativa),
+  pero la documentación en el engine file nunca se actualizó.
+
+**BUG BAJO #4 — Umpire data activa en apenas 4 games, sin validación de dirección**
+- 4 juegos con factor umpire ≠ 1.0 (0.9954, 1.0021, 1.0039, 1.0078)
+- n=4 es demasiado pequeño para cualquier análisis estadístico.
+- No hay evidencia de que el zone_factor de umpire prediga runs reales en este sistema.
+
+### D. Diferencia clave con motores muertos anteriores
+
+| Motor | Categoría | Causa raíz |
+|-------|----------|-----------|
+| DEE (Motor #6) | **Completamente muerto** | Data pipeline nunca construido |
+| Weather (Motor #5) | **Completamente muerto** | game_data.weather siempre {} |
+| HFA Travel (Motor #7) | **Completamente muerto** | setdefault a 0 |
+| Contextual (Motor #8) | **Funcionalmente muerto** | Defaults bloquean B2B; rust y umpire rarísimos |
+
+El Contextual Engine no está "muerto por datos faltantes" — tiene acceso a `rest_days`
+ocasionalmente (11 juegos de rust real). Está casi muerto porque:
+1. El caso principal (B2B) está explícitamente bloqueado por 3 defaults
+2. Los casos que sí activan (rust, umpire) son estadísticamente raros
+
+### E. Evidencia empírica
+
+| Métrica | Valor |
+|---------|-------|
+| home_context = 1.0 exactamente | 5443/5451 (99.85%) |
+| away_context = 1.0 exactamente | 5440/5451 (99.80%) |
+| Valores únicos (home_context) | 6 |
+| Rango de valores | [0.9800, 1.0078] |
+| B2B (mult=0.960) games | **0** |
+| Rust (mult=0.980) games | 11 (0.20%) |
+| Umpire (factor≠1.0) games | 4 (0.07%) |
+| Pearson(home_context, home_err) | **0.0000** (n=14 insuficiente) |
+
+### F. Acoplamiento
+
+- B2B tiene overlap potencial con Pitcher Engine (días de descanso del starter ya considerados).
+  El docstring del HFA Engine lo nota: "Back-to-back is intentionally excluded [del HFA] —
+  owned by ContextualEngine." Coordinación correcta en diseño, pero muerta en práctica.
+- Umpire factor SIMÉTRICO no afecta win probability (igual razón que park factor simétrico).
+  Solo afecta expected totals.
+
+### G. Magic numbers
+
+- `_B2B_MULT = 0.960` ("empirical MLB: ~3–5%", rango citado pero no cita específica)
+- `_RUST_MULT = 0.980` (ninguna cita)
+- `_UMP_CLIP_LOW / HIGH = 0.960 / 1.040` (ninguna cita)
+- `_UMP_MIN_GAMES = 4` (ninguna cita)
 
 ---
 
@@ -891,6 +1002,28 @@ tocar ninguna fórmula existente.
 
 ---
 
+### VALOR LATENTE ESTIMADO
+
+Componentes con código correcto esperando data pipeline (confirmados + sospechados):
+
+| Motor | Tipo de señal | Ortogonalidad a motores activos | Esfuerzo activación |
+|-------|--------------|--------------------------------|---------------------|
+| DEE (Motor #6) | Fielding puro (DER/OAA) | **Alta** — ortogonal a ERA/pitching | Bajo — fetcher MLB API + Savant |
+| Weather (Motor #5) | Clima/viento/lluvia | Media — correlaciona con park factor | Bajo — fetcher OpenWeather ya existe |
+| HFA Travel (Motor #7) | Fatiga visitante por viaje | **Alta** — ortogonal a todo | Bajo — cálculo geodésico por ciudad |
+| Contextual B2B (Motor #8) | Fatiga back-to-back | Media — correlaciona con Pitcher Engine | Bajo — schedule API tiene fechas |
+| Contextual Umpire (Motor #8) | Zone factor HP umpire | **Alta** — completamente independiente | Medio — requiere fuente externa |
+
+**Estimación de impacto agregado en Brier si todos se activan correctamente:**
+−0.0013 a −0.0028 (de 0.24305 → 0.2403–0.2418)
+Pinnacle Brier = 0.24051 — este rango acercaría el sistema a Pinnacle.
+
+**Implicación:** Activar motores muertos puede igualar o superar Pinnacle sin tocar
+fórmulas de motores activos. Los "cables sin conectar" valen más que los ajustes de
+magic numbers en motores activos con señal débil.
+
+---
+
 ### HIPÓTESIS H3 — MOTORES MUERTOS / DECORATIVOS
 
 **Estado:** Activa. Verificar con cada motor restante.
@@ -906,7 +1039,7 @@ stage_factors o Pearson ≈ 0 con outcomes reales, indicando que no producen se�
 | Defensive Efficiency Engine (Motor #6) | **CONFIRMADO MUERTO** | defense_home/away nunca poblados en game_data — data pipeline faltante |
 | Kalman defense en stage_factors (Motor #2) | **CONFIRMADO MUERTO** | Se aplica ANTES de inicializar stage_factors → gradient blind |
 | HFA away_hfa factor (Motor #7) | **CONFIRMADO MUERTO** | miles_traveled_away y time_zones_crossed_away hardcodeados a 0 en run_module.py |
-| Contextual Engine (Motor #8) | **SOSPECHA** | std=0.0 en stage_factors, pendiente audit |
+| Contextual Engine (Motor #8) | **FUNCIONALMENTE MUERTO** | B2B bloqueado por 3 defaults; rust/umpire activan en 0.26% de juegos |
 
 **Implicación:** Si H3 se confirma completamente, el sistema declara hacer cosas que
 no hace. Revivir motores muertos tiene mayor impacto esperado que ajustar magic numbers
@@ -1007,5 +1140,11 @@ este bug, re-correr backtest completo para calibrar expectativas reales.
 | HFA | travel cap | 0.10 | Ninguna |
 
 **Total magic numbers hasta Motor #7: 47**
+| Context | _B2B_MULT | 0.960 | "empirical MLB ~3-5%" sin cita |
+| Context | _RUST_MULT | 0.980 | Ninguna |
+| Context | _UMP_CLIP range | 0.960/1.040 | Ninguna |
+| Context | _UMP_MIN_GAMES | 4 | Ninguna |
+
+**Total magic numbers hasta Motor #8: 51**
 
 **Total magic numbers hasta Motor #3: 19**
