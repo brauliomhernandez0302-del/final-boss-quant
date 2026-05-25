@@ -9,12 +9,12 @@ Estado: EN PROGRESO
 
 *(Se actualiza después de cada motor)*
 
-- Motores auditados: 6/10
-- Bugs CRÍTICOS: 4
+- Motores auditados: 7/10
+- Bugs CRÍTICOS: 5
 - Bugs MEDIOS: 11
-- Bugs BAJOS: 13
-- Áreas oscuras: 6
-- Magic numbers sin justificación: 34
+- Bugs BAJOS: 15
+- Áreas oscuras: 7
+- Magic numbers sin justificación: 41
 
 ---
 
@@ -674,8 +674,110 @@ correlación parcial no-nula. El impacto real requeriría correr backtest con DE
 
 ## MOTOR #7 — HFA ENGINE
 
-Estado: PENDIENTE
-Pre-señal: `away_hfa` stage factor siempre = 1.000 (std=0.0) → posible motor parcialmente muerto
+Estado: AUDITADO ✓
+Archivo: `modules/baseball_module/hfa/hfa_engine.py`
+
+### A. Interface Contract
+
+- **Entradas:** lh, la (float), game_data (park.name, miles_traveled_away, time_zones_crossed_away)
+- **Salidas:** (lh_new, la_new, metadata) — dos ajustes asimétricos independientes
+- **Componente 1 (ACTIVO):** Crowd boost → sube λ_home únicamente
+- **Componente 2 (MUERTO):** Travel fatigue → debería bajar λ_away, nunca lo hace
+- **Posición pipeline:** PASO 7 (después de Park+Weather, DEE, antes de Pitcher Engine)
+
+### B. Fórmulas internas
+
+**Crowd boost (activo):**
+```
+hfa_boost = hfa_base[park_name]   ← hardcoded por parque, rango [0.0250, 0.0450]
+hfa_mult  = 1.0 + hfa_boost / LEAGUE_AVG_RUNS   (= 1.0 + boost / 4.5)
+lh_new    = lh × hfa_mult
+la_new    = la   (sin cambio)
+```
+
+**Travel fatigue (dead):**
+```
+time_zones = game_data.get("time_zones_crossed_away", 0)   ← siempre 0
+miles      = game_data.get("miles_traveled_away", 0)        ← siempre 0
+penalty = 0.0   ← siempre, porque time_zones=0 y miles=0 fallan todas las condiciones
+la_new *= 1.0 - 0.0 / 4.5   = la_new × 1.0   (sin cambio)
+```
+
+### C. Bugs encontrados
+
+**BUG CRÍTICO #1 — Componente travel fatigue muerto: datos hardcodeados a 0**
+
+En `run_module.py` líneas 263-264:
+```python
+game_data.setdefault('miles_traveled_away', 0)        # ← SIEMPRE 0
+game_data.setdefault('time_zones_crossed_away', 0)    # ← SIEMPRE 0
+```
+
+Ningún fetcher del pipeline calcula o asigna millas o timezone delta para los partidos.
+El `setdefault` garantiza que ambas claves existan con valor 0 antes de que el HFA Engine
+las lea. La función `_calculate_travel_fatigue()` recibe miles=0, time_zones=0, produce
+penalty=0.0, y la_new permanece inalterada.
+
+Resultado: `away_hfa = 1.000000` en 5,422/5,422 juegos (std=0.0, unique=1).
+
+El propio docstring lo admite: "In practice travel fields are rarely populated by the
+free MLB API; the penalty fires mainly when game_data is enriched externally."
+
+**BUG BAJO #2 — home_hfa signal estadísticamente indetectable**
+- home_hfa varía entre 1.0056 y 1.0100 (rango = 0.0044, sólo 0.44% de λ_home)
+- Pearson(home_hfa, home_actual_error) = **−0.0049** ≈ 0
+- La crowd boost más alta (Yankee: 0.045 runs) añade 1.0% a λ_home.
+- La diferencia entre el parque más hostil (Yankee 1.0100) y el más neutral
+  (Tropicana 1.0056) es 0.44% de λ — por debajo del umbral detectable en el backtest.
+
+**BUG BAJO #3 — hfa_boost per-park son magic numbers sin validación**
+- 32 entradas hardcodeadas por parque en `self.hfa_base`, rango [0.0250, 0.0450].
+- Comentario: "Empirically recalibrated to match +0.034 run/game home scoring advantage."
+  Pero la recalibración es global (÷4.0 del valor original) — no hay evidencia de que
+  los valores RELATIVOS entre parques sean correctos.
+- Yankee (0.045) tiene 1.8× el crowd boost de Tropicana (0.025). ¿Es eso real o subjetivo?
+
+**BUG BAJO #4 — Gradient descent ciego a travel component**
+- `away_hfa` en stage_factors = `la_hfa / la_pre = 1.0` siempre.
+- Gradient descent nunca puede aprender el peso correcto del componente travel.
+- Si se activa el travel pipeline, el gradient descent podría aprender, pero actualmente
+  también está roto (Bug #1 Motor #2). Problema compuesto.
+
+### D. Área oscura
+
+**ÁREA OSCURA #1 — ¿Los hfa_boost relativos entre parques tienen soporte empírico?**
+- Los 32 valores distintos fueron reducidos ÷4.0 de estimaciones previas para calibrar
+  el promedio a +0.034 runs. Pero la distribución relativa (cuánto más hostil es Yankee
+  vs Tropicana) es completamente subjetiva.
+- Sin backtest por parque desagregado, es imposible saber si los pesos relativos ayudan
+  o añaden ruido. El Pearson ≈ 0 sugiere que la variación entre parques no produce señal.
+
+### E. Evidencia empírica
+
+| Métrica | Componente | Valor |
+|---------|-----------|-------|
+| home_hfa unique values | Crowd (activo) | **9** (por parque, estático) |
+| home_hfa rango | Crowd | [1.0056, 1.0100] |
+| home_hfa std | Crowd | 0.001076 |
+| Pearson(home_hfa, home_error) | Crowd | **−0.0049** ≈ 0 |
+| away_hfa unique values | Travel (muerto) | **1** (siempre 1.0) |
+| away_hfa std | Travel | **0.000000** |
+| away_hfa = 1.0 exactly | Travel | **5422/5422 (100%)** |
+
+### F. Acoplamiento
+
+- Lee: park name (disponible siempre), miles/time_zones (siempre 0)
+- Escribe: lh × crowd_mult (activo), la inalterada (travel muerto)
+- La crowd boost amplifica los λ_home antes de que Pitcher/Bullpen operen sobre ellos.
+  Al igual que park_factor, la magnitud (≤1%) es demasiado pequeña para observarse.
+
+### G. Magic numbers
+
+- 32 valores `hfa_boost` por parque: [0.0250 – 0.0450]
+- `_default_hfa = 0.0325` (parques no encontrados)
+- Travel thresholds: `time_zones ≥3 → 0.06`, `≥2 → 0.04`, `≥1 → 0.02`
+- Distance thresholds: `miles > 2000 → 0.05`, `miles > 1000 → 0.03`
+- Travel cap: `0.10` runs máximo
 
 ---
 
@@ -763,6 +865,32 @@ estructural y eliminar el comportamiento errático del bucket <40% sin necesidad
 
 ---
 
+### OBSERVACIÓN O1 — CAPACIDAD LATENTE NO ACTIVADA
+
+**Patrón identificado:** motores correctamente implementados (código válido, fórmulas correctas,
+cierta justificación documentada) están inertes porque el data pipeline no les suministra inputs.
+No son errores de diseño — son cables sin conectar.
+
+**Motores en esta categoría (confirmados):**
+
+| Motor | Componente muerto | Data pipeline faltante |
+|-------|-------------------|------------------------|
+| Park+Weather (#5) | Weather (temp/viento/lluvia) | `game_data['weather']` siempre {} |
+| Defensive Efficiency (#6) | Motor completo | `game_data['defense_home/away']` nunca poblado |
+| HFA Engine (#7) | Travel fatigue (away_hfa) | `miles_traveled_away` y `time_zones_crossed_away` hardcodeados a 0 en run_module.py |
+
+**Motores sospechados en esta categoría (pendiente audit):**
+- Contextual Engine (#8) — context stage_factors std=0.0, a verificar
+
+**Implicación estratégica:**
+Activar motores muertos vía data pipeline tiene cost-benefit superior a reescribir motores
+activos con señal débil. El esfuerzo es "conectar cables", no "rediseñar arquitectura".
+El Defensive Efficiency Engine, por ejemplo, tiene código correcto con señal potencialmente
+ortogonal a todos los motores activos. Conectar su data pipeline podría mejorar Brier sin
+tocar ninguna fórmula existente.
+
+---
+
 ### HIPÓTESIS H3 — MOTORES MUERTOS / DECORATIVOS
 
 **Estado:** Activa. Verificar con cada motor restante.
@@ -777,7 +905,7 @@ stage_factors o Pearson ≈ 0 con outcomes reales, indicando que no producen se�
 | Weather (Motor #5) | **CONFIRMADO MUERTO** | game_data.weather siempre {} o roof_closed |
 | Defensive Efficiency Engine (Motor #6) | **CONFIRMADO MUERTO** | defense_home/away nunca poblados en game_data — data pipeline faltante |
 | Kalman defense en stage_factors (Motor #2) | **CONFIRMADO MUERTO** | Se aplica ANTES de inicializar stage_factors → gradient blind |
-| HFA away_hfa factor (Motor #7) | **SOSPECHA** | std=0.0 en stage_factors, pendiente audit |
+| HFA away_hfa factor (Motor #7) | **CONFIRMADO MUERTO** | miles_traveled_away y time_zones_crossed_away hardcodeados a 0 en run_module.py |
 | Contextual Engine (Motor #8) | **SOSPECHA** | std=0.0 en stage_factors, pendiente audit |
 
 **Implicación:** Si H3 se confirma completamente, el sistema declara hacer cosas que
@@ -871,5 +999,13 @@ este bug, re-correr backtest completo para calibrar expectativas reales.
 | DEE | _MAX_DEF_ADJ | 0.05 | Ninguna |
 
 **Total magic numbers hasta Motor #6: 39**
+| HFA | hfa_boost per-park (32 valores) | 0.025–0.045 | "Recalibrado" — relativo subjetivo |
+| HFA | _default_hfa | 0.0325 | Ninguna |
+| HFA | travel time_zones thresholds | 3/2/1 | Ninguna |
+| HFA | travel miles thresholds | 2000 / 1000 | Ninguna |
+| HFA | travel penalty values | 0.06/0.04/0.02/0.05/0.03 | Ninguna |
+| HFA | travel cap | 0.10 | Ninguna |
+
+**Total magic numbers hasta Motor #7: 47**
 
 **Total magic numbers hasta Motor #3: 19**
