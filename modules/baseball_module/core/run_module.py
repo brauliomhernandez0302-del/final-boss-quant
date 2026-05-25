@@ -432,11 +432,23 @@ def run_module(
             logger.info(f"   λ_base (legacy): λ_h={lh:.3f}  λ_a={la:.3f}")
 
         # ── Kalman-adjusted base lambdas ──────────────────────────────────
+        # Offensive Kalman: pulls each team's λ toward its observed run-scoring rate.
         lh = _learning.get_kalman_lambda_adjustment(home_team, "offense_home", _season, lh)
         la = _learning.get_kalman_lambda_adjustment(away_team, "offense_away", _season, la)
 
+        # Defensive Kalman: pulls the OPPONENT's λ toward the team's observed runs-allowed rate.
+        # defense_home tracks actual away_runs at this team's home park (opponent scoring).
+        # defense_away tracks actual home_runs scored against this team on the road.
+        # These states are updated in backtest_and_retrain.py after every game (zero look-ahead)
+        # but were never read — enabling them resolves the systematic under-prediction for
+        # pitching-dominant teams (Cleveland -11pp, Cardinals -10pp, Tampa Bay -8pp).
+        # No double-counting risk: defense Kalman operates on the opponent's λ, while
+        # compute_team_bias_kalman_adjusted() dampens only the overlap with offense Kalman.
+        la = _learning.get_kalman_lambda_adjustment(home_team, "defense_home", _season, la)
+        lh = _learning.get_kalman_lambda_adjustment(away_team, "defense_away", _season, lh)
+
         results['lambdas_history']['base'] = {'lh': lh, 'la': la}
-        logger.info(f"   Lambda base (Kalman): λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})")
+        logger.info(f"   Lambda base (Kalman off+def): λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})")
 
         # ── Team bias (LearningEngine) — corrects systematic model error per team ──
         # Applied after Kalman, before any engine modifies λ. The bias is
