@@ -709,15 +709,15 @@ def run_module(
         _p_away_mc = mc_results['p_away']
 
         # Dynamic Platt calibration — refitted weekly from live outcomes.
-        # Renormalize after Platt so p_home + p_away = 1.0 exactly; applying
-        # Platt independently with b≠0 inflates their sum to ~1.049, creating a
-        # phantom edge against any fair market that sums to 1.0.
+        # Applied asymmetrically: Platt transforms p_home only; p_away = 1 - p_home.
+        # This preserves the b (intercept) parameter, which encodes the structural
+        # home advantage (batting last, crowd on umpire calls) that Poisson run-scoring
+        # cannot capture. Symmetric normalization cancelled b for neutral games,
+        # destroying the structural signal recalibrate_platt() had learned.
         _pa, _pb = _learning.get_platt_params(_season)
         _p_home_cal = _platt(mc_results['p_home'], _pa, _pb)
-        _p_away_cal = _platt(mc_results['p_away'], _pa, _pb)
-        _platt_total = _p_home_cal + _p_away_cal
-        mc_results['p_home'] = round(_p_home_cal / _platt_total, 5)
-        mc_results['p_away'] = round(_p_away_cal / _platt_total, 5)
+        mc_results['p_home'] = round(_p_home_cal, 5)
+        mc_results['p_away'] = round(1.0 - _p_home_cal, 5)
 
         results['probabilities'] = mc_results
 

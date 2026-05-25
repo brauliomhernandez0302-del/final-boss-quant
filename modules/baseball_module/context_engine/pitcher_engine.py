@@ -42,6 +42,11 @@ _LG_BRL_PCT        = 8.0               # barrel% allowed, starter avg
 # Using 350 as a reasonable average across the fallback chain.
 _K_TBF_ERA   = 350
 
+# Away pitchers allow ~0.15 more ERA when pitching away from home.
+# Source: documented across multiple baseball research papers (e.g., Baseball Prospectus, FG).
+# Applied as a context adjustment on top of the Bayesian-regressed quality estimate.
+_AWAY_ERA_PENALTY = 0.15
+
 
 class PitcherEngine:
     """
@@ -105,7 +110,7 @@ class PitcherEngine:
         game_data: Dict[str, Any],
         is_home: bool,
     ) -> Dict[str, Any]:
-        quality  = self._adjust_pitcher_quality(pitcher)
+        quality  = self._adjust_pitcher_quality(pitcher, is_home=is_home)
         form     = self._adjust_pitcher_form(pitcher)
         matchup  = self._adjust_pitcher_matchup(pitcher, game_data, is_home)
         platoon  = self._adjust_pitcher_platoon(pitcher, game_data, is_home)
@@ -133,7 +138,7 @@ class PitcherEngine:
 
     # ── Quality ───────────────────────────────────────────────────────────────
 
-    def _adjust_pitcher_quality(self, pitcher: Dict) -> float:
+    def _adjust_pitcher_quality(self, pitcher: Dict, is_home: bool = True) -> float:
         """
         Starter quality multiplier combining four orthogonal signals:
 
@@ -173,6 +178,8 @@ class PitcherEngine:
         tbf_est  = max(0.0, ip_cur * 4.3)   # ~4.3 TBF per IP for starters
         shrink_w = _K_TBF_ERA / (_K_TBF_ERA + tbf_est)
         primary_reg = primary * (1.0 - shrink_w) + _LG_ERA * shrink_w
+        if not is_home:
+            primary_reg += _AWAY_ERA_PENALTY
         skill_mult  = primary_reg / _LG_ERA
 
         # xwOBA allowed overlay — each 0.010 above avg ≈ +3% runs allowed
