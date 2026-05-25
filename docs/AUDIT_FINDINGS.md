@@ -9,12 +9,12 @@ Estado: EN PROGRESO
 
 *(Se actualiza después de cada motor)*
 
-- Motores auditados: 8/10
-- Bugs CRÍTICOS: 5
-- Bugs MEDIOS: 12
-- Bugs BAJOS: 17
-- Áreas oscuras: 7
-- Magic numbers sin justificación: 44
+- Motores auditados: 9/10
+- Bugs CRÍTICOS: 6
+- Bugs MEDIOS: 14
+- Bugs BAJOS: 18
+- Áreas oscuras: 8
+- Magic numbers sin justificación: 58
 
 ---
 
@@ -901,7 +901,186 @@ ocasionalmente (11 juegos de rust real). Está casi muerto porque:
 
 ## MOTOR #9 — MONTE CARLO SIMULATOR
 
-Estado: PENDIENTE
+Estado: AUDITADO ✓
+Archivo: `modules/baseball_module/montecarlo/simulator.py`
+
+### A. Interface Contract
+
+- **Entradas:** `lh`, `la` (λ_home/away finales del pipeline), `total_line` (opcional),
+  `lambda_noise=0.05`, `rho_game=-0.06`, `early_stop_se=0.0005`, `n_max=5_000_000`
+- **Salidas:** `p_home`, `p_away`, `p_rl_home/away`, `p_over/under`, `mean_total`, `std_total`,
+  `converged_early`, `f5_home/away/draw` (si `analyze_f5=True`), percentiles de distribución
+- **Posición en pipeline:** PASO 8 — recibe λ calibradas y produce probabilidades puras (pre-Platt)
+
+### B. Fórmulas internas
+
+```
+# Bivariate Cholesky decomposition (epistemic noise)
+_sigma_h = lambda_noise * max(lh, 0.5)
+_sigma_a = lambda_noise * max(la, 0.5)
+_rho_sqrt_comp = sqrt(1 - rho_game²)
+
+z1 = Normal(0,1)  # shared shock
+z2 = Normal(0,1)  # independent residual
+
+lh_noise = clip(lh + sigma_h * z1, MIN_LAMBDA, MAX_LAMBDA)
+la_noise = clip(la + sigma_a * (rho_game * z1 + rho_sqrt_comp * z2), MIN_LAMBDA, MAX_LAMBDA)
+
+home_runs ~ Poisson(lh_noise)
+away_runs ~ Poisson(la_noise)
+
+# Win probability (ties split 50/50)
+p_home = (wins_home + 0.5 * ties) / sims_done
+
+# Early stopping (minimum 500K warm-up)
+SE = sqrt(p_home * (1 - p_home) / sims_done)
+break if sims_done >= 500_000 and SE < 0.0005
+
+# F5 scale (if actual F5 lambdas not provided)
+F5_SCALE = 0.575
+lh_f5_noise = clip(lh_noise * F5_SCALE, MIN, MAX)
+```
+
+### C. Bugs encontrados
+
+**BUG #1 (MEDIO): `lambda_noise=0.05` hardcodeado — NO adaptativo**
+- El usuario preguntó si el ruido epistémico se ajusta dinámicamente (0.04–0.08 según calidad de datos).
+- La respuesta: **NO**. Es un parámetro fijo que se pasa desde `run_module.py` como valor por defecto.
+- No hay lógica de `if data_quality == 'sparse': noise = 0.08`. El mismo 5% se aplica a un pitcher
+  con 200 IP como a uno con 5 IP en su rookie year.
+- **Impacto:** El modelo tiene la misma confianza en estimaciones bien respaldadas y en estimaciones
+  con escasez de datos. La incertidumbre epistémica no refleja la realidad.
+
+**BUG #2 (CRÍTICO): `rho_game=-0.06` no derivado del sistema — 8× más negativo que realidad**
+- El docstring afirma "matches empirical MLB data" sin fuente.
+- Medición empírica en 5,422 juegos del backtest:
+  - `rho(actual_home_runs, actual_away_runs) = -0.0078`
+  - `rho asumido por el modelo = -0.06`
+  - **Discrepancia: 7.7×** — el modelo asume correlación negativa 8 veces más fuerte que la real.
+- Consecuencia matemática: la varianza del total (`Var(home+away)`) se comprime artificialmente.
+  `Var(total) = Var(home) + Var(away) + 2*Cov(home,away)`
+  Con rho=-0.06 vs rho=-0.008: el total tiene ~5% menos varianza de la correcta.
+- Efecto secundario: probabilidades de over/under ligeramente sesgadas; impacto en win prob es marginal
+  (la win prob depende principalmente de las marginales, no de la correlación conjunta).
+
+**BUG #3 (MEDIO): `F5_SCALE=0.575` — magic number sin validación empírica**
+- Comentario en código: "55-58%; 57.5% is the calibrated midpoint" — calibrado a mano, no de datos.
+- El sistema tiene en su BD los resultados de F5 innings reales (para los juegos donde aplica).
+- La relación real entre λ_full_game y λ_first_5 puede variar por:
+  - Pitcher quality (starters vs bullpen ERA gap)
+  - Season phase (starters van más innings en septiembre)
+  - Team strategy (bullpen teams vs traditional rotations)
+- **Área oscura:** No se puede verificar la bondad de 0.575 sin datos F5 explícitos en la BD.
+  La BD solo almacena `lambda_home` / `lambda_away` (full game), no las versiones F5.
+
+**BUG #4 (BAJO): 2024 sin calibración Platt — p_home = p_home_raw para 2,429 juegos**
+- El pipeline usa `_platt(p_mc, a, b)` donde `a,b` se obtienen de `_learning.get_platt_params(season)`.
+- Para season=2024, el log muestra: "no prior-season params (n=0) — using identity defaults".
+- Verificación empírica: `p_home == p_home_raw` en 100% de los 2,429 juegos de 2024 (diff máx = 0.0).
+- Toda la temporada 2024 opera con Platt identidad → sin corrección de calibración.
+- Implicación: el backtest de 2024 mide el modelo SIN ningún ajuste de calibración aprendida.
+  Los resultados de 2024 son los más "puros" pero también los menos representativos de producción.
+
+### D. Lo que funciona correctamente
+
+**CORRECTO #1: Cholesky decomposition matemáticamente exacta**
+- `la_noise = la + sigma_a * (rho_game * z1 + sqrt(1-rho²) * z2)` — implementación correcta.
+- `Cov(lh_noise, la_noise) = sigma_h * sigma_a * rho_game` ✓ (exacto por construcción)
+- Marginals preservadas: cada noise term tiene varianza sigma² exactamente. ✓
+
+**CORRECTO #2: Early stopping funciona y ahorra ~80% del cómputo**
+- Para p≈0.50: SE < 0.0005 requiere n > 1,000,000 sims → dispara en bloque 5 de 25 máximos.
+- Para p≈0.70: SE < 0.0005 requiere n > 840,000 → dispara en bloque 5 (sims=1M).
+- **Ahorro efectivo: ~80% del cómputo** vs correr las 5M sims completas.
+- Verificación indirecta: `p_home_raw` tiene 93.9% valores únicos a 5dp → consistente con ~1M sims/juego.
+- El comentario en código documenta la fix de un bug anterior (modulo silencioso).
+
+**CORRECTO #3: Ties split 50/50 es estadísticamente correcto**
+- `p_home = (wins_home + 0.5 * ties) / sims` — en MLB los juegos van a extra innings.
+- El modelo no diferencia ML vs extra innings pero la aproximación 50/50 es neutral.
+
+**CORRECTO #4: Platt scaling preserva estructura aprendida**
+- La decisión de aplicar Platt solo a p_home (p_away = 1 - p_home_cal) es intencional y documentada.
+- Preserva el intercept `b` que codifica HFA estructural que Poisson no puede capturar.
+- Platt 2025: a=0.7277, b=0.1459 → comprensión + sesgo upward (+0.009 promedio).
+
+### E. Análisis empírico
+
+**Distribución `p_home_raw` (5,422 juegos, 3 seasons):**
+
+```
+min=0.1551   mean=0.5096   max=0.8398   std=0.1093
+```
+
+- Rango [0.155, 0.840] — bien distribuido, no sobre-concentrado
+- 18.0% de juegos con p_home_raw < 0.35 o > 0.65 (tails existen)
+- 93.9% únicos a 5dp — consistente con early stopping a ~1M sims
+
+**Correlaciones predictivas:**
+
+| Señal | Pearson(·, home_won) |
+|-------|----------------------|
+| p_home_raw (pre-Platt) | **0.1604** |
+| p_home (post-Platt) | **0.1612** |
+| market_prob_home (Pinnacle) | (proxy estimado ~0.19) |
+
+- Platt mejora Pearson solo marginalmente (+0.0008).
+- Pearson=0.16 es consistente con el Brier=0.243 observado.
+- `Pearson(p_home_raw, lambda_home) = 0.711` — el simulador transforma λ correctamente.
+- `Pearson(p_home_raw, market_prob_home) = 0.7613` — alta correlación con Pinnacle,
+  pero **NO** por anchoring. Ambos sistemas responden al mismo conjunto de factores del juego.
+
+**Efecto Platt por temporada:**
+
+| Season | p_home == p_home_raw | Interpretación |
+|--------|---------------------|----------------|
+| 2024 | 100.0% (2,429/2,429) | Identity Platt — sin calibración |
+| 2025 | 0.0% (todos diferentes) | Platt a=0.727, b=0.146 — calibrado |
+| 2026 | 0.0% (todos diferentes) | Platt a=0.567, b=0.099 — recalibrado |
+
+- Mean Platt shift = +0.0092 (upward hacia home team)
+- Max Platt shift = 0.097 (casi 10 puntos porcentuales en casos extremos)
+- 43.2% upward, 12.2% downward, 44.6% sin cambio (2024)
+
+**Validación rho_game:**
+
+| | Valor |
+|--|-------|
+| rho asumido por modelo | -0.060 |
+| rho empírico (5,422 juegos) | **-0.0078** |
+| Discrepancia | 7.7× |
+
+El modelo sobre-estima la correlación negativa entre carreras de equipos locales y visitantes.
+
+**Pinnacle anchor:**
+- **NO existe Pinnacle anchor en el simulador.** La señal pura de Monte Carlo es independiente
+  de las odds de Pinnacle. El blend con mercado (si existe) no está en este archivo.
+- 14.0% de juegos (757/5,422) sin datos de Pinnacle — todos tratados con mismo código path.
+
+### F. Interacciones con otros motores
+
+- Recibe λ ya modificadas por todos los motores #1-#8.
+- Ruido epistémico `lambda_noise=0.05` añade ~0.21 unidades de std adicional a λ≈4.3.
+  Esta incertidumbre aplana las probabilidades extremas — reduce over-confidence.
+- p_home_raw es el input de Platt (Motor #2's recalibrate_platt), que aprende sobre estas
+  probabilidades sin-anclar para producir p_home final.
+- Correlación con motores muertos: dado que 4-5 motores no aportan señal, las λ que recibe
+  el simulador son esencialmente función de TTE + Pitcher (parcial) + Bullpen (contaminado).
+  El simulador amplifica fielmente lo bueno y lo malo de las λ previas.
+
+### G. Resumen de severidad
+
+| # | Severidad | Descripción |
+|---|-----------|-------------|
+| BUG #1 | MEDIO | lambda_noise hardcodeado a 0.05, no adaptativo a calidad de datos |
+| BUG #2 | CRÍTICO | rho_game=-0.06 vs empírico -0.008; over-estima correlación 8× |
+| BUG #3 | MEDIO | F5_SCALE=0.575 sin validación empírica |
+| BUG #4 | BAJO | 2024 sin Platt — calibración aprendida no aplica al primer año |
+
+**Diagnóstico global:** Motor #9 es el mejor implementado del pipeline. El núcleo matemático
+(Cholesky, Poisson, early stopping) es correcto. Los problemas son paramétricos, no algorítmicos.
+El simulador es un buen transductor de λ→probabilidad; la calidad del output depende casi
+enteramente de la calidad de las λ upstream (donde están los problemas reales).
 
 ---
 
@@ -1146,5 +1325,14 @@ este bug, re-correr backtest completo para calibrar expectativas reales.
 | Context | _UMP_MIN_GAMES | 4 | Ninguna |
 
 **Total magic numbers hasta Motor #8: 51**
+| MC | rho_game | -0.06 | "empirical MLB data" — empírico real: -0.0078 (7.7×) |
+| MC | lambda_noise | 0.05 | Ninguna — no adaptativo a calidad de datos |
+| MC | early_stop_se | 0.0005 | Sin justificación del threshold específico |
+| MC | F5_SCALE | 0.575 | "calibrated midpoint 55-58%" — sin datos |
+| MC | n_max | 5_000_000 | Ninguna — nunca se alcanza (early stop a ~1M) |
+| MC | block | 200_000 | Ninguna |
+| MC | n_min (early stop) | 500_000 | Ninguna |
+
+**Total magic numbers hasta Motor #9: 58**
 
 **Total magic numbers hasta Motor #3: 19**
