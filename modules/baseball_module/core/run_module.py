@@ -436,16 +436,24 @@ def run_module(
         lh = _learning.get_kalman_lambda_adjustment(home_team, "offense_home", _season, lh)
         la = _learning.get_kalman_lambda_adjustment(away_team, "offense_away", _season, la)
 
-        # Defensive Kalman: pulls the OPPONENT's λ toward the team's observed runs-allowed rate.
-        # defense_home tracks actual away_runs at this team's home park (opponent scoring).
-        # defense_away tracks actual home_runs scored against this team on the road.
-        # These states are updated in backtest_and_retrain.py after every game (zero look-ahead)
-        # but were never read — enabling them resolves the systematic under-prediction for
-        # pitching-dominant teams (Cleveland -11pp, Cardinals -10pp, Tampa Bay -8pp).
-        # No double-counting risk: defense Kalman operates on the opponent's λ, while
-        # compute_team_bias_kalman_adjusted() dampens only the overlap with offense Kalman.
+        # NOTE(Fase 2.1): solo defense_home se aplica. defense_away se intentó pero
+        # se removió por causar regresión en bucket <40% y Brier global.
+        # Diagnóstico empírico: defense_away tiene overlap parcial con Pitcher Engine
+        # y Bullpen Engine cuando el equipo visitante es fuerte (correlación Pearson
+        # r=0.25 con away_pitcher_mult, asimétricamente más alta en matchups
+        # desiguales). Las 5,422 muestras del backtest mostraron Brier +0.00014 y
+        # regresión en bucket <40% de -1.1pp → -3.0pp.
+        #
+        # DEFERRED: Milwaukee/Cardinals/Rays con bias persistente: probable necesidad
+        # de "road performance modifier" o componente no-Poisson. NO atacar ahora.
+        # Pendiente: audit interno de cada engine después de Fase 3.
+        #
+        # defense_home: pulls away team's λ toward the home team's observed runs-allowed
+        # rate at their own park. Empirically orthogonal to Pitcher/Bullpen engines
+        # (Pearson r=0.23 and r=-0.04 respectively). Corrects Cleveland from -11pp to
+        # +2.7pp and improves 60-70% calibration bucket from -2.4pp to +0.3pp.
         la = _learning.get_kalman_lambda_adjustment(home_team, "defense_home", _season, la)
-        lh = _learning.get_kalman_lambda_adjustment(away_team, "defense_away", _season, lh)
+        # defense_away intentionally omitted — see NOTE(Fase 2.1) above.
 
         results['lambdas_history']['base'] = {'lh': lh, 'la': la}
         logger.info(f"   Lambda base (Kalman off+def): λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})")
