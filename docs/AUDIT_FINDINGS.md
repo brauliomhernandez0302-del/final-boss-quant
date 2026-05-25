@@ -9,12 +9,12 @@ Estado: EN PROGRESO
 
 *(Se actualiza después de cada motor)*
 
-- Motores auditados: 4/10
-- Bugs CRÍTICOS: 2
-- Bugs MEDIOS: 10
-- Bugs BAJOS: 8
-- Áreas oscuras: 4
-- Magic numbers sin justificación: 25
+- Motores auditados: 5/10
+- Bugs CRÍTICOS: 3
+- Bugs MEDIOS: 11
+- Bugs BAJOS: 11
+- Áreas oscuras: 5
+- Magic numbers sin justificación: 30
 
 ---
 
@@ -459,7 +459,119 @@ else:         workload = max(1.0 + delta×0.005, 0.97)    # rested: -0.5%/IP (ca
 
 ## MOTOR #5 — PARK + WEATHER ENGINE
 
-Estado: PENDIENTE
+Estado: AUDITADO ✓
+Archivo: `modules/baseball_module/hfa/park_weather_engine.py`
+
+### A. Interface Contract
+
+- **Entradas:** lh, la (float), game_data (park.name, weather dict, roof_closed/open, lineup handedness)
+- **Salidas:** (lh_new, la_new, metadata) con total_mult = park_factor × weather_mult
+- **Diseño declarado:** SIMÉTRICO — mismo multiplicador a λ_home y λ_away
+- **Sin season logic:** NO tiene `datetime.now().year`. Park factors son estáticos en el archivo.
+- **Posición pipeline:** PASO 2, después de AutoCalibrator
+
+### B. Fórmulas internas
+
+```
+park_mult    = STADIUM_DATABASE[park_name].runs_factor   ← estático, 30 parques
+weather_mult = temp_mult × wind_mult × rain_mult          → clamp [0.90, 1.12]
+total_mult   = park_mult × weather_mult
+lh_new = lh × total_mult
+la_new = la × total_mult                                  ← IDÉNTICO a lh_new
+
+# Única parte ASIMÉTRICA: wind × handedness
+hnd_home = signed_cross × (home_lhb - 0.45) × speed × 0.040  → clamp [−0.015, +0.015]
+hnd_away = signed_cross × (away_lhb - 0.45) × speed × 0.040
+lh_new *= (1 + hnd_home)
+la_new *= (1 + hnd_away)
+```
+
+**Temp:** +0.5% per 5°F sobre 72°F → clamp [0.94, 1.06]
+**Wind:** out=+2.0%/5mph, in=−1.5%/5mph, cross=+0.3%/5mph → clamp [0.94, 1.10]
+**Rain:** drizzle=0.99, light=0.97, moderate=0.95 (probability-weighted)
+**Roof default:** `has_roof=True AND NOT roof_open` → weather_mult=1.0
+
+### C. Bugs encontrados
+
+**BUG CRÍTICO #1 — Weather component completamente inerte en producción**
+- Evidencia: `home_park std = 0.000000` en TODOS los 12 valores únicos de parque.
+- Solo hay 12 valores posibles (los runs_factor del STADIUM_DATABASE). Dentro de cada parque,
+  el multiplicador es EXACTAMENTE igual en todos los juegos de ese parque.
+- Conclusión: `weather_mult = 1.0` en el 100% de los juegos del backtest.
+- Causa probable: (a) `game_data.get("weather", {})` siempre devuelve {} (sin datos de weather);
+  o (b) los parques con techo (`has_roof=True`) son tratados como closed y suprimen weather.
+- El motor se llama "Park + WEATHER Engine" pero solo aplica factor de parque.
+- **La mitad del motor es decorativa.**
+
+**BUG MEDIO #2 — Overconfidence en park factor vs runs reales**
+- `Pearson(home_park, predicted_total_runs) = 0.4891` — el modelo es muy confiado.
+- `Pearson(home_park, actual_total_runs) = 0.0998` — la realidad tiene correlación ~5× menor.
+- El modelo predice que Coors (1.13) tendrá 13% más runs que un parque neutral, pero los datos
+  muestran solo ~10% de correlación real entre park factor y runs actuales.
+- Consecuencia: el park factor amplifica los λs más de lo que los datos justifican.
+- **Caso extremo Coors:** park=[1.07,1.14] → mean_total_runs=11.12, mean_err=+0.72
+  El modelo aún subestima Coors en 0.72 runs/juego después del factor 1.13.
+
+**BUG BAJO #3 — Park factors estáticos de 2024, no actualizados**
+- STADIUM_DATABASE hardcodeado en el archivo con "FanGraphs 2024 five-year weighted" factors.
+- Usado para 2024, 2025 y 2026 sin actualización.
+- `Sutter Health Park` (A's, desde 2025) tiene factor 1.00 por defecto — sin datos reales.
+
+**BUG BAJO #4 — Roof default-to-closed probablemente causa Bug #1**
+- `if stadium.has_roof and not game_data.get("roof_open", False): roof_closed = True`
+- 8 parques tienen `has_roof=True`: Tropicana, Rogers Centre, Minute Maid, Globe Life,
+  T-Mobile, American Family, loanDepot, Chase Field.
+- En ausencia de `roof_open` explícito en game_data, TODOS se tratan como closed.
+- American Family Field, Chase Field, Globe Life Field frecuentemente juegan con techo abierto.
+- Si `roof_open` nunca llega en game_data, el sistema siempre asume techo cerrado.
+
+**BUG BAJO #5 — STADIUM_DATABASE keyed por nombre de estadio**
+- Si game_data provee nombre distinto (typo, abreviación, nombre viejo), factor = 1.00.
+- No hay lookup alternativo por team_id o park_id de MLB API.
+
+### D. Área oscura
+
+**ÁREA OSCURA #1 — Wind × handedness: ¿alguna vez activa en producción?**
+- Requiere: wind_speed_mph ≥ 10 + roof open + `home_lhb_pct`/`away_lhb_pct` en game_data.
+- Si handedness defaults a `_AVG_LHB_PCT = 0.45` para ambos: delta = 0 → hnd = 0.
+- Max efecto si activa: ±1.5% por lineup (±3.0% diferencial).
+- En el backtest, stage_factors "home_park" == "away_park" en 100% de juegos → handedness
+  tampoco está activando (porque store stage_factors guarda el total_mult pre-handedness, o
+  handedness es siempre 0.0).
+- **Imposible confirmar sin agregar wind_handedness al stage_factors log.**
+
+### E. Evidencia empírica
+
+| Métrica | Valor |
+|---------|-------|
+| Valores únicos de home_park | **12** (igual que STADIUM_DATABASE entries) |
+| Std dentro de cada valor de parque | **0.000000** (weather 100% inerte) |
+| home_park == away_park | **100% de 5,422 juegos** |
+| Pearson(home_park, home_actual_error) | −0.0065 |
+| Pearson(home_park, away_actual_error) | +0.0252 |
+| Pearson(home_park, total_runs_error) | +0.0138 |
+| Pearson(home_park, actual_total_runs) | **+0.0998** |
+| Pearson(home_park, predicted_total)  | **+0.4891** ← model overconfident 5× |
+| Coors Field: mean_err total runs | +0.72 (subestima incluso con factor 1.13) |
+
+### F. Acoplamiento
+
+- Lee: game_data.park.name, game_data.weather (siempre vacío en la práctica)
+- Escribe: lh/la × park_mult (weather inerte)
+- **Importante:** el park factor amplifica los λs ANTES de HFA, Pitcher, Bullpen.
+  Si park=1.10, el HFA engine opera sobre λs ya inflados. Esto amplifica todos los
+  efectos downstream en proporción al park factor — potencial de over-amplification en Coors.
+
+### G. Magic numbers
+
+- `_NEUTRAL_TEMP_F = 72.0`
+- `_TEMP_RATE = 0.005` ("FanGraphs / Codify research" sin URL)
+- Wind rates: `0.020 (out), 0.015 (in), 0.003 (cross)` per 5 mph unit
+- Wind thresholds: `60° (out zone), 120° (in zone)`
+- `_HANDEDNESS_WIND_SCALE = 0.040`
+- `_HANDEDNESS_WIND_MIN_MPH = 10.0`
+- `_AVG_LHB_PCT = 0.45`
+- Rain tiers: `1.0mm, 5.0mm, 10.0mm`; multipliers: `0.99, 0.97, 0.95`
 
 ---
 
@@ -560,6 +672,32 @@ estructural y eliminar el comportamiento errático del bucket <40% sin necesidad
 
 ---
 
+### HIPÓTESIS H2 — BACKTEST CONTAMINADO POR LOOK-AHEAD (Bullpen Engine)
+
+**Estado:** Confirmada. Severidad ALTA.
+
+**Motor afectado:** Bullpen Engine — `season = datetime.now().year` en línea 337.
+
+**Alcance del daño:**
+- 2,429 juegos de 2024 usaron estadísticas Savant de bullpen de **2026**
+- 2,430 juegos de 2025 usaron estadísticas Savant de bullpen de **2026**
+- Solo 563 juegos de 2026 usaron datos del año correcto
+
+**Impacto potencial doble:**
+1. **LOOK-AHEAD BIAS:** el motor "ve" información futura (stats de 2026 para predecir 2024).
+   Si el bullpen de un equipo mejoró entre 2024 y 2026, el sistema sabrá eso de antemano.
+   Esto podría inflar artificialmente la accuracy del backtest de 2024/2025.
+2. **STALE DATA BIAS:** al momento de ejecutar el backtest (Mayo 2026), los datos de 2026
+   solo tienen ~50 juegos jugados. Los juegos de 2024 reciben datos de temporada parcial de 2026.
+
+**Consecuencia:** El Brier=0.24305 que se ha tomado como baseline puede estar inflado.
+El verdadero Brier en producción (donde el motor usaría datos del año correcto) es desconocido.
+
+**Prioridad:** ALTA — afecta toda interpretación de métricas del backtest. Cuando se arregle
+este bug, re-correr backtest completo para calibrar expectativas reales.
+
+---
+
 ## PRIORIZACIÓN DE FIXES
 
 *(Se completa al final del audit)*
@@ -600,7 +738,16 @@ estructural y eliminar el comportamiento errático del bucket <40% sin necesidad
 | Bullpen | composite weights | 0.40/0.30/0.20/0.10 | Ninguna |
 | Bullpen | k_bb scaling | 1.5 | Ninguna |
 | Bullpen | workload tired/rested | 0.012 / 0.005 | Ninguna |
+| Park | _NEUTRAL_TEMP_F | 72.0 | Ninguna |
+| Park | _TEMP_RATE | 0.005 | "FanGraphs/Codify" sin URL |
+| Park | wind rates (out/in/cross) | 0.020 / 0.015 / 0.003 | Ninguna |
+| Park | wind angle zones | 60° / 120° | Ninguna |
+| Park | _HANDEDNESS_WIND_SCALE | 0.040 | Ninguna |
+| Park | _HANDEDNESS_WIND_MIN_MPH | 10.0 | Ninguna |
+| Park | _AVG_LHB_PCT | 0.45 | Ninguna |
+| Park | rain tiers (mm) | 1.0 / 5.0 / 10.0 | Ninguna |
+| Park | rain multipliers | 0.99 / 0.97 / 0.95 | Ninguna |
 
-**Total magic numbers hasta Motor #4: 25**
+**Total magic numbers hasta Motor #5: 34**
 
 **Total magic numbers hasta Motor #3: 19**
