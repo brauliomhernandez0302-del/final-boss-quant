@@ -484,6 +484,12 @@ def run_module(
             _w_pit = _weights.get("pitcher", 1.0)
             lh = _lh_pre * (1.0 + _w_pit * (_raw_h_pit - 1.0))
             la = _la_pre * (1.0 + _w_pit * (_raw_a_pit - 1.0))
+            # TODO(stage_factors_naming): the keys below are semantically inverted.
+            # "home_pitcher" stores the AWAY pitcher's multiplier on λ_home (ratio
+            # lh_after/lh_before, driven by adj_away["total_multiplier"]).
+            # "away_pitcher" stores the HOME pitcher's multiplier on λ_away.
+            # Renaming requires updating backtest_and_retrain.py, residual analysis
+            # scripts, and learning_engine gradient-descent stage keys simultaneously.
             _stage_factors["home_pitcher"] = _raw_h_pit
             _stage_factors["away_pitcher"] = _raw_a_pit
             results['lambdas_history']['pitcher'] = {'lh': lh, 'la': la}

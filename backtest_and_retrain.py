@@ -1086,11 +1086,21 @@ def main() -> None:
     #   2. Pipeline weights — were optimised on Kalman-look-ahead-biased
     #      predictions.  Gradient descent re-learns from clean walk-forward data.
     #
-    #   3. Platt params — were fitted on the old 3-engine pipeline outputs.
-    #      recalibrate_platt() at the end will fit on the new 7-engine p_home_raw.
-    #      Using old params during the forward pass would distort predictions.
+    #   3. Platt params — reset to identity (a=1.0, b=0.0) per season, then
+    #      warm-started from the prior season's fitted params.  This matches
+    #      how production operates: day 1 of season N uses the calibration
+    #      fitted on season N-1.  Without warm-start the backtest Brier
+    #      measures raw MC performance (no Platt applied), which under-reports
+    #      the model's true production accuracy by ~1.4%.
     #
     log.info("Resetting walk-forward learning state for seasons %s …", list(seasons))
+
+    # Capture prior-season Platt params BEFORE reset so warm-start can use them.
+    # Seasons processed in ascending order so each N seeds from N-1's fitted params.
+    _prior_platt: Dict[int, Optional[Dict]] = {}
+    for season in sorted(seasons):
+        _prior_platt[season] = learning.load_state("platt_params", "calibration", season - 1)
+
     n_kal_deleted = learning.reset_kalman_for_seasons(list(seasons))
     n_wt_reset    = learning.reset_pipeline_weights(list(seasons))
     n_plt_deleted = learning.reset_platt_params(list(seasons))
@@ -1098,6 +1108,28 @@ def main() -> None:
         "  Kalman: %d rows deleted | weights: %d seasons reset | Platt: %d rows deleted",
         n_kal_deleted, n_wt_reset, n_plt_deleted,
     )
+
+    # Warm-start each season's Platt with the prior season's fitted params.
+    # Minimum 50 samples required (same threshold as recalibrate_platt).
+    _PLATT_MIN_SAMPLES = 50
+    for season in sorted(seasons):
+        prior = _prior_platt.get(season)
+        if prior and prior.get("n", 0) >= _PLATT_MIN_SAMPLES:
+            learning.save_state(
+                "platt_params", "calibration",
+                {"a": prior["a"], "b": prior["b"], "c": prior.get("c", 0.0), "n": 0},
+                sample_count=0,
+                season=season,
+            )
+            log.info(
+                "  Platt warm-start season %d ← season %d: a=%.4f b=%.4f",
+                season, season - 1, prior["a"], prior["b"],
+            )
+        else:
+            log.info(
+                "  Platt season %d: no prior-season params (n=%d) — using identity defaults",
+                season, prior.get("n", 0) if prior else 0,
+            )
 
     # ── main backtest loop ──────────────────────────────────────────────────
     results: List[Dict] = []
