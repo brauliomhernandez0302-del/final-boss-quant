@@ -9,12 +9,12 @@ Estado: EN PROGRESO
 
 *(Se actualiza después de cada motor)*
 
-- Motores auditados: 3/10
+- Motores auditados: 4/10
 - Bugs CRÍTICOS: 2
-- Bugs MEDIOS: 9
-- Bugs BAJOS: 5
-- Áreas oscuras: 3
-- Magic numbers sin justificación: 13
+- Bugs MEDIOS: 10
+- Bugs BAJOS: 8
+- Áreas oscuras: 4
+- Magic numbers sin justificación: 25
 
 ---
 
@@ -319,7 +319,141 @@ quality_mult = clamp(skill_mult × woba_mult × brl_mult × kbb_mult, [0.70, 1.3
 
 ## MOTOR #4 — BULLPEN ENGINE
 
-Estado: PENDIENTE
+Estado: AUDITADO ✓
+Archivo: `modules/baseball_module/context_engine/bullpen_engine.py`
+
+### A. Interface Contract
+
+- **Entradas:** lh, la (float), game_data (bullpen_away/home, pitcher_away/home, team_ids)
+- **Salidas:** (lh_new, la_new, metadata) con total_mult ∈ [0.90, 1.10]
+- **Orientación (igual que Pitcher Engine):**
+  - Away bullpen → ajusta λ_home
+  - Home bullpen → ajusta λ_away
+- **Posición en pipeline:** PASO 6, después del Pitcher Engine, antes del Contextual
+
+### B. Fórmulas internas
+
+**Tier ERA adjustment (por avg_ips del starter):**
+```
+if avg_ips < 5.5:  tier_era = era + 0.80 × blend   (long relief, peor ERA)
+if avg_ips > 6.5:  tier_era = era - 0.70 × blend   (high leverage, mejor ERA)
+else:              tier_era = era                    (average)
+blend = linear, 0 a 1 en ventana de 1.0-1.5 IP
+```
+
+**Quality composite (4 señales):**
+```
+era_reg   = regress(tier_era, LG_BP_ERA=4.10, tbf, K=250)
+xwoba_reg = regress(xwoba_ag, LG_XWOBA_AG=0.312, savant_pa, K=200)
+k_bb_reg  = regress(k_bb, LG_K_BB=0.162, tbf, K=180)
+barrel_reg = regress(barrel, LG_BARREL=0.088, attempts, K=200)
+
+quality_raw = xwoba_factor×0.40 + k_bb_factor×0.30 + era_factor×0.20 + barrel_factor×0.10
+quality_mult = clamp(quality_raw, [0.75, 1.30])
+```
+
+**Innings weighting:**
+```
+innings_weight = (9.0 - avg_ips) / 9.0          ← clamped avg_ips ∈ [4.0, 8.0]
+total_mult = 1.0 + innings_weight × (raw_mult - 1.0)
+total_mult = clamp(total_mult, [0.90, 1.10])
+```
+
+**Workload fatigue:**
+```
+delta = ip_3d - 9.0
+if delta > 0: workload = min(1.0 + delta×0.012, 1.10)   # tired: +1.2%/IP
+else:         workload = max(1.0 + delta×0.005, 0.97)    # rested: -0.5%/IP (cap -3%)
+```
+
+### C. Bugs encontrados
+
+**BUG MEDIO #1 — Double counting con Pitcher Engine: Pearson r = 0.41**
+- Pearson(home_pitcher_mult, home_bullpen_mult) = **0.4118** — sobre umbral de correlación
+- Pearson(away_pitcher_mult, away_bullpen_mult) = **0.3751** — cercano al umbral
+- Los equipos con starters de alta ERA también tienen bullpens de alta ERA (correlación de
+  calidad de pitching global del equipo). Ambos motores amplifican en la misma dirección
+  el mismo signal subyacente: "este equipo tiene pitching malo".
+- Efecto concreto: cuando home_pitcher mult = 1.10 (mal starter), home_bullpen también
+  será ~1.03-1.06 (mal bullpen). El λ_away recibe doble penalización por la misma causa raíz.
+
+**BUG MEDIO #2 — season = datetime.now().year hardcoded**
+- `season = datetime.now().year` en `adjust_for_bullpen()` — línea 337.
+- Durante backtest de juegos 2024 y 2025, la función carga datos Savant de 2026.
+- El Pitcher Engine y TTE reciben el season correcto por parámetro; el Bullpen Engine no.
+- Impacto en backtest: los 2429 juegos de 2024 y 2430 de 2025 usaron stats de bullpen
+  del año equivocado. Los resultados del backtest están contaminados para esas temporadas.
+
+**BUG BAJO #3 — Thresholds de tier (5.5, 6.5 IP) son magic numbers**
+- `_LONG_RELIEF_IPS_THRESHOLD = 5.5`, `_HIGH_LEVERAGE_IPS_THRESHOLD = 6.5`
+- Comentado como "empirical MLB averages" pero sin fuente ni backtest.
+- Los ERA delta (0.80 y 0.70) tampoco tienen cita.
+
+**BUG BAJO #4 — Workload asimetría sin justificación empírica**
+- Tired: +1.2% por IP sobre la norma (max +10%)
+- Rested: −0.5% por IP bajo la norma (max −3%)
+- El penalty por sobre-uso es 2.4× más fuerte que el bonus por descanso.
+- Sin evidencia empírica de esta asimetría.
+
+**BUG BAJO #5 — Clamp inferior [0.90] nunca activa**
+- El workload bonus máximo es −3% → quality_mult mínimo es 0.75 → raw = 0.75×0.97 = 0.728.
+- Con innings_weight ≤ 0.556 (avg_ips ≥ 4.0): total_mult ≥ 1 + 0.556×(0.728−1) = 0.849.
+- Pero el clamp es [0.90, 1.10], y el mínimo empírico observado es 0.9602.
+- La mitad inferior del clamp ([0.90, 0.96)) nunca se alcanza: 0 juegos.
+- El clamp inferior es efectivamente inasequible dado los inputs normales.
+
+**BUG BAJO #6 — LG_XWOBA_AG=0.312 crea inconsistencia cross-motor**
+- Bullpen Engine usa `_LG_XWOBA_AG = 0.312` (consistente con TTE).
+- Pitcher Engine usa `_LG_XWOBA_ALLOWED = 0.320` (diferente).
+- Un bullpen con xwOBA=0.316 sería castigado por el Bullpen Engine (+1.3% runs)
+  pero un starter con el mismo xwOBA sería considerado mejor que la media por el Pitcher Engine.
+- La inconsistencia crea un sesgo sistemático contra bullpens comparado con starters.
+
+### D. Áreas oscuras
+
+**ÁREA OSCURA #1 — Impacto real del tier adjustment en el backtest**
+- El tier ERA (long relief vs high leverage) se basa en avg_ips del starter del día.
+- avg_ips es promedio de la temporada, no de partidos recientes. Un pitcher que tiene
+  avg_ips=6.0 pero está en racha de 8 innings recibirá tier "average" aunque su bullpen
+  no haya lanzado mucho.
+- ¿El avg_ips estacional es una proxy válida para el dia del juego? No hay análisis.
+
+### E. Evidencia empírica
+
+| Métrica | Valor |
+|---------|-------|
+| home_bullpen: mean / std | 1.0097 / 0.0251 |
+| away_bullpen: mean / std | 1.0095 / 0.0250 |
+| Rango empírico (ambos) | [0.960, 1.100] |
+| Juegos al clamp máximo (1.10) | **25 home / 25 away (0.5%)** |
+| Juegos al clamp mínimo (0.90) | **0** |
+| home_bullpen > 1.0 | 59.6% |
+| Pearson(home_bullpen, home_error) | **+0.0469** (positivo, débil) |
+| Pearson(away_bullpen, away_error) | **+0.0704** (positivo, débil) |
+| Pearson(home_pitcher, home_bullpen) | **+0.4118** ← double counting |
+| Pearson(away_pitcher, away_bullpen) | **+0.3751** ← near threshold |
+| home_bullpen >1.05 → actual_home_err | **+0.342** (dirección CORRECTA) |
+| home_bullpen <0.98 → actual_home_err | **−0.258** (dirección CORRECTA) |
+| away_bullpen >1.05 → actual_away_err | **+0.669** (dirección CORRECTA) |
+
+### F. Acoplamiento
+
+- Lee: lh/la post-Pitcher Engine (Motor #3); avg_ips del starter del Pitcher Engine
+- Escribe: lh/la para Contextual Engine (Motor #8)
+- **Doble-counting confirmado**: Pearson > 0.37 con Pitcher Engine en ambas direcciones
+
+### G. Magic numbers
+
+- `_LG_BP_ERA = 4.10`
+- `_LG_BP_K_PCT = 0.248`, `_LG_BP_BB_PCT = 0.086`
+- `_K_ERA_BP = 250`, `_K_XWOBA_BP = 200`, `_K_K_BB_BP = 180`
+- `_NORMAL_IP_3D = 9.0`
+- `_LONG_RELIEF_ERA_DELTA = 0.80`, `_HIGH_LEVERAGE_ERA_DELTA = 0.70`
+- `_LONG_RELIEF_IPS_THRESHOLD = 5.5`, `_HIGH_LEVERAGE_IPS_THRESHOLD = 6.5`
+- `0.40 / 0.30 / 0.20 / 0.10` (pesos composite)
+- `1.5` (k_bb_factor scaling)
+- `0.012` (workload tired scaling)
+- `0.005` (workload rested scaling)
 
 ---
 
@@ -363,7 +497,47 @@ Estado: PENDIENTE
 
 ## CROSS-CUTTING ISSUES
 
-*(Se completa al final del audit)*
+*(Sección viva — se actualiza con cada motor auditado)*
+
+---
+
+### HIPÓTESIS H1 — CADENA CAUSAL PRINCIPAL (LG_XWOBA → sobre-confianza → bucket <40%)
+
+**Estado:** Activa. Verificar al terminar todos los motores.
+
+**Cadena causal documentada:**
+
+```
+LG_XWOBA inconsistente (TTE=0.312 vs Pitcher=0.320)
+        ↓
+woba_mult sesgado upward en Pitcher Engine
+  · pitcher con xwOBA=0.312 (media TTE) → woba_mult=0.976 (Pitcher lo trata como bueno)
+  · pitcher con xwOBA=0.320 (media Pitcher) → woba_mult=1.000 (neutral)
+  · Gap de 0.008 × 3.0 = 0.024 de sesgo en todo pitcher near-league-avg
+        ↓
+Pitcher Engine sobre-castiga calidad en extremos
+  · Cuando identifica pitcher "bueno" (mult <0.95): reduce λ más de lo justificado
+  · Pearson r ≈ 0 con runs reales — señal no predictiva
+  · home_pitcher: 59.5% de mults > 1.0, mean=1.016 (sesgo upward sistemático)
+        ↓
+Bullpen Engine amplifica en la misma dirección (Pearson r=0.41 con Pitcher)
+  · Doble penalización del mismo signal subyacente: "equipo con pitching malo"
+  · Pero el Bullpen Engine SÍ tiene señal válida (Pearson r=+0.07 con errores reales)
+        ↓
+λ en extremos (juegos muy desiguales) sobre-estimados hacia un lado
+  · El sistema es excesivamente confiado en matchups asimétricos
+  · El bucket <40% tiene predicted=35.4% pero actual=38.4% (+3.0pp)
+  · La sobre-confianza en los extremos es la causa del error sistemático
+```
+
+**Hipótesis de fix:**
+Si se unifica LG_XWOBA a un valor único (0.315 o derivado de datos reales), y se re-calibra
+el Pitcher Engine, la sobre-confianza en extremos debería reducirse sin Platt 2D.
+
+**Nota:** "Si H1 es correcta, los fixes en cadena podrían reducir la sobre-confianza
+estructural y eliminar el comportamiento errático del bucket <40% sin necesidad de Platt 2D."
+
+---
 
 ### Issues pre-identificados (evidencia parcial)
 
@@ -375,11 +549,14 @@ Estado: PENDIENTE
    aprendizaje.
 
 3. **LG_XWOBA inconsistente entre TTE (0.312) y Pitcher Engine (0.320)**: Sesgo sistemático
-   cruzando dos motores.
+   cruzando dos motores. Núcleo de H1.
 
 4. **HFA y Context aparentemente muertos** (stage_factors std=0.0000 en ambos): Si confirmado
    en audits, 2 de 6 stage_factors del gradient descent son constantes → otra razón por la que
    los pesos no aprenden.
+
+5. **Double counting Pitcher + Bullpen** (Pearson r=0.41): ambos motores capturan el mismo
+   signal de calidad de pitching del equipo. Amplificación artificial en matchups desiguales.
 
 ---
 
@@ -412,5 +589,18 @@ Estado: PENDIENTE
 | Pitcher | kbb_mult scaling | 1.5 | Ninguna |
 | Pitcher | form/matchup ERA scaling | 0.06 | Ninguna |
 | Pitcher | era_trend scaling | 0.03 | Ninguna |
+| Bullpen | _LG_BP_ERA | 4.10 | Ninguna |
+| Bullpen | _LG_BP_K_PCT / _BB_PCT | 0.248 / 0.086 | Ninguna |
+| Bullpen | _K_ERA_BP / _K_XWOBA_BP / _K_K_BB_BP | 250 / 200 / 180 | Ninguna |
+| Bullpen | _NORMAL_IP_3D | 9.0 | Ninguna |
+| Bullpen | _LONG_RELIEF_ERA_DELTA | 0.80 | "empirical" sin cita |
+| Bullpen | _HIGH_LEVERAGE_ERA_DELTA | 0.70 | "empirical" sin cita |
+| Bullpen | _LONG_RELIEF_IPS_THRESHOLD | 5.5 | Ninguna |
+| Bullpen | _HIGH_LEVERAGE_IPS_THRESHOLD | 6.5 | Ninguna |
+| Bullpen | composite weights | 0.40/0.30/0.20/0.10 | Ninguna |
+| Bullpen | k_bb scaling | 1.5 | Ninguna |
+| Bullpen | workload tired/rested | 0.012 / 0.005 | Ninguna |
+
+**Total magic numbers hasta Motor #4: 25**
 
 **Total magic numbers hasta Motor #3: 19**
