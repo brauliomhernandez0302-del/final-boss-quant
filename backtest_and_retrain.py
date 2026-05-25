@@ -53,7 +53,8 @@ sys.path.insert(0, str(ROOT))
 
 from math import log as _log, exp as _exp
 from config import DATA_DIR, LEAGUE_AVG_ERA, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP
-from data_fetchers import MLBDataIntegrator, MLBStatsAPI, ParkFactors
+from data_fetchers import MLBDataIntegrator, MLBStatsAPI
+from modules.baseball_module.hfa.park_weather_engine import STADIUM_DATABASE as _STADIUM_DB
 from modules.baseball_module.calibration.learning_engine import LearningEngine
 from modules.baseball_module.hfa.park_weather_engine import adjust_for_park_and_weather
 from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
@@ -299,7 +300,7 @@ def build_game_data(
     away_pitcher_id: Optional[int],
     api: MLBStatsAPI,
     integrator: MLBDataIntegrator,
-    park_factors: ParkFactors,
+    park_factors: Optional[object],
     savant_stats: Optional[Dict[int, Dict]] = None,
     fg_stats: Optional[Dict[int, Dict]] = None,
 ) -> Tuple[Dict, float, float]:
@@ -445,7 +446,8 @@ def build_game_data(
         "home_days_rest": 1,
         "away_days_rest": 1,
     }
-    game_data["park_factor"] = park_factors.get_factor(venue)
+    _stadium = _STADIUM_DB.get(venue)
+    game_data["park_factor"] = _stadium.runs_factor if _stadium else 1.00
 
     return game_data, lh, la
 
@@ -595,12 +597,13 @@ def run_pipeline(
     p_away_mc = mc["p_away"]
 
     # ── Platt calibration (dynamic params from learning engine) ───────────────
+    # Applied asymmetrically — same logic as run_module.py. Symmetric normalization
+    # cancels the b intercept for neutral games, destroying the structural home
+    # advantage that recalibrate_platt() learned.
     _pa, _pb = learning.get_platt_params(season)
-    _p_h = _platt(p_home_mc, _pa, _pb)
-    _p_a = _platt(p_away_mc, _pa, _pb)
-    _total = _p_h + _p_a  # renormalize so home + away = 1.0 exactly
-    p_home_cal = round(_p_h / _total, 5)
-    p_away_cal = round(_p_a / _total, 5)
+    _p_h     = _platt(p_home_mc, _pa, _pb)
+    p_home_cal = round(_p_h, 5)
+    p_away_cal = round(1.0 - _p_h, 5)
 
     return {
         "lh":          round(lh, 4),
@@ -996,7 +999,7 @@ def main() -> None:
     session = requests.Session()
     api = MLBStatsAPI()
     integrator = MLBDataIntegrator()
-    park_factors = ParkFactors()
+    park_factors = None  # park factors now read directly from STADIUM_DATABASE per venue
     cache = DiskCache(CACHE_DIR)
     learning = LearningEngine(db_path=DB_PATH)
 
