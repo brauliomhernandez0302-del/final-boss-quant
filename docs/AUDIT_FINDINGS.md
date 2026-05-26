@@ -9,12 +9,12 @@ Estado: EN PROGRESO
 
 *(Se actualiza después de cada motor)*
 
-- Motores auditados: 9/10
-- Bugs CRÍTICOS: 6
-- Bugs MEDIOS: 14
-- Bugs BAJOS: 18
+- Motores auditados: **10/10 — AUDIT COMPLETO**
+- Bugs CRÍTICOS: 8
+- Bugs MEDIOS: 16
+- Bugs BAJOS: 19
 - Áreas oscuras: 8
-- Magic numbers sin justificación: 58
+- Magic numbers sin justificación: 65
 
 ---
 
@@ -1086,7 +1086,209 @@ enteramente de la calidad de las λ upstream (donde están los problemas reales)
 
 ## MOTOR #10 — VALUE DETECTOR
 
-Estado: PENDIENTE
+Estado: AUDITADO ✓
+Archivo: `core/value_detector.py`
+
+### A. Interface Contract
+
+- **Entrada:** `mc_result` (output Monte Carlo), `odds` (GameOdds con ML/totals/runline/F5),
+  `lh`, `la`, `vig_method`, `fractional_kelly`, `home_samples`, `away_samples`, `total_samples`
+- **Salida:** Dict con `markets` (moneyline, total, runline, first5), `global_recommendation`
+- **Mercados cubiertos:** Full Game ML, Totals O/U, Run Line ±1.5, First 5 Innings (ML + Totals)
+- **Posición:** PASO 9 — último paso, genera recomendaciones accionables
+
+### B. Fórmulas internas
+
+```
+# EV (de core/utils.py)
+ev = model_prob * (odds - 1) - (1 - model_prob)
+
+# Edge vs mercado (Pinnacle preferred)
+edge = (model_prob - fair_prob) * 100  # percentage points
+
+# Confidence (función del ev_std del CI de MC)
+confidence = 1 / (1 + abs(ev_std / max(abs(ev), 0.1)))
+
+# Composite score
+composite = (ev_score*0.40 + conf_score*0.25 + edge_score*0.15 +
+             kelly_score*0.10 + sharpe_score*0.10) * market_penalty
+
+# Kelly fraction
+kelly = clip(full_kelly * KELLY_FRACTION, MIN_KELLY, MAX_KELLY)
+full_kelly = (model_prob * odds - 1) / (odds - 1)
+
+# Tier thresholds
+ULTRA: composite>=75 AND ev>=15.0
+HIGH:  composite>=60 AND ev>=8.0
+MEDIUM: composite>=45 AND ev>=4.0
+SLIGHT: composite>=30 AND ev>=1.0
+```
+
+### C. Bugs encontrados
+
+**BUG #1 (CRÍTICO): confidence siempre ≈ 1.0 — MIN_CONFIDENCE=0.65 nunca es binding**
+
+```python
+confidence = 1 / (1 + abs(ev_stats['ev_std'] / max(abs(ev_stats['ev']), 0.1)))
+```
+
+`ev_std = (ev_upper - ev_lower) / 4`, donde `ev_upper/lower` vienen del CI de Monte Carlo.
+Con 1M+ sims, SE(p_home) ≈ 0.0005, por lo que el CI de probabilidad es ±0.001.
+El CI de EV es proporcional: para p=0.52 y odds=1.95, `ev_std ≈ 0.00096`.
+
+Demostración para una apuesta marginal (p=0.52, odds=1.95, ev=0.014 = 1.4%):
+```
+ev_std ≈ 0.000955
+confidence = 1/(1 + |0.000955/max(0.014, 0.1)|) = 1/(1 + 0.00955) = 0.9905
+```
+
+**`confidence ≈ 0.99` para cualquier apuesta con ≥1M sims.**
+
+- `MIN_CONFIDENCE = 0.65` en config.py actúa como filtro en `classify_value_tier()`.
+- **Nunca elimina ninguna apuesta** — toda apuesta con ev>0 pasa el filtro de confianza.
+- El término `conf_score * 0.25` en composite_score es una constante efectiva ≈ 25, no discrimina.
+- La confianza mide **precisión de simulación, no incertidumbre del modelo**.
+  Un pitcher con 3 IP de estadísticas tiene el mismo confidence que uno con 200 IP.
+
+**BUG #2 (CRÍTICO): Magnitud de edge inflada vs performance real**
+
+Análisis empírico de edge vs outcome en 4,694 juegos con Pinnacle:
+
+| Edge vs Pinnacle | N | Model prob | Pinnacle prob | Actual win% |
+|-----------------|---|------------|--------------|-------------|
+| >10% | 149 | 60.3% | 46.2% | **51.7%** |
+| 5-10% | 563 | 58.3% | 51.2% | **52.0%** |
+| 2-5% | 681 | 55.6% | 52.2% | **54.9%** |
+| 0-2% | 502 | 53.8% | 52.9% | 55.8% |
+
+Observaciones:
+- En el bucket de **mayor edge del modelo (>10%)**: el modelo dice 60.3%, la realidad es 51.7%.
+  El modelo sobre-estima su ventaja en **8.6 puntos porcentuales**.
+- En el **bucket 5-10%**: modelo dice 58.3%, realidad 52.0% — sobre-estimación de 6.3pp.
+- El edge *directional* tiene algún valor (se bet correctamente la dirección), pero el
+  edge *magnitudinal* es sistémicamente inflado.
+- **Mean edge = -1.68%**: el modelo está en promedio 1.68pp por detrás del mercado.
+
+Win rate del "best-edge side" por bucket absoluto:
+| |edge| bucket | N | Win rate del lado favorecido |
+|---|---|---|
+| < 2% | 1063 | 50.0% |
+| 2-5% | 1498 | 51.6% |
+| 5-8% | 1031 | **47.0%** |
+| ≥ 8% | 1102 | 49.7% |
+
+El bucket 5-8% produce win rate de **47.0% — peor que aleatorio**. El modelo en este rango
+está siendo "confiado en la dirección equivocada". Esto es inconsistente con el ROI positivo
+del backtest y sugiere que el ROI viene de factores distintos al edge direccional puro.
+
+**BUG #3 (MEDIO): `analyze_f5=False` hardcodeado — mercado F5 nunca analizado en producción**
+
+```python
+# run_module.py línea 814:
+value_results = evaluate_value_ultra(
+    ...
+    analyze_f5=False,  # F5 disabled in production call
+)
+```
+
+El Value Detector tiene todo el código para analizar F5 ML y F5 Totals (clase `GameOdds`,
+función `analyze_first5()`), pero está desactivado en la llamada de producción. Las cuotas
+de F5 presentes en `_fetched_odds` nunca se procesan. La firma de `GameOdds` acepta
+`f5_ml_home`, `f5_ml_away`, etc., pero la instancia se construye sin pasarlos.
+
+**Implicación:** Todo el mercado F5 (probablemente el menos eficiente) se ignora en producción.
+
+**BUG #4 (MEDIO): Sin distinción entre edge vs Pinnacle y edge vs libro blando**
+
+Cuando no hay Pinnacle (757/4,694 juegos = 16.1%):
+```python
+devigged = adjust_for_vig({'home': odds.ml_home, 'away': odds.ml_away}, method=vig_method)
+fair_home, fair_away = devigged['home'], devigged['away']
+```
+
+Los libros blandos tienen 5-8% de vig vs 2-3% de Pinnacle. Al remover el vig de un libro
+blando, la "fair prob" resultante es menos precisa. El edge calculado contra esta referencia
+inferior puede ser 2-3pp mayor que el edge real vs mercado eficiente.
+
+No se hace log de `fair_source` en las apuestas reportadas ni se ajusta el tier threshold
+para reflejar la calidad inferior de la referencia de mercado.
+
+### D. Lo que funciona correctamente
+
+**CORRECTO #1: Devig de Pinnacle con método multiplicativo es estándar de la industria**
+- `_pinnacle_fair_probs()` usa el método multiplicativo, el más común y robusto para ML.
+- La priorización de Pinnacle como referencia de fair-line es la decisión correcta.
+
+**CORRECTO #2: F5 totals usa Poisson CDF (exacto) en ausencia de samples**
+```python
+p_over = float(1 - poisson.cdf(line_floor, lam_total))
+```
+Para líneas sin samples, el CDF de Poisson es exactamente correcto (total = sum de dos Poisson
+independientes ≈ Poisson(lh+la)). Es mejor que una aproximación normal.
+
+**CORRECTO #3: Run Line usa Skellam (diferencia de Poisson) cuando no hay samples**
+```python
+p_home_cover = float(1 - skellam.cdf(1, lh, la))
+```
+La distribución Skellam es la distribución exacta de la diferencia de dos Poisson — correcto.
+
+**CORRECTO #4: Ranking global por `ev * confidence * kelly * 100` tiene lógica coherente**
+El weighted score combina magnitud del EV, confianza y fracción de bankroll — aunque
+confidence siempre ≈ 0.99, los otros dos factores sí discriminan.
+
+### E. Análisis empírico
+
+**Distribución del edge:**
+```
+mean edge = -1.68%   mean_abs_edge = 5.44%
+min_edge = -52.82%   max_edge = +56.4%
+```
+
+- 40.4% de juegos tienen edge positivo vs Pinnacle (modelo favorece un lado vs Pinnacle)
+- 59.6% tienen edge negativo (Pinnacle está más confiado que el modelo)
+- La asimetría confirma que el modelo subestima sistemáticamente las probabilidades extremas del mercado
+
+**Positive vs negative edge outcomes:**
+| Tipo | N | Home win% |
+|------|---|-----------|
+| edge positivo (modelo vs Pinnacle) | 1895 | 54.04% |
+| edge negativo | 2799 | 53.05% |
+Diferencia: **+0.99 pp** — señal existe pero es muy débil.
+
+**Tier ULTRA threshold (ev≥15.0):**
+Dado que `EV = p*(odds-1) - (1-p)` y los odds de Pinnacle son ≈ 1.90-2.10:
+Para alcanzar ev=15.0%, se necesita p≈0.57+ con odds=2.0. Esto requiere un edge de ~7pp vs
+un mercado con implied prob ≈ 50%. En 5,422 juegos, bets de tier ULTRA serían extremadamente
+raras y probablemente falsas señales de los motores contaminados.
+
+### F. Interacciones con otros motores
+
+- Recibe p_home (post-Platt, Motor #9) como probabilidad del modelo.
+- El edge = p_home - pinnacle_fair_prob. Si Platt sesgó p_home upward (+0.009 promedio),
+  el edge estimado se infla ~0.9pp en promedio.
+- Los motores muertos (#5, #6, #7, #8) significan que las λ upstream son esencialmente
+  función de TTE + Pitcher (señal débil) + Bullpen (contaminado). El Value Detector amplifica
+  estas señales débiles y produce recomendaciones de apuesta con más confianza aparente de la justificada.
+- Con confidence ≈ 0.99 para todo, el composite_score colapsa a:
+  `composite ≈ (ev_score*0.40 + 25*0.25 + edge_score*0.15 + kelly_score*0.10 + sharpe_score*0.10) * market_penalty`
+  donde el term `conf_score*0.25 = ~25` es constante.
+
+### G. Resumen de severidad
+
+| # | Severidad | Descripción |
+|---|-----------|-------------|
+| BUG #1 | CRÍTICO | confidence ≈ 0.99 siempre — MIN_CONFIDENCE nunca filtra nada |
+| BUG #2 | CRÍTICO | Edge magnitud inflada 6-9pp en los mejores buckets; win rate 47% en edge 5-8% |
+| BUG #3 | MEDIO | analyze_f5=False en producción — mercado F5 completamente desactivado |
+| BUG #4 | MEDIO | Sin distinción de calidad entre edge vs Pinnacle y edge vs libro blando |
+| BUG #5 | BAJO | composite_score weights (0.40/0.25/0.15/0.10/0.10) son magic numbers |
+
+**Diagnóstico global:** El Value Detector tiene buena arquitectura multi-mercado y las fórmulas
+de EV/Kelly son correctas. El problema fundamental es que sus inputs (p_home) son señales débiles
+amplificadas por motores muertos y su métrica de calidad (confidence) está desconectada de la
+incertidumbre real del modelo. Genera "alta confianza" en bets que el mercado ya tiene correctamente
+priced. El ROI positivo del backtest sugiere que hay alguna señal real, pero el sistema presenta
+esa señal con mucha más certeza de la que merece.
 
 ---
 
@@ -1255,7 +1457,75 @@ este bug, re-correr backtest completo para calibrar expectativas reales.
 
 ## PRIORIZACIÓN DE FIXES
 
-*(Se completa al final del audit)*
+*(Basado en impacto esperado × esfuerzo de implementación × riesgo de regresión)*
+
+### TIER 1 — Fixes inmediatos (bajo riesgo, impacto directo, 1 línea de código)
+
+| # | Motor | Fix | Impacto esperado |
+|---|-------|-----|-----------------|
+| F1 | Bullpen (#4) | `season = game_data.get('season', datetime.now().year)` | Elimina look-ahead bias; re-run backtest obligatorio |
+| F2 | HFA (#7) | Calcular `miles_traveled_away` desde ciudades (geodésico) en lugar de setdefault(0) | Activa motor de travel fatigue — ~−0.0003 Brier |
+| F3 | Context (#8) | Poblar `back_to_back_away/home` desde schedule API en data_fetchers | Activa B2B motor — ~−0.0002 Brier |
+| F4 | Value (#10) | `analyze_f5=True` + pasar cuotas F5 en GameOdds | Activa mercado F5 en producción |
+| F5 | MC (#9) | `rho_game = -0.008` (valor empírico) en vez de -0.06 | Corrige varianza de totals; impacto en win prob marginal |
+
+### TIER 2 — Fixes con retorno significativo (esfuerzo bajo-medio)
+
+| # | Motor | Fix | Impacto esperado |
+|---|-------|-----|-----------------|
+| F6 | DEE (#6) | Implementar fetcher de DER/OAA en data_fetchers (MLB API + Savant) | Mayor impacto potencial — ~−0.0005 Brier si señal es real |
+| F7 | Park (#5) | Conectar OpenWeather fetcher existente a `game_data['weather']` | Activa componente de clima — ~−0.0002 Brier |
+| F8 | Kalman (#2) | Inicializar `_stage_factors` ANTES de la defensa adjustment | Permite gradient descent ver defense_home/away |
+| F9 | Kalman (#2) | Investigar/arreglar gradient descent (todos los pesos = 1.000) | Potencialmente el cambio de mayor impacto a largo plazo |
+| F10 | Value (#10) | Reemplazar confidence con métrica de incertidumbre real (bootstrap sobre λ inputs) | Hace que composite_score discrimine mejor |
+
+### TIER 3 — Mejoras de calidad y consistencia (esfuerzo medio)
+
+| # | Motor | Fix | Impacto esperado |
+|---|-------|-----|-----------------|
+| F11 | TTE/Pitcher/Bullpen | Unificar `LG_XWOBA`: un solo valor consistente (0.315?) | Elimina gap de 0.008 que sesga pitcher vs bateador |
+| F12 | TTE (#1) | Validar empíricamente `plate_disc_mult=3.5` con datos 2024-2026 | Reduce sobre-influencia del plate discipline |
+| F13 | MC (#9) | `lambda_noise` adaptativo: función de PA/IP disponibles del pitcher | Ruido epistémico refleja calidad de datos real |
+| F14 | MC (#9) | Validar/derivar `F5_SCALE` de datos históricos F5 reales | Reemplaza 0.575 hardcodeado |
+| F15 | Value (#10) | Flag/downweight bets sin Pinnacle data (16% de juegos) | Reduce false positives cuando no hay referencia de mercado |
+
+### TIER 4 — Refactors estratégicos (esfuerzo alto, alto impacto potencial)
+
+| # | Motor | Fix | Impacto esperado |
+|---|-------|-----|-----------------|
+| F16 | Todos | Re-run backtest limpio después de F1 (Bullpen season fix) | Obtener Brier real sin look-ahead; posible degradación de ~5-15% en métricas |
+| F17 | Kalman (#2) | Rediseñar gradient descent — diagnosticar por qué pesos no convergen | Más impacto en largo plazo que cualquier otro fix |
+| F18 | Pitcher (#3) | Calibrar PITCHER_ENGINE_WEIGHTS empíricamente (Pearson ≈ 0) | Mejorar señal de pitchers — actualmente casi nula |
+
+### SECUENCIA RECOMENDADA
+
+```
+SPRINT 1 (1-2 días): F1, F2, F3, F4, F5 → re-run backtest → nuevo baseline limpio
+SPRINT 2 (3-5 días): F6, F7, F8 → re-run backtest → cuantificar valor de motores muertos
+SPRINT 3 (1-2 semanas): F9 (diagnóstico gradient) → F17 (rediseño si es necesario)
+SPRINT 4 (ongoing): F11-F15 → calibración fina
+```
+
+**Nota crítica:** Re-correr el backtest después de F1 es OBLIGATORIO antes de interpretar
+cualquier mejora. El Brier=0.243 actual puede estar artificialmente inflado por look-ahead.
+
+---
+
+## TABLA RESUMEN FINAL
+
+| Motor | Archivo | Bugs CRÍTICOS | Bugs MEDIOS | Bugs BAJOS | Estado operacional |
+|-------|---------|--------------|-------------|-----------|-------------------|
+| #1 TTE | true_talent_engine.py | 0 | 1 | 2 | **Activo** — señal moderada |
+| #2 Kalman | learning_engine.py | 2 | 2 | 1 | **Parcialmente muerto** — gradient descent inerte |
+| #3 Pitcher | pitcher_engine.py | 0 | 3 | 3 | **Activo** — señal casi nula (Pearson≈0) |
+| #4 Bullpen | bullpen_engine.py | 1 | 2 | 1 | **Activo** — señal positiva, contaminado look-ahead |
+| #5 Park+Weather | park_weather_engine.py | 0 | 2 | 2 | **Park activo** / **Weather MUERTO** |
+| #6 DEE | defensive_efficiency_engine.py | 0 | 1 | 1 | **COMPLETAMENTE MUERTO** — data pipeline faltante |
+| #7 HFA | hfa_engine.py | 0 | 2 | 1 | **Crowd activo** (señal mínima) / **Travel MUERTO** |
+| #8 Contextual | contextual_engine.py | 0 | 2 | 2 | **FUNCIONALMENTE MUERTO** (activa 0.26% juegos) |
+| #9 Monte Carlo | simulator.py | 1 | 2 | 1 | **Activo** — mejor implementado del pipeline |
+| #10 Value Detector | value_detector.py | 2 | 2 | 1 | **Activo** — confianza inflada, F5 desactivado |
+| **TOTAL** | | **6→8** | **16** | **15→19** | **5/10 motores efectivamente activos** |
 
 ---
 
@@ -1334,5 +1604,14 @@ este bug, re-correr backtest completo para calibrar expectativas reales.
 | MC | n_min (early stop) | 500_000 | Ninguna |
 
 **Total magic numbers hasta Motor #9: 58**
+| Value | MIN_CONFIDENCE | 0.65 | Nunca activa — confidence siempre ≈ 0.99 |
+| Value | MIN_EDGE | 0.5 pp | Ninguna |
+| Value | composite weights | 0.40/0.25/0.15/0.10/0.10 | Ninguna |
+| Value | tier thresholds | 75/60/45/30 (composite) | Ninguna |
+| Value | ev_tier thresholds | 15/8/4/1 (%) | Ninguna |
+| Value | CI divisor | 4 (para ev_std) | Convención estadística vaga |
+| Value | kelly divisor | 0.1 en max(abs(ev), 0.1) | Ninguna |
+
+**Total magic numbers hasta Motor #10: 65**
 
 **Total magic numbers hasta Motor #3: 19**
