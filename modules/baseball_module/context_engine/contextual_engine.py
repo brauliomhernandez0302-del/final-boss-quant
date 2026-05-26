@@ -111,13 +111,19 @@ class ContextualEngine:
         """
         Determine rest multiplier for one team.
 
-        Priority: rest_days field (API-populated integer) → back_to_back flag.
-        Default rest_days = 1 when absent (neutral — optimal MLB rhythm).
+        Priority:
+          1. back_to_back_flag=True → rest=0 (B2B penalty), regardless of rest_days.
+             The flag is set from schedule data and is more specific than the
+             default rest_days=1 placeholder.  An explicit API rest_days=0 is
+             consistent; rest_days=1 is the default and should be overridden.
+          2. rest_days from team dict (API-populated) for non-B2B cases.
+          3. Absent/None → default 1 (optimal MLB rhythm).
         """
         rest = team.get("rest_days")
 
-        # Infer B2B from explicit flag when rest_days is absent or defaulted
-        if rest is None and back_to_back_flag:
+        # B2B flag overrides the rest_days default (1) but not a confirmed
+        # multi-day rest from the API (rest_days >= 2 wins on rest).
+        if back_to_back_flag and (rest is None or rest <= 1):
             rest = 0
 
         rest = int(rest) if rest is not None else 1
