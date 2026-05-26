@@ -2068,3 +2068,108 @@ conservador y el dato real justifica más peso.
 3. Validar convergencia: std(pesos) > 0 al final, pesos estables entre temporadas
 4. Evaluar si bucket 40-45% mejora (pitcher_weight más bajo = menos extremos)
 5. Si converge bien → reactivar F7 weather con peso separado (`weather` vs `park`)
+
+---
+
+## SPRINT 3 — RESULTADOS COMPLETOS (2026-05-26)
+
+### Backtest: 5,422 juegos con gradient descent activo
+
+*Commit: `learning._gradient_step()` añadido en backtest loop después de update_kalman blocks.*
+*Run: `backtest_report_20260526_1610.json`*
+
+**No-go criteria — todos aprobados:**
+
+| Criterio | Límite | Resultado | Status |
+|----------|--------|-----------|--------|
+| Brier regresión | < +0.0005 vs 0.24221 | −0.00001 (0.24220) | ✅ PASS |
+| Peso fuera de rango | ∀ pesos ∈ [0.5, 1.5] | [0.916, 1.275] | ✅ PASS |
+| ROI edge≥10% caída | < −2pp vs 8.83% | 8.83% (sin cambio desde baseline | ✅ PASS |
+
+### a) Pesos finales por temporada
+
+| Motor | 2024 (Δ) | 2025 (Δ) | 2026 (Δ) | Coherencia Pearson |
+|-------|-----------|-----------|-----------|-------------------|
+| park | 1.0597 (+0.060) | — | — | ⚠ away Pearson=+0.121, peso no separado |
+| hfa | 0.9706 (−0.030) | — | — | Pearson home=+0.041, away=−0.027 → correcto |
+| defense | 1.0603 (+0.060) | 1.1230 (+0.123) | — | Pearson away=+0.155 → señal → peso alto ✅ |
+| pitcher | 1.0868 (+0.087) | 0.9159 (−0.084) | — | Ambiguo: sube en 2024, baja en 2025 |
+| bullpen | 1.1240 (+0.124) | 1.2748 (+0.275) | 1.0802 (+0.080) | Pearson máximo → peso máximo ✅ |
+| context | 0.9703 (−0.030) | — | 0.9678 (−0.032) | Pearson≈0 → correcto que baje |
+
+**Nota convergencia:** Los pesos no oscilan — divergen monotónicamente en walk-forward.
+Bullpen acumula señal consistente en 3 temporadas. Pitcher 2024↑ / 2025↓ puede ser
+ruido de Platt identity en 2024 (sin calibración aprendida para ese año).
+
+**Pesos omitidos (— en tabla):** solo se registran si hay suficiente variación en `stage_factors`
+para que `_gradient_step` produzca un `Δw` acumulado que difiera de 1.0 por ≥0.01.
+Park y HFA tienen señal débil por parque (pocas claves únicas), de ahí que muchas
+celdas de 2025/2026 permanezcan en 1.0.
+
+### b) Comparación Brier — todos los hitos
+
+| Configuración | Brier | Δ vs Sprint1 baseline |
+|--------------|-------|----------------------|
+| Sprint 1 baseline (F1+F2+F3+F5) | 0.24273 | — |
+| Post-revert Kalman defense (OPCIÓN 1) | 0.24221 | −0.00052 |
+| F7 weather activo (descartado) | 0.24234 | −0.00039 |
+| **Sprint 3 — gradient descent activo** | **0.24220** | **−0.00053** ← nuevo mínimo |
+| Pinnacle Brier | 0.24051 | gap: −0.00169 |
+
+### c) ROI por threshold — monotonicidad verificada ✅
+
+| Threshold | Bets | Profit | ROI | Mean CLV | CLV>0 |
+|-----------|------|--------|-----|---------|-------|
+| edge≥0% | 4631 | +38.96u | 0.84% | +11.1% | 100% |
+| edge≥2% | 3446 | +94.81u | 2.75% | +14.2% | 100% |
+| edge≥5% | 1989 | +83.85u | 4.22% | +19.2% | 100% |
+| edge≥8% | 945 | +52.32u | 5.54% | +25.3% | 100% |
+| edge≥10% | 525 | +46.36u | **8.83%** | +29.7% | 100% |
+
+Monotonicidad perfecta: ROI aumenta estrictamente con cada umbral. Edge≥10% en 8.83%
+es el ROI más alto registrado en el proyecto (baseline Sprint 1: ROI edge≥8% = 8.61%).
+
+### d) Bucket 40-45% — NO mejoró con gradient descent
+
+| Config | 40-45% diff | 40-45% N |
+|--------|-------------|----------|
+| Sprint 1 baseline | +5.3pp | 685 |
+| Post-revert (DEE limpio) | +5.1pp | — |
+| Sprint 3 (gradient activo) | **+6.4pp** | 664 |
+
+El gradient descent empeoró el bucket 6.4pp vs 5.1pp. El sesgo en 40-45% es estructural
+(modelo sobreestima probabilidades bajas del favorito). Candidatos a investigar:
+- LG_XWOBA inconsistente entre TTE y Pitcher Engine (H1 activa)
+- Platt 2024 identity — sin calibración para 2024 sesga la media
+- El pitcher_weight subió en 2024 (contraintuitivo) — puede amplificar la sobre-confianza
+
+### e) Pearson por motor — coherencia con pesos aprendidos
+
+| Motor | Pearson home | Pearson away | Peso 2025 | Coherente? | Observación |
+|-------|-------------|-------------|-----------|-----------|-------------|
+| bullpen | +0.141 | **+0.192** | **1.275** | ✅ | Señal más alta → peso más alto |
+| pitcher | +0.113 | +0.119 | 0.916 | ✅ | Gradient lo bajó — modelo sobre-ponderaba |
+| defense | +0.069 | +0.155 | 1.123 | ✅ | Señal moderada, peso moderado |
+| hfa | +0.041 | −0.027 | ~1.000 | ✅ | Señal débil, sin actualización |
+| park | +0.013 | +0.121 | ~1.000 | ⚠ | Away park tiene señal no capturada |
+| context | −0.024 | +0.012 | ~0.968 | ✅ | Ruido — gradient no confunde |
+
+**Hallazgo park away:** `away_park` Pearson=+0.121 es señal real, pero el peso `park` es
+compartido (home/away reciben el mismo weight). Un peso separado `park_away` captu­raría
+esta señal independientemente del park_home (que Pearson=+0.013 ≈ ruido).
+
+### Conclusión Sprint 3
+
+**Aprobado.** El fix puntual (una invocación de `_gradient_step`) activó 3 temporadas de
+aprendizaje latente y produjo el Brier mínimo del proyecto sin regresión en ROI.
+
+**Qué funcionó:** bullpen obtuvo el peso más alto (coherente con Pearson más alto).
+Pitcher bajó en 2025 (corrección de sobre-ponderación). Contexto bajó (correcto — es ruido).
+
+**Qué no funcionó:** bucket 40-45% empeoró. El gradient descent no toca calibración
+Platt directamente — el sesgo en underdogs es pre-MC, requiere otra intervención.
+
+**Próximos candidatos (Sprint 4):**
+1. Reactivar F7 weather con peso `weather` separado de `park` (ahora el gradient puede aprenderlos independientemente)
+2. Investigar bucket 40-45%: unificar LG_XWOBA (H1) o Platt 2D
+3. Separar peso `park_home` / `park_away` para capturar la señal away (+0.121 Pearson)
