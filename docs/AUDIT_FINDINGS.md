@@ -1921,12 +1921,49 @@ Todos los fixes de Fase B se medirán contra este baseline.
 - OAA omitido (requiere Baseball Savant CSV, motor degrada a DER-only gracefully)
 - Coincide exactamente con el path live (`MLBDataIntegrator.enrich_game()` líneas 2390-2406)
 
-**Backtest F8+F6+baseline fix corriendo** — resultados pending.
+**Resultados backtest F8+F6 (5,422 juegos — commit 6e4fd3d):**
+
+| Métrica | Sprint1 baseline | F8+F6 | Δ | No-go |
+|---------|-----------------|-------|---|-------|
+| Brier | 0.24273 | **0.24238** | −0.00035 | ✅ PASS |
+| Log-loss | 0.67831 | **0.67782** | −0.00049 | ✅ mejora |
+| ROI edge≥5% | 3.29% | 3.78% | +0.49pp | ✅ |
+| ROI edge≥8% | **8.61%** | **3.76%** | **−4.85pp** | ⚠️ ALARMA |
+| ROI edge≥10% | 4.35% | 4.80% | +0.45pp | ✅ |
+| λ_home | 4.362 | 4.432 | +0.070 | — |
+| λ_away | 4.254 | 4.393 | **+0.139** | ⚠️ inflado |
+| λ_diff (h-a) | +0.108 | +0.039 | −0.069 | — |
 
 **Criterios de validación F6:**
-- std(away_defense) > 0.005 → DEE activo ✓ (unit test: 0.018 aprox)
-- Pearson(away_defense, actual_away_runs) < -0.02 → señal correcta (pending backtest)
-- Brier no-go: Δ < +0.0005 vs Sprint 1 baseline (0.24273)
+- std(away_defense) = **0.015 > 0.005** ✅ DEE activo (95.7% non-neutral)
+- Pearson(away_defense, actual_away_runs) = **+0.149** ← target < −0.02 ⚠️
+- Brier no-go: −0.00035 ✅ PASS (nueva Brier mínima del sistema)
+
+**Diagnóstico Pearson (no es bug — es convención de signo):**
+
+El criterio "Pearson < −0.02" asumía una convención donde `away_defense > 1.0 = buen campo`. En nuestra convención (DEE): `away_defense < 1.0 = buen campo → fewer runs`. Por tanto:
+- away_defense bajo → buen home defense → pocos runs reales → **Pearson POSITIVO** (correcto físicamente)
+- El signo esperado es +, no −. El criterio escrito estaba invertido.
+- Pearson = +0.149 (p≈0) confirma DEE tiene señal real en dirección correcta.
+
+**ALARMA REAL: λ_away inflation (+0.139, +3.3%)**
+
+Causa raíz identificada: **Kalman defense_home double-counting con Pitcher Engine**
+- Kalman `defense_home` trackea runs-allowed del home team (incluye pitching + fielding)
+- Pitcher Engine ya captura ERA/FIP (el componente pitching puro)
+- Al añadir Kalman defense al backtest (F8), el overlap se vuelve visible
+- DEE contribuye solo +0.6% de sesgo (LG_DER=0.715 ligeramente sobre media real de equipos)
+- El +2.7% restante viene del Kalman defense_home
+
+**Impacto del double-counting:**
+- ROI edge≥8% colapsa: −4.85pp (908→1082 bets, pero las 174 nuevas son ruido)
+- λ_diff (home−away) cae de +0.108 → +0.039 (ventaja local casi eliminada)
+- Calibración <40% se deteriora: +2.1pp → +6.8pp
+
+**DECISIÓN PENDIENTE PARA EL USUARIO:**
+1. Mantener Kalman defense_home en producción + backtest (acepta overlap, Brier mejoró)
+2. Remover Kalman defense_home de producción Y backtest (vuelve a Sprint1 ROI)
+3. Continuar a F7 (aceptando el ROI degradado) y evaluar post-Sprint2
 
 ### SIGUIENTE PASO: SPRINT 2 o DIAGNÓSTICO ROI
 
