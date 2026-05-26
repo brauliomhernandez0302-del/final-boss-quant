@@ -432,6 +432,12 @@ def run_module(
             la = _integrator.get_team_lambda(away_team, away_rpg, team_id=away_team_id)
             logger.info(f"   λ_base (legacy): λ_h={lh:.3f}  λ_a={la:.3f}")
 
+        # Stage factors tracker — populated per pipeline step for gradient descent.
+        # Initialized here (before Kalman) so Kalman defense is captured as a stage.
+        # Stores RAW engine ratios (weight=1.0 equivalent) so _gradient_step can
+        # reconstruct the relationship between stage adjustment and prediction error.
+        _stage_factors: Dict[str, float] = {}
+
         # ── Kalman-adjusted base lambdas ──────────────────────────────────
         # Offensive Kalman: pulls each team's λ toward its observed run-scoring rate.
         lh = _learning.get_kalman_lambda_adjustment(home_team, "offense_home", _season, lh)
@@ -453,8 +459,14 @@ def run_module(
         # rate at their own park. Empirically orthogonal to Pitcher/Bullpen engines
         # (Pearson r=0.23 and r=-0.04 respectively). Corrects Cleveland from -11pp to
         # +2.7pp and improves 60-70% calibration bucket from -2.4pp to +0.3pp.
+        _la_pre_kal_def = la
         la = _learning.get_kalman_lambda_adjustment(home_team, "defense_home", _season, la)
         # defense_away intentionally omitted — see NOTE(Fase 2.1) above.
+
+        # Capture Kalman defense stage factors (convention: away_defense = ratio on la).
+        # DEE section (PASO 6) will overwrite these when DEE data is present.
+        _stage_factors["home_defense"] = 1.0  # lh unchanged; defense_away Kalman disabled
+        _stage_factors["away_defense"] = la / _la_pre_kal_def if _la_pre_kal_def else 1.0
 
         results['lambdas_history']['base'] = {'lh': lh, 'la': la}
         logger.info(f"   Lambda base (Kalman off+def): λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})")
@@ -470,11 +482,6 @@ def run_module(
             logger.info(
                 f"   Bias correction: λ_h×{_home_bias:.4f}={lh:.3f}  λ_a×{_away_bias:.4f}={la:.3f}"
             )
-
-        # Stage factors tracker — populated per pipeline step for gradient descent.
-        # Stores RAW engine ratios (weight=1.0 equivalent) so _gradient_step can
-        # reconstruct the relationship between stage adjustment and prediction error.
-        _stage_factors: Dict[str, float] = {}
 
         # Learned pipeline weights — scale each stage's adjustment.
         # Formula: λ_out = λ_in × (1 + w × (raw_ratio − 1))
@@ -624,25 +631,28 @@ def run_module(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         _def_home = game_data.get('defense_home') or {}
         _def_away = game_data.get('defense_away') or {}
-        _lh_pre = lh; _la_pre = la
-        _raw_h_def = _raw_a_def = 1.0
+        _lh_pre = lh
         if _def_home or _def_away:
             logger.info("\n🛡️  PASO 6: Defensive Efficiency Engine...")
             lh_def, la_def, def_meta = adjust_for_defense(lh, la, game_data)
+            # away_defense ratio uses _la_pre_kal_def baseline so stage factor captures
+            # combined Kalman+DEE defense signal for gradient descent.
             _raw_h_def = lh_def / _lh_pre if _lh_pre else 1.0
-            _raw_a_def = la_def / _la_pre if _la_pre else 1.0
+            _raw_a_def = la_def / _la_pre_kal_def if _la_pre_kal_def else 1.0
+            _w_def = _weights.get("defense", 1.0)
+            lh = _lh_pre * (1.0 + _w_def * (_raw_h_def - 1.0))
+            la = _la_pre_kal_def * (1.0 + _w_def * (_raw_a_def - 1.0))
+            _stage_factors['home_defense'] = _raw_h_def   # DEE overrides Kalman baseline
+            _stage_factors['away_defense'] = _raw_a_def   # combined Kalman+DEE ratio
             results['metadata']['defense'] = def_meta
             logger.info(
-                f"   ✅ Defense adjusted: λ_h={lh_def:.3f}  λ_a={la_def:.3f}  "
+                f"   ✅ Defense adjusted: λ_h={lh:.3f}  λ_a={la:.3f}  "
                 f"(home_def×λ_a={def_meta['home_mult_on_away']:.4f}  "
                 f"away_def×λ_h={def_meta['away_mult_on_home']:.4f})"
             )
-        _w_def = _weights.get("defense", 1.0)
-        lh = _lh_pre * (1.0 + _w_def * (_raw_h_def - 1.0))
-        la = _la_pre * (1.0 + _w_def * (_raw_a_def - 1.0))
+        # else: Kalman defense stage factors set above remain in _stage_factors;
+        # lambda already has Kalman defense applied, no gradient weight needed.
         results['lambdas_history']['defense'] = {'lh': lh, 'la': la}
-        _stage_factors['home_defense'] = _raw_h_def
-        _stage_factors['away_defense'] = _raw_a_def
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 7: HFA ENGINE (asimétrico: crowd home + travel away)

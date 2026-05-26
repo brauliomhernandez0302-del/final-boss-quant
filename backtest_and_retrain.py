@@ -584,6 +584,16 @@ def run_pipeline(
     lh = learning.get_kalman_lambda_adjustment(home_team, "offense_home", season, lh)
     la = learning.get_kalman_lambda_adjustment(away_team, "offense_away", season, la)
 
+    # Kalman defense (matches run_module.py Fase 2.1: only defense_home applied).
+    # Snapshot la before defense Kalman so DEE section can compute combined ratio.
+    _la_pre_kal_def = la
+    la = learning.get_kalman_lambda_adjustment(home_team, "defense_home", season, la)
+    # defense_away intentionally omitted — see run_module.py NOTE(Fase 2.1)
+
+    # Capture Kalman defense as initial stage factors (DEE overwrites when active).
+    _sf["home_defense"] = 1.0  # lh unchanged; defense_away Kalman disabled
+    _sf["away_defense"] = la / _la_pre_kal_def if _la_pre_kal_def else 1.0
+
     # ── Learned pipeline weights ──────────────────────────────────────────────
     _w = learning.get_pipeline_weights(season)
 
@@ -617,19 +627,19 @@ def run_pipeline(
     _sf["home_hfa"] = _raw_h
     _sf["away_hfa"] = _raw_a
 
-    # ── PASO 4: Defensive Efficiency ──────────────────────────────────────────
-    _lh_pre, _la_pre = lh, la
+    # ── PASO 4: Defensive Efficiency (DEE overrides Kalman baseline when active) ─
+    _lh_pre = lh
     if game_data.get("defense_home") or game_data.get("defense_away"):
         lh_def, la_def, _ = adjust_for_defense(lh, la, game_data)
         _raw_h = lh_def / _lh_pre if _lh_pre else 1.0
-        _raw_a = la_def / _la_pre if _la_pre else 1.0
-    else:
-        _raw_h = _raw_a = 1.0
-    _w_def = _w.get("defense", 1.0)
-    lh = _lh_pre * (1.0 + _w_def * (_raw_h - 1.0))
-    la = _la_pre * (1.0 + _w_def * (_raw_a - 1.0))
-    _sf["home_defense"] = _raw_h
-    _sf["away_defense"] = _raw_a
+        # away_defense ratio vs pre-Kalman-defense baseline captures combined signal
+        _raw_a = la_def / _la_pre_kal_def if _la_pre_kal_def else 1.0
+        _w_def = _w.get("defense", 1.0)
+        lh = _lh_pre * (1.0 + _w_def * (_raw_h - 1.0))
+        la = _la_pre_kal_def * (1.0 + _w_def * (_raw_a - 1.0))
+        _sf["home_defense"] = _raw_h   # DEE overrides Kalman baseline
+        _sf["away_defense"] = _raw_a   # combined Kalman+DEE ratio
+    # else: Kalman defense stage factors set above remain; lambda already correct
 
     # ── PASO 5: Pitcher Engine ────────────────────────────────────────────────
     _lh_pre, _la_pre = lh, la
