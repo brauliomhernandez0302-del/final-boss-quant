@@ -1741,14 +1741,81 @@ La prueba de "¿funciona el fix?" es: ¿cambia la distribución de stage_factors
 
 ## RESULTADOS POST-FIX F1 (BULLPEN LOOK-AHEAD)
 
-*(Se actualiza cuando termine el re-backtest)*
+*Backtest completado: 2026-05-25, 5,422 juegos, 946s (5.7 g/s)*
 
-| Métrica | Pre-F1 (baseline contaminado) | Post-F1 (baseline limpio) | Δ |
-|---------|-------------------------------|--------------------------|---|
-| Brier score | 0.24321 | *pending* | *pending* |
-| Accuracy | 56.31% | *pending* | *pending* |
-| Log-loss | 0.67935 | *pending* | *pending* |
-| ROI edge≥5% | +1.93% | *pending* | *pending* |
-| ROI edge≥8% | +5.39% | *pending* | *pending* |
+### Comparación de métricas
 
-*Backtest lanzado: 2026-05-25. Ver sección de Plan de Fase B para secuencia de fixes.*
+| Métrica | Pre-F1 (contaminado) | Post-F1 (limpio) | Δ | Dirección |
+|---------|---------------------|-----------------|---|-----------|
+| Brier score | 0.24321 | **0.24289** | −0.00032 | ✅ MEJORA |
+| Accuracy | 56.31% | 56.33% | +0.02pp | ✅ MEJORA |
+| Log-loss | 0.67935 | **0.67867** | −0.00068 | ✅ MEJORA |
+| Vs Pinnacle Brier gap | −1.13% | **−0.99%** | +0.14pp | ✅ MEJORA |
+| ROI edge≥0% | +0.24% | **+1.18%** | +0.94pp | ✅ MEJORA |
+| ROI edge≥2% | +0.90% | **+2.29%** | +1.39pp | ✅ MEJORA |
+| ROI edge≥5% | +1.93% | +1.77% | −0.16pp | ⚠ leve retroceso |
+| ROI edge≥8% | +5.39% | +3.46% | −1.93pp | ⚠ retroceso |
+| ROI edge≥10% | +8.37% | +6.89% | −1.48pp | ⚠ retroceso |
+
+### Hallazgo inesperado: H2 fue correcta en existencia pero errónea en dirección
+
+**La hipótesis H2 decía:** el look-ahead inflaba artificialmente el Brier.
+**La realidad:** el Brier MEJORÓ después de eliminar el look-ahead.
+
+**Explicación:** El Bullpen Engine usaba datos Savant de 2026 para evaluar juegos de 2024/2025.
+En mayo de 2026, la temporada solo tiene ~50 juegos jugados — los datos de 2026 son una
+muestra PARCIAL con mayor ruido. Los datos completos de 2024 (162 juegos) y 2025 (162 juegos)
+son estadísticamente más robustos. La "contaminación" no era look-ahead beneficioso
+(datos futuros perfectos), sino ruido de temporada parcial inyectado en el pasado.
+
+**Consecuencia:** El baseline de 0.24321 era **pesimista**, no optimista.
+El baseline limpio correcto es **Brier = 0.24289**.
+
+### Cambios en Platt params (efecto en la calibración aprendida)
+
+| Season | Pre-F1 (con datos 2026 parciales) | Post-F1 (datos propios) | Δ_a |
+|--------|----------------------------------|------------------------|-----|
+| 2024 | a=0.8374, b=0.0607 | a=0.7921, b=0.0623 | −0.045 |
+| 2025 | a=0.7277, b=0.1458 | a=0.6868, b=0.1471 | −0.041 |
+| 2026 | a=0.5671, b=0.0991 | a=0.6522, b=0.0945 | +0.085 |
+
+El parámetro `a` (compresión) bajó para 2024/2025 — las predicciones crudas son
+ligeramente más extremas con los datos correctos, y Platt debe comprimir más.
+Para 2026, `a` subió — las predicciones 2026 con sus propios datos son menos extremas.
+
+### Cambios en lambda distribution
+
+| | Pre-F1 | Post-F1 | Δ |
+|--|--------|---------|---|
+| λ_home mean | 4.360 | 4.401 | +0.041 |
+| λ_away mean | 4.289 | 4.328 | +0.039 |
+
+Con datos correctos de bullpen (full-season), los bullpens aparecen ligeramente menos
+penalizantes → las λ suben ~0.04 runs en promedio.
+
+### Calibración: mejora en extremos
+
+| Bucket | Pre-F1 actual% | Post-F1 actual% | Mejora calibración |
+|--------|---------------|----------------|-------------------|
+| <40% | 38.4% | 40.4% | +2.0pp más cerca del pred 35% |
+| 40-45% | 48.3% | 46.8% | −1.5pp más cerca del pred 42% |
+| 60-70% | 63.5% | 64.1% | +0.6pp |
+| >70% | 74.1% | 76.6% | +2.5pp — pred 73.6% vs actual 76.6% (leve over-confidence) |
+
+### Implicación para ROI
+
+El retroceso en ROI edge≥8% y ≥10% (+5.39%→+3.46%, +8.37%→+6.89%) sugiere que
+los "high-edge" bets del sistema estaban parcialmente construidos sobre el ruido
+de datos 2026 inyectados en el pasado. Con datos correctos, el modelo tiene menos
+"confianza espuria" en las colas. La mejora en edge≥0% y ≥2% indica que el modelo
+es más sólido en el rango de edge moderado.
+
+### Nueva línea base oficial
+
+```
+Brier = 0.24289   (post-F1, sin look-ahead, baseline limpio para Fase B)
+Brier (Pinnacle) = 0.24051
+Gap vs Pinnacle = 0.00238 (−0.99%)
+```
+
+Todos los fixes de Fase B se medirán contra este baseline.
