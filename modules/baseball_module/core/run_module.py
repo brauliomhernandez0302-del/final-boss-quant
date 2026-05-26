@@ -433,7 +433,6 @@ def run_module(
             logger.info(f"   λ_base (legacy): λ_h={lh:.3f}  λ_a={la:.3f}")
 
         # Stage factors tracker — populated per pipeline step for gradient descent.
-        # Initialized here (before Kalman) so Kalman defense is captured as a stage.
         # Stores RAW engine ratios (weight=1.0 equivalent) so _gradient_step can
         # reconstruct the relationship between stage adjustment and prediction error.
         _stage_factors: Dict[str, float] = {}
@@ -443,30 +442,19 @@ def run_module(
         lh = _learning.get_kalman_lambda_adjustment(home_team, "offense_home", _season, lh)
         la = _learning.get_kalman_lambda_adjustment(away_team, "offense_away", _season, la)
 
-        # NOTE(Fase 2.1): solo defense_home se aplica. defense_away se intentó pero
-        # se removió por causar regresión en bucket <40% y Brier global.
-        # Diagnóstico empírico: defense_away tiene overlap parcial con Pitcher Engine
-        # y Bullpen Engine cuando el equipo visitante es fuerte (correlación Pearson
-        # r=0.25 con away_pitcher_mult, asimétricamente más alta en matchups
-        # desiguales). Las 5,422 muestras del backtest mostraron Brier +0.00014 y
-        # regresión en bucket <40% de -1.1pp → -3.0pp.
+        # REVERTIDO (Sprint 2 F8+F6 backtest, commit ad908c5):
+        # Kalman defense_home was applied here in Fase 2.1 and removed again after
+        # empirical validation on 5,422 games showed it double-counts with the Pitcher
+        # Engine. The apparent Pearson orthogonality (r=0.23 in earlier tests) was an
+        # artifact of the train/test inconsistency — backtest did not apply it, so
+        # Pitcher Engine appeared independent. Once both paths were aligned (F8), the
+        # double-counting inflated λ_away by +3.3% and collapsed ROI edge≥8% by -4.85pp.
+        # Cleveland bias (previously attributed to this Kalman) will be re-examined
+        # via team-level bias correction or DEE when OAA becomes available.
+        # See AUDIT_FINDINGS.md § "Sprint 2 F8+F6" for full diagnosis.
         #
-        # DEFERRED: Milwaukee/Cardinals/Rays con bias persistente: probable necesidad
-        # de "road performance modifier" o componente no-Poisson. NO atacar ahora.
-        # Pendiente: audit interno de cada engine después de Fase 3.
-        #
-        # defense_home: pulls away team's λ toward the home team's observed runs-allowed
-        # rate at their own park. Empirically orthogonal to Pitcher/Bullpen engines
-        # (Pearson r=0.23 and r=-0.04 respectively). Corrects Cleveland from -11pp to
-        # +2.7pp and improves 60-70% calibration bucket from -2.4pp to +0.3pp.
-        _la_pre_kal_def = la
-        la = _learning.get_kalman_lambda_adjustment(home_team, "defense_home", _season, la)
-        # defense_away intentionally omitted — see NOTE(Fase 2.1) above.
-
-        # Capture Kalman defense stage factors (convention: away_defense = ratio on la).
-        # DEE section (PASO 6) will overwrite these when DEE data is present.
-        _stage_factors["home_defense"] = 1.0  # lh unchanged; defense_away Kalman disabled
-        _stage_factors["away_defense"] = la / _la_pre_kal_def if _la_pre_kal_def else 1.0
+        # defense_away was also tried and removed (see original NOTE Fase 2.1):
+        # overlap with Pitcher/Bullpen engines at Pearson r=0.25.
 
         results['lambdas_history']['base'] = {'lh': lh, 'la': la}
         logger.info(f"   Lambda base (Kalman off+def): λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})")
