@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -136,7 +137,9 @@ class HistoricalWeatherFetcher:
 
         lat, lon = coords
         start_date = f"{season}-03-01"
-        end_date   = f"{season}-11-30"
+        # Cap end_date at today — Open-Meteo archive API rejects future dates
+        _season_end = date(season, 11, 30)
+        end_date = min(_season_end, date.today()).strftime("%Y-%m-%d")
 
         try:
             resp = requests.get(
