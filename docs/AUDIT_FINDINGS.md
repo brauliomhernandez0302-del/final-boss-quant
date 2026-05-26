@@ -1615,3 +1615,140 @@ cualquier mejora. El Brier=0.243 actual puede estar artificialmente inflado por 
 **Total magic numbers hasta Motor #10: 65**
 
 **Total magic numbers hasta Motor #3: 19**
+
+---
+
+## LECCIONES ESTRUCTURALES DEL AUDIT
+
+*(Patrones meta-arquitecturales que trascienden bugs individuales)*
+
+---
+
+### A. DOCSTRINGS QUE MIENTEN
+
+El audit identificó **4 casos de docstrings que describen comportamientos que no ocurren en el código actual.** Este patrón es más peligroso que el código sin documentar: crea falsa confianza y hace que los bugs sean invisibles.
+
+| Motor | Docstring / comentario dice | Realidad del código |
+|-------|---------------------------|---------------------|
+| HFA (#7) | `travel_fatigue` está descrito como un componente activo que "penaliza al equipo visitante por fatiga de viaje" | `miles_traveled_away = 0` hardcodeado → siempre retorna 0.0 |
+| Context (#8) | Docstring: "PASO 7 — aplica después de Bullpen Engine" | Corre en PASO 3, antes de Park, HFA, Pitcher y Bullpen |
+| MC (#9) | Docstring: "lambda_noise adaptativo (0.04–0.08) según calidad de datos" | `lambda_noise = 0.05` constante, pasada como default, no se ajusta |
+| Kalman (#2) | Comentario: "pipeline weights aprendidos por gradient descent" | Todos los pesos = 1.000 tras 5,422 juegos — GD completamente inerte |
+
+**Lección:** Cualquier componente con un docstring que describe una capacidad "adaptativa", "dinámica" o "aprendida" debe verificarse empíricamente antes de confiar en él. Las palabras que funcionan como red flag: *adaptive*, *learned*, *calibrated*, *empirically derived*, *dynamic*, *walk-forward*.
+
+---
+
+### B. DATOS HARDCODEADOS A 0 / FALSE (el patrón setdefault)
+
+El pipeline tiene un mecanismo de "seguridad" que en realidad mata motores: `game_data.setdefault(key, 0)` en `run_module.py` **antes** de que cualquier fetcher tenga la oportunidad de poblar esos campos.
+
+**Variables bloqueadas por setdefault (run_module.py líneas 263-265 + build_game_data):**
+
+| Variable | Valor forzado | Motor que depende | Componente muerto |
+|----------|--------------|-------------------|------------------|
+| `miles_traveled_away` | 0 | HFA Engine (#7) | Travel fatigue |
+| `time_zones_crossed_away` | 0 | HFA Engine (#7) | Travel fatigue |
+| `back_to_back_away` | False | Contextual (#8) | B2B penalty |
+| `back_to_back_home` | *(nunca poblado)* | Contextual (#8) | B2B penalty |
+| `defense_home` / `defense_away` | *(nunca en game_data)* | DEE (#6) | Todo el motor |
+| `game_data['weather']` | `{}` / nunca poblado | Park+Weather (#5) | Componente weather |
+| `season` | *(faltaba — bug F1)* | Bullpen Engine (#4) | Usaba año actual |
+
+**Raíz del problema:** Los datos ausentes se tratan como "sin datos = valor neutral" en lugar de "sin datos = componente no disponible". La diferencia es enorme: un valor 0 activa la lógica del motor y produce un resultado silenciosamente incorrecto; un `None` o campo ausente debería desactivar el motor y logearlo.
+
+**Patrón recomendado para fase B:**
+```python
+# En lugar de:
+game_data.setdefault('miles_traveled_away', 0)
+
+# Hacer:
+game_data['miles_traveled_away'] = _calculate_travel_miles(away_city, home_city)
+# Y en el engine:
+if game_data.get('miles_traveled_away') is None:
+    log.debug("miles_traveled_away not available — skipping travel fatigue")
+    return lh, la, {}
+```
+
+---
+
+### C. MÉTRICAS QUE NO MIDEN LO QUE PARECEN
+
+El sistema tiene tres métricas de calidad internas que están desconectadas de lo que intentan medir:
+
+#### C1. `confidence` ≈ 0.99 para todo (Value Detector)
+
+**Qué parece medir:** incertidumbre del modelo sobre la probabilidad de que gane el equipo.
+**Qué mide realmente:** precisión de la simulación Monte Carlo.
+
+Con 1M+ sims, SE(p_home) ≈ 0.0005 siempre. El CI de EV es inevitablemente estrecho.
+`confidence ≈ 1/(1 + 0.01) = 0.99` sin importar si el pitcher tiene 200 IP o 2 IP de historia.
+
+Un pitcher con 3 aperturas en su rookie year recibe la misma `confidence` que Max Fried.
+**El filtro `MIN_CONFIDENCE = 0.65` nunca elimina ninguna apuesta.**
+
+#### C2. `edge` mide diferencia con "fair-implied market", no edge real
+
+**Qué parece medir:** ventaja porcentual del modelo sobre el mercado eficiente.
+**Qué mide realmente:** diferencia entre `p_home` (post-Platt) y la probabilidad implícita de Pinnacle devigged.
+
+Problemas con esta definición:
+1. **`p_home` contiene Platt bias (+0.009 promedio upward)** → el edge se infla ~0.9pp sistemáticamente.
+2. **16% de juegos usan libro blando como referencia** (Pinnacle no disponible) → edge inflado 2-4pp adicionales.
+3. **Los motores muertos no contribuyen señal** pero sí generan varianza en λ → edge ruido.
+4. **Empíricamente:** En el bucket `|edge| 5-8%`, el win rate del lado favorecido = **47.0%** (peor que random). El edge no es predictivo en ese rango.
+
+#### C3. `composite_score` con `conf_score` constante no discrimina
+
+**Qué parece medir:** score multidimensional que combina EV, confianza, edge, Kelly y Sharpe.
+**Qué mide realmente:** `(ev_score×0.40 + 25×0.25 + edge_score×0.15 + kelly×0.10 + sharpe×0.10) × market_penalty`
+
+El término de confianza (25% del score) es una constante efectiva ≈ 25 puntos para todos los bets.
+El composite_score colapsa a 75% de su diseño original, con el 25% de "discriminación por confianza" cero.
+
+#### C4. `pipeline_weights` "aprendidos" son constantes 1.0
+
+**Qué parece medir:** importancia relativa de cada componente del pipeline, actualizada por gradient descent.
+**Qué mide realmente:** un vector de unos. El gradient descent tiene un bug de implementación que mantiene todos los pesos en 1.000 indefinidamente.
+
+La consecuencia es que el "sistema de aprendizaje" del pipeline es una ilusión:
+el pipeline aplica los 12 stage factors como si tuvieran el mismo peso siempre,
+ignorando la información de 5,422 juegos de resultados que debería haber optimizado esos pesos.
+
+---
+
+### D. IMPLICACIÓN SISTÉMICA: EL MODELO ES MÁS SIMPLE DE LO QUE PARECE
+
+La combinación de los tres patrones anteriores (docstrings que mienten, datos hardcodeados a 0, métricas que no miden) produce un sistema que:
+
+- **En papel:** 10 motores especializados con gradient descent, Kalman filtering, bivariate Poisson Monte Carlo, bootstrap CI, Platt calibration walk-forward, y 6 dimensiones de análisis de valor.
+
+- **En práctica:** TTE (simple) + Pitcher Engine (señal débil) + Bullpen (con look-ahead hasta F1) + Park factor estático + Monte Carlo (buen implementación) + Platt calibration (funcional desde 2025) + Value Detector con confianza siempre alta.
+
+**Esta no es una crítica del diseño.** El diseño es ambicioso y correcto. La ejecución tiene brechas entre intención y realidad que se pueden cerrar sistemáticamente. El valor latente documentado (−0.0013 a −0.0028 Brier si se activan los motores muertos) representa la diferencia entre el sistema tal como existe y el sistema tal como fue diseñado.
+
+---
+
+### E. REGLA DE ORO PARA LA FASE B
+
+> **Antes de implementar cualquier fix: verificar empíricamente que el componente a arreglar produce std > 0 en el stage_factor correspondiente.**
+
+Un motor que produce siempre el mismo valor (std = 0) no aporta señal.
+Un fix que cambia el código pero no cambia la distribución del output no hace nada.
+La prueba de "¿funciona el fix?" es: ¿cambia la distribución de stage_factors en el backtest?
+
+---
+
+## RESULTADOS POST-FIX F1 (BULLPEN LOOK-AHEAD)
+
+*(Se actualiza cuando termine el re-backtest)*
+
+| Métrica | Pre-F1 (baseline contaminado) | Post-F1 (baseline limpio) | Δ |
+|---------|-------------------------------|--------------------------|---|
+| Brier score | 0.24321 | *pending* | *pending* |
+| Accuracy | 56.31% | *pending* | *pending* |
+| Log-loss | 0.67935 | *pending* | *pending* |
+| ROI edge≥5% | +1.93% | *pending* | *pending* |
+| ROI edge≥8% | +5.39% | *pending* | *pending* |
+
+*Backtest lanzado: 2026-05-25. Ver sección de Plan de Fase B para secuencia de fixes.*
