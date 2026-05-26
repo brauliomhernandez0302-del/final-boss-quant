@@ -1837,11 +1837,70 @@ Todos los fixes de Fase B se medirán contra este baseline.
 - B2B away (ciudad distinta + jugó ayer): 727 juegos (13.4%) ✓ >150 threshold
 - B2B home (ciudad distinta + jugó ayer): 275 juegos (5.1%) ✓ >150 threshold
 
-*(Resultados del backtest — pending)*
+**Resultados backtest definitivos (5,422 juegos — F1+F2+F3+F3b+F4+F5):**
 
-| Métrica | Baseline F1 | Post-Sprint1 | Δ | No-go si Δ > |
-|---------|-------------|-------------|---|--------------|
-| Brier score | 0.24289 | *pending* | *pending* | +0.0005 |
-| std(away_hfa) | ~0.0 | *pending* | — | debe ser > 0.001 |
-| n_games_B2B_away | 0 | 727 | +727 | — |
-| Accuracy | 56.33% | *pending* | — | — |
+| Métrica | Baseline F1 | Post-Sprint1 | Δ | No-go si Δ > | Status |
+|---------|-------------|-------------|---|--------------|--------|
+| Brier score (model) | 0.24307 | **0.24273** | −0.00034 | +0.0005 | ✅ PASS |
+| Log-loss | 0.67911 | **0.67831** | −0.00080 | — | ✅ mejora |
+| Accuracy | 56.27% | **56.27%** | 0.0 | — | neutral |
+| ROI edge≥5% | 0.79% | **3.29%** | +2.50pp | — | ✅ mejora |
+| ROI edge≥8% | 7.77% | **8.61%** | +0.84pp | — | ✅ mejora |
+| λ_home mean | 4.360 | **4.362** | +0.002 | — | estable |
+| λ_away mean | 4.289 | **4.254** | −0.035 | — | ✅ travel/B2B activos |
+| λ diff (h-a) | +0.071 | **+0.108** | +0.037 | — | ✅ asymmetry creció |
+
+**Validación criterios Sprint 1:**
+
+| Criterio | Esperado | Resultado | Status |
+|----------|----------|-----------|--------|
+| std(away_hfa) > 0.001 | > 0.001 | 0.004631 | ✅ travel activo |
+| B2B away games > 200 | > 200 | 727 (13.4%) | ✅ B2B activo |
+| B2B home games | — | 275 (5.1%) | ✅ |
+| Brier no-go (Δ < +0.0005) | < 0.24357 | 0.24273 | ✅ PASS |
+| Rust context (×0.980) | — | 0 juegos* | ⚠️ sin datos rest≥3 |
+
+*La fuente de `rest_days` en backtest siempre es `_default_team_dict(rest_days=1)`. Rust requeriría API real con rest_days≥3. En live sí aplica cuando el API lo devuelve.
+
+**Activación contextual verificada en DB:**
+
+| Motor | Juegos no-neutros | % | Antes F3b |
+|-------|------------------|---|-----------|
+| home_context B2B (×0.960) | 275 | 5.1% | 0 (0.0%) |
+| away_context B2B (×0.960) | 727 | 13.4% | 11 (0.2%) |
+
+**Calibración post-Sprint 1:**
+
+| Bucket | N | Pred% | Actual% | Diff |
+|--------|---|-------|---------|------|
+| <40% | 524 | 35.5% | 37.6% | +2.1% |
+| 40-45% | 685 | 42.7% | 48.0% | +5.3% ⚠️ |
+| 45-50% | 980 | 47.5% | 49.6% | +2.1% |
+| 50-55% | 1125 | 52.5% | 52.4% | −0.1% |
+| 55-60% | 1019 | 57.3% | 55.6% | −1.7% |
+| 60-70% | 935 | 63.8% | 64.1% | +0.3% |
+| >70% | 154 | 73.4% | 76.6% | +3.2% |
+
+**Nota:** Bucket 40-45% sobre-predice underdogs por +5.3pp — candidato a investigar en Sprint 2.
+
+**Por temporada:**
+
+| Temporada | N | Accuracy | Brier |
+|-----------|---|----------|-------|
+| 2024 | 2429 | 57.23% | 0.24215 |
+| 2025 | 2430 | 55.80% | 0.24274 |
+| 2026 | 563 | 54.17% | 0.24518 |
+
+*2026 tiene Brier más alto — muestra parcial (~35% de temporada) y Platt aún sin convergir con datos suficientes.*
+
+**Conclusión Sprint 1:** ✅ Todos los criterios de no-go superados. Pipeline Sprint 1 completo y validado.
+
+---
+
+## SIGUIENTE PASO: SPRINT 2 o DIAGNÓSTICO ROI
+
+Con Sprint 1 validado, opciones:
+1. **Sprint 2** — F6 (DEE fetcher real), F7 (Weather fetcher real), F8 (Kalman ordering fix)
+2. **Diagnóstico ROI** — Bucket 40-45% desviación +5.3pp; analizar si hay over/under-fitting por posición del underdoor
+
+Criterio de decisión: si ROI edge≥8% baja en próxima validación live → priorizar diagnóstico.
