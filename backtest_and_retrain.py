@@ -146,6 +146,95 @@ TEAM_IDS: Dict[str, int] = {
     "Washington Nationals": 120,
 }
 
+# ── F2: Team city coordinates (lat, lon) and timezone offset (UTC hours) ──────
+# Used to compute geodesic travel distance and time-zone crossings for the
+# away team before each game.  Coordinates are city-centre; tz_offset is the
+# standard (non-DST) UTC offset — crossing is always the absolute difference,
+# which under-counts by at most 1 when one city observes DST and the other
+# doesn't (acceptable approximation).
+TEAM_CITY_COORDS: Dict[str, Tuple[float, float]] = {
+    "Arizona Diamondbacks":   (33.445, -112.067),   # Phoenix — MST (no DST)
+    "Atlanta Braves":         (33.891, -84.468),    # Cumberland/Atlanta — EST
+    "Baltimore Orioles":      (39.284, -76.622),    # Baltimore — EST
+    "Boston Red Sox":         (42.347, -71.097),    # Boston — EST
+    "Chicago Cubs":           (41.948, -87.656),    # Chicago — CST
+    "Chicago White Sox":      (41.830, -87.634),    # Chicago — CST
+    "Cincinnati Reds":        (39.097, -84.506),    # Cincinnati — EST
+    "Cleveland Guardians":    (41.496, -81.685),    # Cleveland — EST
+    "Colorado Rockies":       (39.756, -104.994),   # Denver — MST
+    "Detroit Tigers":         (42.339, -83.049),    # Detroit — EST
+    "Houston Astros":         (29.757, -95.355),    # Houston — CST
+    "Kansas City Royals":     (39.051, -94.480),    # Kansas City — CST
+    "Los Angeles Angels":     (33.800, -117.883),   # Anaheim — PST
+    "Los Angeles Dodgers":    (34.074, -118.240),   # Los Angeles — PST
+    "Miami Marlins":          (25.778, -80.220),    # Miami — EST
+    "Milwaukee Brewers":      (43.028, -87.971),    # Milwaukee — CST
+    "Minnesota Twins":        (44.982, -93.278),    # Minneapolis — CST
+    "New York Mets":          (40.757, -73.846),    # New York — EST
+    "New York Yankees":       (40.829, -73.926),    # New York — EST
+    "Athletics":              (37.752, -122.201),   # Oakland — PST
+    "Oakland Athletics":      (37.752, -122.201),   # Oakland — PST
+    "Sacramento Athletics":   (38.572, -121.467),   # Sacramento — PST
+    "Philadelphia Phillies":  (39.906, -75.167),    # Philadelphia — EST
+    "Pittsburgh Pirates":     (40.447, -80.006),    # Pittsburgh — EST
+    "San Diego Padres":       (32.707, -117.157),   # San Diego — PST
+    "San Francisco Giants":   (37.778, -122.389),   # San Francisco — PST
+    "Seattle Mariners":       (47.591, -122.332),   # Seattle — PST
+    "St. Louis Cardinals":    (38.623, -90.193),    # St. Louis — CST
+    "Tampa Bay Rays":         (27.768, -82.653),    # St. Petersburg — EST
+    "Texas Rangers":          (32.751, -97.083),    # Arlington — CST
+    "Toronto Blue Jays":      (43.641, -79.389),    # Toronto — EST
+    "Washington Nationals":   (38.873, -77.008),    # Washington DC — EST
+}
+
+# Standard UTC offset (hours, non-DST) — used for timezone-crossing count only
+TEAM_TZ_OFFSET: Dict[str, int] = {
+    "Arizona Diamondbacks":   -7,   # MST — no DST year-round
+    "Atlanta Braves":         -5,   "Baltimore Orioles":      -5,
+    "Boston Red Sox":         -5,   "Chicago Cubs":           -6,
+    "Chicago White Sox":      -6,   "Cincinnati Reds":        -5,
+    "Cleveland Guardians":    -5,   "Colorado Rockies":       -7,
+    "Detroit Tigers":         -5,   "Houston Astros":         -6,
+    "Kansas City Royals":     -6,   "Los Angeles Angels":     -8,
+    "Los Angeles Dodgers":    -8,   "Miami Marlins":          -5,
+    "Milwaukee Brewers":      -6,   "Minnesota Twins":        -6,
+    "New York Mets":          -5,   "New York Yankees":       -5,
+    "Athletics":              -8,   "Oakland Athletics":      -8,
+    "Sacramento Athletics":   -8,   "Philadelphia Phillies":  -5,
+    "Pittsburgh Pirates":     -5,   "San Diego Padres":       -8,
+    "San Francisco Giants":   -8,   "Seattle Mariners":       -8,
+    "St. Louis Cardinals":    -6,   "Tampa Bay Rays":         -5,
+    "Texas Rangers":          -6,   "Toronto Blue Jays":      -5,
+    "Washington Nationals":   -5,
+}
+
+
+def _geodesic_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Haversine great-circle distance in miles."""
+    R = 3958.8  # Earth radius in miles
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _travel_stats(away_team: str, home_team: str) -> Tuple[float, int]:
+    """
+    Returns (miles_traveled, time_zones_crossed) for the away team traveling
+    to the home team's city.  Falls back to (0, 0) for unknown teams.
+    """
+    ac = TEAM_CITY_COORDS.get(away_team)
+    hc = TEAM_CITY_COORDS.get(home_team)
+    if not ac or not hc:
+        return 0.0, 0
+    miles = _geodesic_miles(ac[0], ac[1], hc[0], hc[1])
+    atz = TEAM_TZ_OFFSET.get(away_team, 0)
+    htz = TEAM_TZ_OFFSET.get(home_team, 0)
+    tz_cross = abs(htz - atz)
+    return round(miles, 1), tz_cross
+
+
 TEAM_VENUES: Dict[str, str] = {
     "Arizona Diamondbacks": "Chase Field",
     "Atlanta Braves": "Truist Park",
@@ -440,10 +529,12 @@ def build_game_data(
         "away_pitcher_stats": away_ps,
         "bullpen_home": home_bp,
         "bullpen_away": away_bp,
-        # neutral defaults (no per-game travel/rest data in backtest)
-        "miles_traveled_away": 0,
-        "time_zones_crossed_away": 0,
+        # F2: geodesic travel distance and timezone crossings for away team
+        "miles_traveled_away": (_ts := _travel_stats(away_name, home_name))[0],
+        "time_zones_crossed_away": _ts[1],
+        # F3: B2B flags populated externally in the main loop (needs schedule context)
         "back_to_back_away": False,
+        "back_to_back_home": False,
         "home_days_rest": 1,
         "away_days_rest": 1,
     }
@@ -1137,6 +1228,13 @@ def main() -> None:
     n_ok = n_err = 0
     t0 = time.time()
 
+    # F3: track last game date AND venue per team to detect meaningful B2B.
+    # "Meaningful B2B" = played yesterday AND changed cities (overnight travel),
+    # as opposed to within-series consecutive games in the same venue (no extra
+    # fatigue beyond the normal 3-4 game road-trip rhythm).
+    # Key: team name → (last_date "YYYY-MM-DD", last_venue str)
+    _team_last_game: Dict[str, Tuple[str, str]] = {}
+
     for idx, row in enumerate(rows, 1):
         game_pk   = row["game_pk"]
         game_date = row["game_date"]
@@ -1144,6 +1242,32 @@ def main() -> None:
         home_name = row["home_team"]
         away_name = row["away_team"]
         home_won  = row["home_won"]
+
+        # F3: detect meaningful B2B — played yesterday AND changed cities.
+        # Within-series games (same venue, consecutive days) are normal MLB
+        # rhythm and don't trigger extra fatigue.  The penalty applies when a
+        # team flew overnight to reach the current game.
+        _today_str = game_date[:10]                          # "YYYY-MM-DD"
+        _yesterday = (
+            datetime.strptime(_today_str, "%Y-%m-%d").date()
+            - __import__('datetime').timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+        _cur_venue = TEAM_VENUES.get(home_name, "Unknown")
+
+        _away_last = _team_last_game.get(away_name, ("", ""))
+        _home_last = _team_last_game.get(home_name, ("", ""))
+
+        # Away B2B: played yesterday AND their last venue ≠ current venue
+        # (they traveled overnight between cities)
+        _b2b_away = (_away_last[0] == _yesterday and _away_last[1] != _cur_venue)
+
+        # Home B2B: played yesterday in a different venue (away game yesterday,
+        # home game today — they also had to travel/return home)
+        _b2b_home = (_home_last[0] == _yesterday and _home_last[1] != _cur_venue)
+
+        # Update last-game tracker AFTER computing B2B
+        _team_last_game[away_name] = (_today_str, _cur_venue)
+        _team_last_game[home_name] = (_today_str, _cur_venue)
 
         # starting pitchers
         starters = fetch_starters(game_pk, session, cache)
@@ -1158,6 +1282,10 @@ def main() -> None:
                 savant_stats=savant_by_season.get(season),
                 fg_stats=fg_by_season.get(season),
             )
+            # F3: inject B2B flags computed from schedule context above
+            game_data["back_to_back_away"] = _b2b_away
+            game_data["back_to_back_home"] = _b2b_home
+
             pred = run_pipeline(game_data, lh, la, learning, season, N_MC)
 
             # persist to DB
