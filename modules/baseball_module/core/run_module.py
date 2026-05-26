@@ -321,6 +321,7 @@ def run_module(
 
         # Resolve MLB season once — used for enrichment, Kalman, Platt, and record_prediction
         _season = _current_mlb_season()
+        game_data['season'] = _season
 
         # ── Enrich pitchers with Savant + FanGraphs real data ────────────
         if _ENRICHMENT_AVAILABLE:

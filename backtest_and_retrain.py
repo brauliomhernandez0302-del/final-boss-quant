@@ -419,6 +419,7 @@ def build_game_data(
     game_data: Dict[str, Any] = {
         "game_pk": game_pk,
         "game_date": game_date,
+        "season": season,
         "home_team": home_dict,
         "away_team": away_dict,
         "home_team_id": htid,

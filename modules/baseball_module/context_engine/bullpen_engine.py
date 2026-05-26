@@ -334,7 +334,7 @@ class BullpenEngine:
         Home bullpen → adjusts λ_away.
         """
         from datetime import datetime
-        season = datetime.now().year
+        season = int(game_data.get('season', datetime.now().year))
         self._ensure_savant_loaded(season)
 
         log.info("Bullpen Engine — adjusting lambdas")
