@@ -148,17 +148,24 @@ class TestEarlyStoppingAndConvergence:
         # Not identical (different seeds produce different samples)
 
     def test_more_sims_reduces_variance(self):
+        # 25 seeds each → stable sample-std estimate.
+        # Theoretical expectation: std ∝ 1/√n → 10× more sims → ~3.16× reduction.
+        # Require only 1.5× reduction to avoid flakiness from small-sample noise.
         small_results = [
             monte_carlo_advanced(lh=4.5, la=3.8, n_max=50_000, block=10_000, rng_seed=i)["p_home"]
-            for i in range(10)
+            for i in range(25)
         ]
         large_results = [
             monte_carlo_advanced(lh=4.5, la=3.8, n_max=500_000, rng_seed=i)["p_home"]
-            for i in range(10)
+            for i in range(25)
         ]
-        small_std = (sum((x - 0.5)**2 for x in small_results) / 10) ** 0.5
-        large_std = (sum((x - 0.5)**2 for x in large_results) / 10) ** 0.5
-        assert large_std < small_std, "More sims should produce more consistent estimates"
+        import statistics
+        small_std = statistics.stdev(small_results)
+        large_std = statistics.stdev(large_results)
+        assert small_std > large_std * 1.5, (
+            f"Expected small_std ({small_std:.5f}) > 1.5 × large_std ({large_std:.5f}); "
+            "more sims should produce more consistent estimates"
+        )
 
 
 class TestInputValidation:
