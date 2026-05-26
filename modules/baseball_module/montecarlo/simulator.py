@@ -60,7 +60,7 @@ def monte_carlo_advanced(
     analyze_f5: bool = False,
     lh_f5: Optional[float] = None,
     la_f5: Optional[float] = None,
-    rho_game: float = -0.06,
+    rho_game: float = -0.008,
 ) -> Dict[str, Any]:
     """
     Vectorized block-based Monte Carlo simulation for MLB run scoring.
@@ -72,7 +72,8 @@ def monte_carlo_advanced(
 
     rho_game < 0: negative correlation → compresses total run variance (pitcher
     duels keep both teams down; one team scoring big makes the other slightly less
-    likely to also exceed their mean). Default -0.06 matches empirical MLB data.
+    likely to also exceed their mean). Default -0.008 measured empirically from
+    5,422 backtest games (actual rho(home_runs, away_runs) = -0.0078).
 
     Noise adds only ~1% variance on top of pure Poisson and leaves the mean exact.
 

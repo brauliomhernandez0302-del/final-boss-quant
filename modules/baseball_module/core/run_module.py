@@ -803,6 +803,11 @@ def run_module(
                 total_under=_fetched_odds.get('total_under'),
                 runline_home=_fetched_odds.get('runline_home'),
                 runline_away=_fetched_odds.get('runline_away'),
+                f5_ml_home=_fetched_odds.get('f5_ml_home'),
+                f5_ml_away=_fetched_odds.get('f5_ml_away'),
+                f5_total_line=_fetched_odds.get('f5_total_line'),
+                f5_total_over=_fetched_odds.get('f5_total_over'),
+                f5_total_under=_fetched_odds.get('f5_total_under'),
             )
             value_results = evaluate_value_ultra(
                 mc_result=mc_results,
@@ -812,7 +817,7 @@ def run_module(
                 home_samples=mc_results.get('home_samples'),
                 away_samples=mc_results.get('away_samples'),
                 total_samples=mc_results.get('total_samples'),
-                analyze_f5=False,
+                analyze_f5=lh_f5 is not None,
             )
             results['best_bets'] = value_results.get('global_recommendation', {}).get('all_opportunities', [])
             results['metadata']['value'] = value_results
