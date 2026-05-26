@@ -57,7 +57,8 @@ from data_fetchers import MLBDataIntegrator, MLBStatsAPI
 from modules.baseball_module.hfa.park_weather_engine import STADIUM_DATABASE as _STADIUM_DB
 from modules.baseball_module.calibration.learning_engine import LearningEngine
 from modules.baseball_module.hfa.park_weather_engine import adjust_for_park_and_weather
-from modules.baseball_module.hfa.historical_weather import HistoricalWeatherFetcher
+# DEFERRED F7: import kept for reactivation post-Sprint 3
+# from modules.baseball_module.hfa.historical_weather import HistoricalWeatherFetcher
 from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
 from modules.baseball_module.context_engine.defensive_efficiency_engine import adjust_for_defense
 from modules.baseball_module.context_engine.pitcher_engine import adjust_for_pitchers
@@ -623,8 +624,8 @@ def run_pipeline(
     la = _la_pre * (1.0 + _w_park * (_raw_a - 1.0))
     _sf["home_park"] = _raw_h
     _sf["away_park"] = _raw_a
-    # F7: weather_mult captured separately for validation (symmetric → same for both teams)
-    _sf["weather_mult"] = float(_park_meta.get("weather_mult", 1.0))
+    # DEFERRED F7: weather_mult stage factor — reactivar post-Sprint 3
+    # _sf["weather_mult"] = float(_park_meta.get("weather_mult", 1.0))
 
     # ── PASO 3: HFA (crowd + travel asymmetric) ───────────────────────────────
     _lh_pre, _la_pre = lh, la
@@ -1131,9 +1132,13 @@ def main() -> None:
     if args.no_cache:
         cache = DiskCache(CACHE_DIR, ttl=1)  # effectively bypasses old entries
 
-    # ── F7: historical weather pre-fetch (Open-Meteo ERA5 — free, no key) ──────
-    _weather_fetcher = HistoricalWeatherFetcher(ROOT / ".cache" / "historical_weather_cache.json")
-    _weather_fetcher.prefetch_all(seasons=seasons)
+    # DEFERRED F7: weather fetcher built but not active.
+    # Reactivar post-Sprint 3 cuando gradient descent funcione y pueda aprender
+    # un peso separado para weather vs park_factor. Sin ese peso aprendido,
+    # weather añade ~+0.00013 Brier y -0.8pp ROI (validado 2026-05-26).
+    # _weather_fetcher = HistoricalWeatherFetcher(ROOT / ".cache" / "historical_weather_cache.json")
+    # _weather_fetcher.prefetch_all(seasons=seasons)
+    _weather_fetcher = None
 
     # ── prefetch mode ───────────────────────────────────────────────────────
     if args.prefetch:
