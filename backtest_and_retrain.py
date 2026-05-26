@@ -57,6 +57,7 @@ from data_fetchers import MLBDataIntegrator, MLBStatsAPI
 from modules.baseball_module.hfa.park_weather_engine import STADIUM_DATABASE as _STADIUM_DB
 from modules.baseball_module.calibration.learning_engine import LearningEngine
 from modules.baseball_module.hfa.park_weather_engine import adjust_for_park_and_weather
+from modules.baseball_module.hfa.historical_weather import HistoricalWeatherFetcher
 from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
 from modules.baseball_module.context_engine.defensive_efficiency_engine import adjust_for_defense
 from modules.baseball_module.context_engine.pitcher_engine import adjust_for_pitchers
@@ -392,6 +393,7 @@ def build_game_data(
     park_factors: Optional[object],
     savant_stats: Optional[Dict[int, Dict]] = None,
     fg_stats: Optional[Dict[int, Dict]] = None,
+    weather_fetcher: Optional["HistoricalWeatherFetcher"] = None,
 ) -> Tuple[Dict, float, float]:
     """
     Assemble game_data and (lh_base, la_base) from cached season-level stats.
@@ -551,6 +553,10 @@ def build_game_data(
     _stadium = _STADIUM_DB.get(venue)
     game_data["park_factor"] = _stadium.runs_factor if _stadium else 1.00
 
+    # F7: inject historical weather data (Open-Meteo ERA5 reanalysis)
+    if weather_fetcher is not None:
+        game_data["weather"] = weather_fetcher.get(venue, game_date)
+
     return game_data, lh, la
 
 
@@ -609,7 +615,7 @@ def run_pipeline(
 
     # ── PASO 2: Park + Weather ────────────────────────────────────────────────
     _lh_pre, _la_pre = lh, la
-    lh_park, la_park, _ = adjust_for_park_and_weather(lh, la, game_data)
+    lh_park, la_park, _park_meta = adjust_for_park_and_weather(lh, la, game_data)
     _raw_h = lh_park / _lh_pre if _lh_pre else 1.0
     _raw_a = la_park / _la_pre if _la_pre else 1.0
     _w_park = _w.get("park", 1.0)
@@ -617,6 +623,8 @@ def run_pipeline(
     la = _la_pre * (1.0 + _w_park * (_raw_a - 1.0))
     _sf["home_park"] = _raw_h
     _sf["away_park"] = _raw_a
+    # F7: weather_mult captured separately for validation (symmetric → same for both teams)
+    _sf["weather_mult"] = float(_park_meta.get("weather_mult", 1.0))
 
     # ── PASO 3: HFA (crowd + travel asymmetric) ───────────────────────────────
     _lh_pre, _la_pre = lh, la
@@ -1123,6 +1131,10 @@ def main() -> None:
     if args.no_cache:
         cache = DiskCache(CACHE_DIR, ttl=1)  # effectively bypasses old entries
 
+    # ── F7: historical weather pre-fetch (Open-Meteo ERA5 — free, no key) ──────
+    _weather_fetcher = HistoricalWeatherFetcher(ROOT / ".cache" / "historical_weather_cache.json")
+    _weather_fetcher.prefetch_all(seasons=seasons)
+
     # ── prefetch mode ───────────────────────────────────────────────────────
     if args.prefetch:
         prefetch_team_stats(api, seasons)
@@ -1292,6 +1304,7 @@ def main() -> None:
                 api, integrator, park_factors,
                 savant_stats=savant_by_season.get(season),
                 fg_stats=fg_by_season.get(season),
+                weather_fetcher=_weather_fetcher,
             )
             # F3: inject B2B flags computed from schedule context above
             game_data["back_to_back_away"] = _b2b_away
