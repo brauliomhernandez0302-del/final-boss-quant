@@ -1335,6 +1335,22 @@ def main() -> None:
             learning.update_kalman(home_name, "defense_home", season, float(row["actual_away_runs"]))
             learning.update_kalman(away_name, "defense_away", season, float(row["actual_home_runs"]))
 
+            # Sprint 3 fix: invoke gradient descent that was structurally disconnected
+            # from the backtest loop. Without this call, pipeline weights never update
+            # from 1.000 regardless of how many games are processed.
+            # Diagnostic (scripts/diagnose_gradient.py) confirmed:
+            #   - Gradients are real and non-zero (pitcher avg=0.026, context avg=0.056)
+            #   - DB persistence works correctly
+            #   - Only the invocation was missing
+            # stage_factors_json is written by update_game_outcomes() above; lambda
+            # fields are also set — so this call has all data it needs.
+            learning._gradient_step(
+                game_pk,
+                int(row["actual_home_runs"]),
+                int(row["actual_away_runs"]),
+                season,
+            )
+
             # Pinnacle fair prob
             pin_fh = pin_fa = None
             if row["ml_home_pin"] and row["ml_away_pin"]:
