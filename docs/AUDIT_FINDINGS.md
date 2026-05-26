@@ -1965,10 +1965,106 @@ Causa raíz identificada: **Kalman defense_home double-counting con Pitcher Engi
 2. Remover Kalman defense_home de producción Y backtest (vuelve a Sprint1 ROI)
 3. Continuar a F7 (aceptando el ROI degradado) y evaluar post-Sprint2
 
-### SIGUIENTE PASO: SPRINT 2 o DIAGNÓSTICO ROI
+---
 
-Con Sprint 1 validado, opciones:
-1. **Sprint 2** — F7 (Weather fetcher) + resultados F6+F8
-2. **Diagnóstico ROI** — Bucket 40-45% desviación +5.3pp; analizar si hay over/under-fitting por posición del underdog
+## SPRINT 2 — F7 + Decisiones finales (2026-05-26)
 
-Criterio de decisión: si ROI edge≥8% baja en próxima validación live → priorizar diagnóstico.
+### F7 Weather Fetcher — CONSTRUIDO, DIFERIDO
+
+**Implementación:** `modules/baseball_module/hfa/historical_weather.py`
+- Open-Meteo ERA5 archive (gratis, sin API key, cobertura 2024-2026)
+- Pre-fetch por venue×season (31×3 = 93 llamadas, ~1-2 min, cached forever)
+- weather_mult: std=0.019, rango [0.90, 1.08], cobertura 100%
+
+**Resultado backtest F7 activo** (`backtest_report_20260526_1452.json`):
+- Brier: 0.24234 vs baseline 0.24221 → Δ=**+0.00013** (pasa no-go <0.0005)
+- ROI edge≥8%: 4.98% vs 5.84% → Δ=**−0.86pp**
+- Bucket 40-45%: +5.9pp vs +5.1pp (empeoró)
+
+**Decisión: DIFERIDO hasta Sprint 3**
+- Causa: park_weight y weather_weight comparten el mismo `_w["park"]`
+- Sin peso aprendido independiente, weather añade ruido neto negativo
+- Infraestructura intacta: `build_game_data(weather_fetcher=None)` es el switch
+- Reactivar post-Sprint 3 cuando gradient descent asigne peso separado
+
+---
+
+## SPRINT 3 — Gradient Descent (2026-05-26)
+
+### Estado actual: PIPELINE WEIGHTS TODOS = 1.0
+
+Backtest completo sobre 5422 juegos sin un solo update de pesos. El gradient
+descent está **estructuralmente desconectado** del backtest.
+
+### Diagnóstico completo (scripts/diagnose_gradient.py, 2026-05-26)
+
+**P1 — ¿Se llama `_gradient_step` en el backtest?**
+```
+RESULTADO: ❌ NUNCA SE LLAMA
+Todos los pesos = 1.000000 después de 5422 juegos (3 temporadas).
+```
+
+**Causa raíz (código, no teoría):**
+
+El backtest loop (líneas 1333-1336) llama `update_kalman()` directamente:
+```python
+learning.update_kalman(home_name, "offense_home", season, float(...))
+learning.update_kalman(away_name, "offense_away", season, float(...))
+# ... etc
+# ← _gradient_step() NUNCA se llama aquí
+```
+
+`_gradient_step()` solo se activa via `record_outcome()` → `_post_outcome_update()`.
+El backtest bypasea esta cadena completamente.
+
+**P2 — ¿Los gradientes son cero?**
+```
+Stage         N_adj    Mean_grad    Max|grad|      Mean_Δw
+park           2292     0.006037     0.374397    -0.000060
+hfa            1872     0.002005     0.112555    -0.000020
+defense        2400     0.004625     0.244494    -0.000046
+pitcher        2400     0.025970     1.341702    -0.000260  ← más grande
+bullpen        2400    -0.002834     0.226520    +0.000028  ← único ↑
+context         276     0.055573     0.469838    -0.000556  ← más activo %
+```
+**RESULTADO: ✅ Gradientes ≠ 0 — señal real, no dead engine**
+
+**P3 — ¿Se guardarían los pesos?**
+```
+Stage      Start  After50    AfterN   Total_Δ  Moved?
+park       1.000   0.9994    0.9885    -0.0115   ✅ YES
+hfa        1.000   0.9978    0.9960    -0.0040   ✅ YES
+defense    1.000   0.9979    0.9908    -0.0092   ✅ YES
+pitcher    1.000   0.9724    0.9481    -0.0519   ✅ YES  ← mayor movimiento
+bullpen    1.000   1.0016    1.0057    +0.0057   ✅ YES
+context    1.000   0.9936    0.9811    -0.0189   ✅ YES
+```
+**RESULTADO: ✅ La DB guardaría correctamente — no hay bug de persistencia**
+
+### Veredicto diagnóstico: BUG PUNTUAL (no estructural)
+
+El gradient descent está bien implementado. Los gradientes son reales. La
+persistencia funciona. El único bug es que `_gradient_step()` **nunca se invoca**
+desde el backtest loop.
+
+**Fix requerido (una línea):**
+```python
+# En el loop principal de backtest_and_retrain.py, después de update_kalman (~línea 1336):
+learning._gradient_step(game_pk, int(row["actual_home_runs"]),
+                        int(row["actual_away_runs"]), season)
+```
+
+### Proyección de impacto (simulado con 200 juegos)
+
+Después de 200 juegos la simulación predice `pitcher_weight → 0.948` (−5.2%).
+Con 5422 juegos el movimiento esperado es más pronunciado. El `bullpen_weight`
+es el único que subiría (+0.6%) — señal de que el bullpen engine está siendo
+conservador y el dato real justifica más peso.
+
+### Próximos pasos Sprint 3
+
+1. Activar `_gradient_step` en el backtest loop (fix puntual)
+2. Re-backtest completo (5422 juegos) con gradient descent activo
+3. Validar convergencia: std(pesos) > 0 al final, pesos estables entre temporadas
+4. Evaluar si bucket 40-45% mejora (pitcher_weight más bajo = menos extremos)
+5. Si converge bien → reactivar F7 weather con peso separado (`weather` vs `park`)
