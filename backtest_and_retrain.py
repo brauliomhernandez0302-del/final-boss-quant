@@ -529,6 +529,16 @@ def build_game_data(
         "away_pitcher_stats": away_ps,
         "bullpen_home": home_bp,
         "bullpen_away": away_bp,
+        # F6: Defensive efficiency — DER from season pitching stats (same source as live path).
+        # OAA from Baseball Savant not available via free API; engine degrades to DER-only.
+        "defense_home": (
+            {"team_name": home_name, "der": home_pitch["der"], "bip": home_pitch["bip"], "oaa": None}
+            if home_pitch.get("der") and home_pitch.get("bip", 0) > 0 else {}
+        ),
+        "defense_away": (
+            {"team_name": away_name, "der": away_pitch["der"], "bip": away_pitch["bip"], "oaa": None}
+            if away_pitch.get("der") and away_pitch.get("bip", 0) > 0 else {}
+        ),
         # F2: geodesic travel distance and timezone crossings for away team
         "miles_traveled_away": (_ts := _travel_stats(away_name, home_name))[0],
         "time_zones_crossed_away": _ts[1],
@@ -627,18 +637,20 @@ def run_pipeline(
     _sf["home_hfa"] = _raw_h
     _sf["away_hfa"] = _raw_a
 
-    # ── PASO 4: Defensive Efficiency (DEE overrides Kalman baseline when active) ─
-    _lh_pre = lh
+    # ── PASO 4: Defensive Efficiency ──────────────────────────────────────────────
+    # Stage factor captures DEE-only ratio (from post-Kalman baseline) so that
+    # gradient descent sees a pure fielding signal, not Kalman+DEE combined.
+    # Kalman defense is applied above and its contribution is not re-weighted here.
+    _lh_pre, _la_pre = lh, la
     if game_data.get("defense_home") or game_data.get("defense_away"):
         lh_def, la_def, _ = adjust_for_defense(lh, la, game_data)
         _raw_h = lh_def / _lh_pre if _lh_pre else 1.0
-        # away_defense ratio vs pre-Kalman-defense baseline captures combined signal
-        _raw_a = la_def / _la_pre_kal_def if _la_pre_kal_def else 1.0
+        _raw_a = la_def / _la_pre if _la_pre else 1.0   # DEE-only ratio (post-Kalman baseline)
         _w_def = _w.get("defense", 1.0)
         lh = _lh_pre * (1.0 + _w_def * (_raw_h - 1.0))
-        la = _la_pre_kal_def * (1.0 + _w_def * (_raw_a - 1.0))
-        _sf["home_defense"] = _raw_h   # DEE overrides Kalman baseline
-        _sf["away_defense"] = _raw_a   # combined Kalman+DEE ratio
+        la = _la_pre * (1.0 + _w_def * (_raw_a - 1.0))
+        _sf["home_defense"] = _raw_h   # DEE ratio on lh (away defense → home runs)
+        _sf["away_defense"] = _raw_a   # DEE ratio on la (home defense → away runs)
     # else: Kalman defense stage factors set above remain; lambda already correct
 
     # ── PASO 5: Pitcher Engine ────────────────────────────────────────────────

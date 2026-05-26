@@ -631,19 +631,19 @@ def run_module(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         _def_home = game_data.get('defense_home') or {}
         _def_away = game_data.get('defense_away') or {}
-        _lh_pre = lh
+        _lh_pre = lh; _la_pre = la   # post-Kalman baseline for DEE ratio
         if _def_home or _def_away:
             logger.info("\n🛡️  PASO 6: Defensive Efficiency Engine...")
             lh_def, la_def, def_meta = adjust_for_defense(lh, la, game_data)
-            # away_defense ratio uses _la_pre_kal_def baseline so stage factor captures
-            # combined Kalman+DEE defense signal for gradient descent.
+            # Stage factor = DEE-only ratio (post-Kalman baseline) so gradient descent
+            # sees pure fielding signal. Kalman defense applied above, not re-weighted.
             _raw_h_def = lh_def / _lh_pre if _lh_pre else 1.0
-            _raw_a_def = la_def / _la_pre_kal_def if _la_pre_kal_def else 1.0
+            _raw_a_def = la_def / _la_pre if _la_pre else 1.0
             _w_def = _weights.get("defense", 1.0)
             lh = _lh_pre * (1.0 + _w_def * (_raw_h_def - 1.0))
-            la = _la_pre_kal_def * (1.0 + _w_def * (_raw_a_def - 1.0))
-            _stage_factors['home_defense'] = _raw_h_def   # DEE overrides Kalman baseline
-            _stage_factors['away_defense'] = _raw_a_def   # combined Kalman+DEE ratio
+            la = _la_pre * (1.0 + _w_def * (_raw_a_def - 1.0))
+            _stage_factors['home_defense'] = _raw_h_def   # DEE ratio on lh
+            _stage_factors['away_defense'] = _raw_a_def   # DEE ratio on la (home_mult)
             results['metadata']['defense'] = def_meta
             logger.info(
                 f"   ✅ Defense adjusted: λ_h={lh:.3f}  λ_a={la:.3f}  "
