@@ -1897,10 +1897,41 @@ Todos los fixes de Fase B se medirán contra este baseline.
 
 ---
 
-## SIGUIENTE PASO: SPRINT 2 o DIAGNÓSTICO ROI
+## SPRINT 2 — F8 + F6 + F7
+
+### F8 — Kalman ordering fix (✅ APLICADO)
+
+**Cambios:**
+- `run_module.py`: `_stage_factors = {}` movido ANTES del Kalman defense (era después)
+- `backtest_and_retrain.py`: Kalman defense_home AÑADIDO al pipeline (estaba ausente — inconsistencia train/test)
+- Stage factor baseline separado: DEE usa post-Kalman lambda como baseline → Pearson limpio
+
+**Diagnóstico bug crítico descubierto (F8+F6 baseline):**
+- Primera implementación usó `_la_pre_kal_def` (pre-Kalman) como baseline DEE → `away_defense` capturaba ratio Kalman×DEE
+- Pearson(away_defense, actual_away_runs) = +0.089 (INVERTIDO — target: < -0.02)
+- Causa: el ratio Kalman tiene Pearson POSITIVO (predice runs correctamente), el de DEE es negativo; Kalman domina (std=0.071 vs DEE ~0.02)
+- **Fix**: usar `la` post-Kalman como baseline → `away_defense` captura solo ratio DEE (signo correcto)
+- Verificación unitaria: Dodgers (DER=0.730) → away_defense=0.982 < 1.0 ✓; Rockies (DER=0.690) → home_defense=1.032 > 1.0 ✓
+
+### F6 — DEE fetcher (✅ APLICADO)
+
+**Cambios en `backtest_and_retrain.py`:**
+- `defense_home`/`defense_away` dicts inyectados en `build_game_data()` desde `home_pitch["der"]`/`home_pitch["bip"]`
+- Dato ya disponible: `get_team_pitching_stats()` calcula DER desde MLB Stats API
+- OAA omitido (requiere Baseball Savant CSV, motor degrada a DER-only gracefully)
+- Coincide exactamente con el path live (`MLBDataIntegrator.enrich_game()` líneas 2390-2406)
+
+**Backtest F8+F6+baseline fix corriendo** — resultados pending.
+
+**Criterios de validación F6:**
+- std(away_defense) > 0.005 → DEE activo ✓ (unit test: 0.018 aprox)
+- Pearson(away_defense, actual_away_runs) < -0.02 → señal correcta (pending backtest)
+- Brier no-go: Δ < +0.0005 vs Sprint 1 baseline (0.24273)
+
+### SIGUIENTE PASO: SPRINT 2 o DIAGNÓSTICO ROI
 
 Con Sprint 1 validado, opciones:
-1. **Sprint 2** — F6 (DEE fetcher real), F7 (Weather fetcher real), F8 (Kalman ordering fix)
-2. **Diagnóstico ROI** — Bucket 40-45% desviación +5.3pp; analizar si hay over/under-fitting por posición del underdoor
+1. **Sprint 2** — F7 (Weather fetcher) + resultados F6+F8
+2. **Diagnóstico ROI** — Bucket 40-45% desviación +5.3pp; analizar si hay over/under-fitting por posición del underdog
 
 Criterio de decisión: si ROI edge≥8% baja en próxima validación live → priorizar diagnóstico.
