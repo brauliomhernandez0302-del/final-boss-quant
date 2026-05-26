@@ -1819,3 +1819,29 @@ Gap vs Pinnacle = 0.00238 (−0.99%)
 ```
 
 Todos los fixes de Fase B se medirán contra este baseline.
+
+---
+
+## RESULTADOS POST-SPRINT 1 (F2 + F3 + F5)
+
+*Sprint 1 completo aplicado: F1 (ya en baseline) + F2 (travel geodésico) + F3 (B2B schedule) + F5 (rho_game=-0.008). F4 (F5 market enable) no requiere backtest.*
+
+**Validaciones pre-backtest (tests sintéticos):**
+
+| Fix | Test | Resultado |
+|-----|------|-----------|
+| F4 | `evaluate_value_ultra` con f5_odds → markets incluye 'first5' | PASSED ✓ |
+| F5 | Δp_home entre rho=-0.06 y rho=-0.008 | 0.0003 < 0.001 ✓ |
+
+**Estadísticas B2B (F3) sobre 5,422 juegos:**
+- B2B away (ciudad distinta + jugó ayer): 727 juegos (13.4%) ✓ >150 threshold
+- B2B home (ciudad distinta + jugó ayer): 275 juegos (5.1%) ✓ >150 threshold
+
+*(Resultados del backtest — pending)*
+
+| Métrica | Baseline F1 | Post-Sprint1 | Δ | No-go si Δ > |
+|---------|-------------|-------------|---|--------------|
+| Brier score | 0.24289 | *pending* | *pending* | +0.0005 |
+| std(away_hfa) | ~0.0 | *pending* | — | debe ser > 0.001 |
+| n_games_B2B_away | 0 | 727 | +727 | — |
+| Accuracy | 56.33% | *pending* | — | — |
