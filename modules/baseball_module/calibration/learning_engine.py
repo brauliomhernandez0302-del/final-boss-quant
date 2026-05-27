@@ -392,8 +392,18 @@ class LearningEngine:
           Old bias on 4.15:    4.15 × 0.778 = 3.23          (−22% extra → total −28%)
           Dampened bias:       1 + 0.65×(0.778−1) = 0.856
           New bias on 4.15:    4.15 × 0.856 = 3.55          (−14% → total −21% ≈ correct)
+
+        FIX C1: compute_team_bias mezclaba home+away juegos en una sola media,
+        contaminando la señal del Kalman para equipos con asimetría HFA real.
+        compute_multidim_bias filtra por contexto (home vs away games separados).
+        Esto resuelve el bucket 40-45% donde equipos como Atlanta (Bias_home=0.93
+        vs Bias_away=1.08) tenían su señal correcta neutralizada por el bias
+        agregado (~1.005). El dampening se mantiene igual: ambas fuentes (Kalman
+        y multidim_bias) siguen usando los mismos datos home-only o away-only.
         """
-        raw_bias = self.compute_team_bias(team, season)
+        # FIX C1: use context-specific bias instead of aggregate home+away mix.
+        home_away = "home" if context == "offense_home" else "away"
+        raw_bias = self.compute_multidim_bias(team, season, home_away)
         if raw_bias == 1.0:
             return 1.0
 
@@ -403,8 +413,8 @@ class LearningEngine:
 
         dampened = 1.0 + (1.0 - _KALMAN_BLEND) * (raw_bias - 1.0)
         logger.debug(
-            "[learning] %s bias Kalman-adjusted: raw=%.4f → dampened=%.4f (n_obs=%d)",
-            team, raw_bias, dampened, state["n_obs"],
+            "[learning] %s/%s bias Kalman-adjusted: raw=%.4f → dampened=%.4f (n_obs=%d)",
+            team, home_away, raw_bias, dampened, state["n_obs"],
         )
         return max(1.0 - _BIAS_CLAMP, min(1.0 + _BIAS_CLAMP, dampened))
 
