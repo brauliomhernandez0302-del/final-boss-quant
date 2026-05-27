@@ -106,29 +106,34 @@ class HFAEngine:
         """
         park_name = (game_data.get("park") or {}).get("name", "Unknown")
 
-        logger.debug("HFA Engine | park=%s  λh=%.3f  λa=%.3f", park_name, lh, la)
+        logger.debug("HFA Engine | park=%s  λh=%.3f  λa=%.3f  [crowd_boost=disabled]", park_name, lh, la)
 
-        # ── Step 1: Home crowd / familiarity boost (asymmetric, λ_home only) ──
-        _default_hfa = 0.0325  # MLB average crowd boost
-        if park_name not in self.hfa_base:
-            logger.warning(
-                "HFA Engine: park '%s' not in hfa_base — using default %.4f runs",
-                park_name, _default_hfa,
-            )
-        hfa_boost = self.hfa_base.get(park_name, _default_hfa)
-        hfa_mult  = 1.0 + hfa_boost / LEAGUE_AVG_RUNS
-        lh_new    = lh * hfa_mult
-        la_new    = la   # away unchanged by crowd boost
+        # ── Step 1: Home crowd / familiarity boost — FIX C2: ELIMINATED ─────────
+        # Empirical analysis on 5,422 games confirmed crowd boost is pure noise:
+        #   Pearson(real_HFA, crowd_factor) = -0.015 (zero correlation)
+        #   Direction agreement:              53%    (indistinguishable from random)
+        #   Magnitude vs Kalman K_diff:       <5%    (negligible)
+        #   Gradient descent learned:         hfa_weight = 0.9706 (downweighting)
+        # The Kalman offense_home/offense_away + multidim_bias (FIX C1) now cover
+        # ~95% of the HFA signal empirically. The static hfa_base table (retained
+        # below as historical reference) contributed noise, not signal.
+        # See AUDIT_FINDINGS.md § FIX C2 for full analysis.
+        hfa_boost = 0.0   # FIX C2: was self.hfa_base.get(park_name, 0.0325)
+        hfa_mult  = 1.0   # no crowd boost applied
+        lh_new    = lh    # λ_home unchanged by crowd boost
 
         # ── Step 2: Away-team travel fatigue (asymmetric, λ_away only) ────────
+        # Travel penalty retained: 69.3% activation rate, max 1.3% λ reduction.
+        # Mechanistic basis (circadian disruption) empirically confirmed.
+        la_new = la
         travel_penalty = self._calculate_travel_fatigue(game_data)
         if travel_penalty > 0.0:
             la_new *= 1.0 - travel_penalty / LEAGUE_AVG_RUNS
 
         metadata = {
             "park_name":       park_name,
-            "hfa_boost_runs":  round(hfa_boost, 4),
-            "hfa_mult":        round(hfa_mult, 4),
+            "hfa_boost_runs":  0.0,
+            "hfa_mult":        1.0,
             "travel_penalty":  round(travel_penalty, 4),
         }
 
