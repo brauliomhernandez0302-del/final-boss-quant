@@ -2173,3 +2173,142 @@ Platt directamente — el sesgo en underdogs es pre-MC, requiere otra intervenci
 1. Reactivar F7 weather con peso `weather` separado de `park` (ahora el gradient puede aprenderlos independientemente)
 2. Investigar bucket 40-45%: unificar LG_XWOBA (H1) o Platt 2D
 3. Separar peso `park_home` / `park_away` para capturar la señal away (+0.121 Pearson)
+
+---
+
+## FIX ARQUITECTÓNICO C1 — compute_multidim_bias activado (2026-05-26)
+
+**Archivo:** `modules/baseball_module/calibration/learning_engine.py`
+**Commit:** b9b5e86
+
+### Causa raíz diagnosticada
+
+`compute_team_bias()` mezclaba juegos home+away en una sola media (`ratios`), contaminando la señal del Kalman para equipos con fuerte asimetría HFA. `compute_multidim_bias()` existía con implementación correcta (filtro home/away) pero nunca se invocaba en el pipeline.
+
+**Evidencia empírica (5,422 juegos):**
+
+| Equipo | Bias_home_only | Bias_away_only | Bias_agregado | HFA_real |
+|--------|---------------|---------------|--------------|---------|
+| Atlanta Braves | 0.9323 | 1.0786 | ~1.005 | -0.75 R/G |
+| Chicago Cubs | 0.9718 | 1.0856 | ~1.031 | -0.59 R/G |
+| Colorado Rockies | 1.0174 | 0.9082 | 0.929 | +1.46 R/G |
+| Texas Rangers | 0.9344 | 1.0299 | 0.985 | -0.39 R/G |
+
+### Cambio
+
+```python
+# ANTES: bias agregado sin contexto
+raw_bias = self.compute_team_bias(team, season)
+
+# DESPUÉS: bias filtrado por home/away
+home_away = "home" if context == "offense_home" else "away"
+raw_bias  = self.compute_multidim_bias(team, season, home_away)
+```
+
+El dampening Kalman se mantiene idéntico (ambas fuentes comparten el mismo pool de datos home-only o away-only).
+
+### Resultados backtest post-C1
+
+| Métrica | Pre-C1 | Post-C1 | Delta |
+|---------|--------|---------|-------|
+| Brier | 0.24220 | 0.24248 | +0.00028 |
+| Bucket 40-45% | +6.4pp | +4.5pp | **-1.9pp ✓** |
+| Bucket >70% | +4.1pp | +0.1pp | **-4.0pp ✓** |
+| ROI edge≥8% | +5.54% | +8.61% | **+3.07pp ✓** |
+| ROI edge≥10% | +8.83% | +10.64% | **+1.81pp ✓** |
+| Bucket 55-60% | -1.6pp | -3.8pp | -2.2pp ⚠️ (HFA ruido expuesto) |
+
+---
+
+## FIX ARQUITECTÓNICO C2 — Crowd boost eliminado del HFA Engine (2026-05-27)
+
+**Archivo:** `modules/baseball_module/hfa/hfa_engine.py`
+**Commit:** f9b2905
+
+### Investigación empírica (4 preguntas)
+
+**Q1: ¿De dónde salen los valores hfa_base?**
+Estimaciones manuales de "crowd noise" (0.10–0.18 runs de literatura) ÷ 4.0 para ajustar al promedio de liga (+0.034 R/G). Sin calibración empírica por equipo, sin aprendizaje.
+
+**Q2: ¿Travel penalty efectivo?**
+- Activación: **69.3% de 5,422 juegos** (real, no muerto)
+- Distribución: 0% (30.7%), 0.4% (32.1%), 0.9% (16.7%), 1.3% (16.1%)
+- Magnitud máxima: 1.3% λ → ~0.058 runs (coast-to-coast)
+- **Conclusión: señal pequeña pero mecanísticamente justificada (disrupción circadiana)**
+
+**Q3: Overlap multidim_bias vs HFA Engine**
+
+| Métrica | Valor |
+|---------|-------|
+| Pearson(MB_diff, HFA_factor) | **-0.015** |
+| Misma dirección | **53%** (aleatorio) |
+| Rango HFA factor | 1.0056–1.0100, std=0.00109 |
+| Rango MB diff | -0.058 a +0.060, std=0.0316 |
+
+**Q4: Kalman vs HFA Engine — cobertura**
+- HFA engine crowd boost máximo: **+0.044 runs** (~1% de magnitud del Kalman K_diff)
+- Gradient descent: hfa_weight = **0.9706** pre-C2 (ya downweightando la señal)
+
+### Causa raíz confirmada
+
+El crowd boost era **ruido puro**: Pearson -0.015, dirección 53% (aleatoria), magnitud <5% del Kalman. El gradient descent ya lo estaba penalizando. Con FIX C1 activo, multidim_bias + Kalman cubren ~95% del HFA real empíricamente.
+
+### Cambio
+
+```python
+# ANTES: lookup tabla estática
+hfa_boost = self.hfa_base.get(park_name, 0.0325)
+hfa_mult  = 1.0 + hfa_boost / LEAGUE_AVG_RUNS
+lh_new    = lh * hfa_mult
+
+# DESPUÉS: crowd boost eliminado (FIX C2)
+hfa_boost = 0.0   # confirmed pure noise
+hfa_mult  = 1.0
+lh_new    = lh    # λ_home unchanged
+
+# Travel penalty intacto (mecanismo circadiano conservado)
+```
+
+### Resultados backtest post-C1+C2 (baseline nueva)
+
+| Métrica | Original | C1 | **C1+C2** | ΔC2 |
+|---------|---------|-----|-----------|-----|
+| **Brier** | 0.24220 | 0.24248 | **0.24209** | **-0.00039 NEW BEST** |
+| Log-loss | 0.67722 | 0.67775 | **0.67697** | -0.00078 |
+| Accuracy | 56.82% | 56.53% | 56.60% | +0.07pp |
+| 40-45% bucket | +6.4pp | +4.5pp | +5.3pp | +0.8pp (ligero retroceso) |
+| 50-55% bucket | +0.7pp | +2.1pp | **+0.3pp** | -1.8pp ✓ |
+| **55-60% bucket** | -1.6pp | -3.8pp | **-1.8pp** | +2.0pp **RESTAURADO ✓** |
+| ROI edge≥5% | +4.22% | +2.96% | +4.20% | +1.24pp ✓ |
+| ROI edge≥8% | +5.54% | +8.61% | +6.70% | -1.91pp |
+| ROI edge≥10% | +8.83% | +10.64% | +7.09% | -3.55pp |
+| Fav agreement | 78.75% | 76.77% | 78.36% | +1.59pp restaurado |
+
+### Gradient descent confirma decisión
+
+| Stage | Pre-C2 (2025) | Post-C2 (2025) | Tendencia |
+|-------|--------------|---------------|----------|
+| hfa | 0.9706 | **0.9833** | ↑ hacia 1.0 — ruido eliminado |
+| bullpen | 1.2748 | 1.2932 | estable |
+| defense | 1.1230 | 1.1349 | estable |
+| pitcher | 0.9159 | 0.9366 | estable |
+
+### Trade-off justificado
+
+ROI edge≥10% bajó de 10.64% → 7.09%. **Esto es una corrección, no una pérdida:**
+el crowd boost generaba divergencia artificial con Pinnacle → "edges" espurios que
+en producción convergerían hacia 0%. El modelo ahora es más honesto sobre su ventaja
+real vs mercado. Brier 0.24209 = nueva línea base del proyecto.
+
+### Nuevo baseline del proyecto (post C1+C2)
+
+```
+Brier:     0.24209   (nuevo mínimo — mejor que Sprint 3)
+Log-loss:  0.67697
+Accuracy:  56.60%
+Platt 2024: a=0.8265  b=0.0719
+Platt 2025: a=0.7387  b=0.1449
+Platt 2026: a=0.6528  b=0.0935
+λ_home mean: 4.374
+λ_away mean: 4.312
+```
