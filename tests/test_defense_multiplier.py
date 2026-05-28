@@ -90,14 +90,14 @@ class TestDefensiveEfficiencyEngine:
 
     def test_max_adjustment_capped(self):
         engine = self._engine()
-        # Impossibly elite fielding — should be capped at ±5%
+        # Impossibly elite fielding — should be capped at ±8% (B2: expanded from ±5%)
         game_data = {
             "defense_home": {"der": 0.999, "bip": 9999, "oaa": 100},
             "defense_away": {"der": 0.001, "bip": 9999, "oaa": -100},
         }
         lh, la, _ = engine.adjust_for_defense(4.5, 4.5, game_data)
-        assert la >= 4.5 * 0.95, "Floor cap: -5% max"
-        assert lh <= 4.5 * 1.05, "Ceiling cap: +5% max"
+        assert la >= 4.5 * 0.92, "Floor cap: -8% max (B2 expanded from -5%)"
+        assert lh <= 4.5 * 1.08, "Ceiling cap: +8% max (B2 expanded from +5%)"
 
     def test_no_data_returns_unchanged(self):
         from modules.baseball_module.context_engine.defensive_efficiency_engine import (

@@ -475,7 +475,7 @@ class BullpenEngine:
         # ── Innings weighting (avg_ips already computed above for tier) ───
 
         total_mult = 1.0 + innings_weight * (raw_mult - 1.0)
-        total_mult = max(0.90, min(1.10, total_mult))
+        total_mult = max(0.85, min(1.15, total_mult))  # B1: expanded from [0.90,1.10]
 
         log.debug(
             "   [%s bp] tier=%s ERA %.2f→%.2f(tier)→%.2f(reg) xwOBA=%.3f kbb=%.3f brl=%.3f "

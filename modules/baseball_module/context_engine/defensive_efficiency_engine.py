@@ -55,8 +55,8 @@ _K_BIP_DER    = 500
 _DER_WEIGHT   = 0.55
 _OAA_WEIGHT   = 0.45
 
-# Hard cap on total fielding adjustment: ±5 %
-_MAX_DEF_ADJ  = 0.05
+# Hard cap on total fielding adjustment: ±8 % (B2: expanded from ±5%)
+_MAX_DEF_ADJ  = 0.08
 
 
 # ── Data classes ─────────────────────────────────────────────────────────────
