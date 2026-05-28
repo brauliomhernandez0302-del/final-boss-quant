@@ -39,7 +39,7 @@ DEFAULT_MIN_EV     = 3.0   # % minimum EV to flag a bet
 DEFAULT_MIN_RATING = 6.5
 
 # ── MLB league averages (2024 season) ──────────────────────────────────────
-LEAGUE_AVG_RUNS = 4.427  # empirical 2024-2026 avg (5,422 games); was 4.5
+LEAGUE_AVG_RUNS = 4.5    # D2 reverted: empirical 4.427 degraded Brier 0.24209→0.24307; hfa_mult formula was tuned at 4.5
 LEAGUE_AVG_OPS  = 0.735
 LEAGUE_AVG_ERA  = 4.15
 LEAGUE_AVG_WHIP = 1.30

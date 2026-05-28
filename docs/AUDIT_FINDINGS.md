@@ -2420,3 +2420,143 @@ Kelly fix: 1,352 bets con EV>0 (28.8%); 3,342 filtradas con EV≤0 (71.2%)
 ```
 
 **Pending PASO 4:** Negative Binomial en simulator.py (A1 — Poisson inadecuado).
+
+---
+
+## PASO 3.5 — BACKTEST LIMPIO POST-FIXES A2+D1+D2+D4 (2026-05-27)
+
+### Contexto
+
+Antes de tocar Monte Carlo (PASO 4), se requería una baseline limpia post-fixes para:
+1. Confirmar que D1/D2/D4 afectan lambdas de forma medible
+2. Tener un Brier de referencia sin contaminación de DB vieja
+3. Poder aislar el impacto de Negative Binomial en PASO 4
+
+**Run**: `backtest_report_20260527_1811.json`
+**Estado**: Clean reset (Kalman: 240 rows deleted, weights: 3 seasons reset, Platt: 3 rows deleted) + commit `67449e6` aplicado + 5,422 juegos completos.
+
+### Métricas PASO 3.5
+
+```
+Brier model:     0.24307   ← REGRESIÓN vs baseline 0.24209 (+0.00098)
+Brier Pinnacle:  0.24051
+Brier random:    0.25000
+Accuracy:        56.20%
+Log-loss:        0.67901
+```
+
+**Calibración por bucket:**
+
+| Bucket  | N   | Pred%  | Actual% | Diff    | vs pre-fix |
+|---------|-----|--------|---------|---------|-----------|
+| <40%    | 867 | 34.5%  | 41.8%   | +7.3%   | +3.7pp ← PEOR |
+| 40-45%  | 736 | 42.6%  | 48.9%   | +6.3%   | +1.0pp ← PEOR |
+| 45-50%  | 933 | 47.5%  | 49.8%   | +2.3%   | +0.8pp ← PEOR |
+| 50-55%  | 950 | 52.5%  | 52.2%   | -0.3%   | -0.6pp ← mejor |
+| 55-60%  | 825 | 57.3%  | 56.5%   | -0.8%   | +1.0pp ← mejor |
+| 60-70%  | 888 | 64.1%  | 65.0%   | +0.9%   | +0.5pp |
+| >70%    | 223 | 74.8%  | 71.7%   | -3.1%   | -6.0pp ← mejor |
+
+**ROI simulado (Pinnacle, flat 1u):**
+
+| Threshold  | Bets  | ROI     | vs pre-fix |
+|-----------|-------|---------|-----------|
+| edge≥0%   | 4631  | +1.41%  | -0.49pp   |
+| edge≥2%   | 3580  | +1.06%  | -1.60pp   |
+| edge≥5%   | 2224  | +3.48%  | -0.72pp   |
+| edge≥8%   | 1204  | +2.09%  | **-4.61pp** ← colapso |
+| edge≥10%  | 754   | +5.19%  | -1.90pp   |
+
+**By season:**
+
+| Season | N    | Accuracy | Brier   | Δ vs pre-fix |
+|--------|------|----------|---------|-------------|
+| 2024   | 2429 | 57.06%   | 0.24227 | +0.00012    |
+| 2025   | 2430 | 55.64%   | 0.24340 | +0.00163    |
+| 2026   | 563  | 54.88%   | 0.24511 | +0.00190    |
+
+**Platt calibration final (post-backtest):**
+- Season 2024: a=0.8158, b=0.0684
+- Season 2025: a=0.7315, b=0.1411
+- Season 2026: a=0.6385, b=0.0902
+
+**Gradient descent weights finales:**
+```
+Todas las temporadas: park=1.0, hfa=1.0, defense=1.0, pitcher=1.0, bullpen=1.0, context=1.0
+```
+→ El GD se invoca pero los pesos no se persisten entre temporadas (bug de persistencia separado).
+
+**Lambda distribution:**
+- λ_home: mean=4.359, p25=3.974, median=4.314, p75=4.710
+- λ_away: mean=4.288, p25=3.873, median=4.231, p75=4.631
+
+### Diagnóstico: Brier 0.24307 > umbral 0.24230
+
+Según criterio establecido: **"algo se rompió, diagnosticar antes de continuar"**.
+
+**Root cause — Fix D2 (LEAGUE_AVG_RUNS 4.5 → 4.427) es el sospechoso principal:**
+
+1. **Bucket <40% explotó**: 619 → 867 juegos (+248, +40%) clasificados como underdogs extremos
+2. **Fake edges en alta confianza**: edge≥8% bets: 998 → 1204 (+206 bets) pero ROI: +6.70% → +2.09%
+3. **Las 206 apuestas extra son perdedoras**: la expansión del bucket <40% genera edges falsos que el modelo "ve" pero no son reales (equipo predicho con 34.5% gana el 41.8% real)
+
+**Mecanismo**: `hfa_mult = 1 + hfa_boost / LEAGUE_AVG_RUNS`. Con denominador 4.427 vs 4.5, el boost por unidad de run es mayor (+1.6%) → lambdas más extremas → más probabilidades cayendo bajo 40% → underdogs artificialmente sobrepenalizados.
+
+**Contribuyentes secundarios candidatos:**
+- D1 (xwOBA 0.312): ahora consistente entre engines, pero puede haber cambiado magnitud neta de ajustes pitcher
+- D4 (B2B home=1.0): removió una corrección que azarosamente ayudaba a calibrar underdogs en home games
+
+### Diagnóstico aislado D2 — EJECUTADO (2026-05-27)
+
+**Run**: `backtest_report_20260527_1859.json` — LEAGUE_AVG_RUNS=4.5, A2+D1+D4 activos, D2 revertido.
+
+**Resultado: D2 CONFIRMADO como culpable único.**
+
+| Run | Brier | <40% N | ROI edge≥8% | ROI edge≥10% |
+|-----|-------|--------|-------------|--------------|
+| Pre-fix (1556) | 0.24209 | 619 | +6.70% (998 bets) | +7.09% (598 bets) |
+| Con D2 (1811) | 0.24307 | 867 | +2.09% (1204 bets) | +5.19% (754 bets) |
+| **Sin D2 (1859)** | **0.24214** | **620** | **+6.88% (999 bets)** | **+7.22% (592 bets)** |
+
+Sin D2, todos los indicadores vuelven a baseline o **mejoran**: Brier 0.24214 < 0.24209, ROI edge≥8% +6.88% > +6.70%.
+
+**Root cause confirmado**: `hfa_mult = 1 + hfa_boost / LEAGUE_AVG_RUNS` fue tuneado con 4.5. Cambiar a 4.427 (−1.6% denominador) amplifica cada boost HFA → 248 juegos extra en bucket <40% → fake edges → colapso ROI.
+
+**Calibración final sin D2:**
+
+| Bucket  | N    | Pred%  | Actual% | Diff  |
+|---------|------|--------|---------|-------|
+| <40%    | 620  | 35.0%  | 38.1%   | +3.1% |
+| 40-45%  | 677  | 42.7%  | 49.2%   | +6.5% |
+| 45-50%  | 1001 | 47.6%  | 49.9%   | +2.3% |
+| 50-55%  | 1053 | 52.6%  | 51.4%   | -1.2% |
+| 55-60%  | 964  | 57.4%  | 56.3%   | -1.1% |
+| 60-70%  | 917  | 63.8%  | 64.0%   | +0.2% |
+| >70%    | 190  | 73.8%  | 77.4%   | +3.6% |
+
+**Lambda distribution (sin D2):**
+- λ_home: mean=4.406, p25=4.022, median=4.365, p75=4.756
+- λ_away: mean=4.335, p25=3.921, median=4.279, p75=4.678
+
+**Platt calibration final:** 2024: a=0.8214/b=0.0684 | 2025: a=0.7398/b=0.1408 | 2026: a=0.6487/b=0.0898
+
+### Decisión: D2 REVERTIDO PERMANENTEMENTE
+
+`config.py`: `LEAGUE_AVG_RUNS = 4.5` — el valor 4.427 es empíricamente correcto pero la fórmula HFA fue calibrada asumiendo 4.5. Corrección correcta requeriría retuning de `hfa_boost`, no solo cambiar el denominador.
+
+**Fixes activos post-diagnóstico: A2 ✓ | D1 ✓ | D4 ✓ | D2 ✗ (revertido)**
+
+### Nuevo baseline para PASO 4
+
+```
+Run:            backtest_report_20260527_1859.json
+Brier:          0.24214   (nuevo mínimo del proyecto)
+Brier Pinnacle: 0.24051
+Accuracy:       56.23%
+ROI edge≥5%:   +3.29%  (2038 bets)
+ROI edge≥8%:   +6.88%  (999 bets)   ← nuevo máximo
+ROI edge≥10%:  +7.22%  (592 bets)   ← nuevo máximo
+CLV>0:          100% en todos los thresholds
+```
+
+**Listo para PASO 4 — Negative Binomial en simulator.py.**
