@@ -1,16 +1,19 @@
 """
 Tests for the HFA engine asymmetric pipeline.
 
-Architecture (post-refactor):
-  HFAEngine  → crowd boost (λ_home only) + travel fatigue (λ_away only)
+Architecture (post-C2 fix):
+  HFAEngine  → travel fatigue (λ_away only); crowd boost ELIMINATED (FIX C2)
   ParkWeatherEngine → park factor + weather (symmetric, separate engine)
 
+FIX C2 (2026-05-27): crowd boost confirmed pure noise (Pearson=-0.015,
+direction 53% random). hfa_boost hard-coded to 0.0. Only travel
+fatigue remains as an asymmetric HFA adjustment.
+
 The tests verify:
-  1. Crowd boost always raises λ_home, never λ_away
-  2. Travel penalty only reduces λ_away
-  3. Unknown park falls back to 0.0325 default boost
-  4. Metadata keys match the current HFAEngine API
-  5. Back-to-back is now handled by ContextualEngine (not HFAEngine)
+  1. Crowd boost is ZERO — λ_home unchanged by HFA engine (FIX C2)
+  2. Travel penalty only reduces λ_away, λ_home unaffected
+  3. Metadata keys match the current HFAEngine API
+  4. Back-to-back is now handled by ContextualEngine (not HFAEngine)
 """
 import pytest
 from modules.baseball_module.hfa.hfa_engine import HFAEngine, get_adjusted_lambdas
@@ -27,37 +30,39 @@ def _neutral_game(park="Unknown"):
 
 class TestHFAPipelineMultiplicative:
 
-    def test_neutral_game_home_boosted(self):
-        # HFA crowd boost must always raise λ_home; λ_away unchanged without travel.
+    def test_neutral_game_no_crowd_boost(self):
+        # FIX C2: crowd boost eliminated — λ_home must NOT change without travel.
         lh, la = 4.5, 4.5
-        lh_out, la_out, _ = get_adjusted_lambdas(lh, la, _neutral_game())
-        assert lh_out > lh, "HFA crowd boost must raise λ_home"
+        lh_out, la_out, meta = get_adjusted_lambdas(lh, la, _neutral_game())
+        assert lh_out == pytest.approx(lh), "FIX C2: crowd boost eliminated, λ_home must be unchanged"
         assert la_out == pytest.approx(la), "λ_away must not change without travel"
+        assert meta["hfa_boost_runs"] == 0.0, "FIX C2: hfa_boost_runs must be zero"
+        assert meta["hfa_mult"] == 1.0,       "FIX C2: hfa_mult must be exactly 1.0"
 
-    def test_home_advantage_direction(self):
-        # Home should always exceed away in a symmetric matchup.
+    def test_home_advantage_only_from_travel(self):
+        # FIX C2: with no travel, λ_home == λ_away (crowd boost gone).
         lh, la = 4.5, 4.5
         lh_out, la_out, meta = get_adjusted_lambdas(lh, la, _neutral_game("Yankee Stadium"))
-        assert lh_out > la_out, "λ_home must exceed λ_away in symmetric matchup"
-        assert meta["hfa_boost_runs"] > 0, "hfa_boost_runs must be positive"
-        assert meta["hfa_mult"] > 1.0,     "hfa_mult must exceed 1.0"
+        assert lh_out == pytest.approx(la_out), "FIX C2: no crowd boost → λ_home == λ_away with no travel"
+        assert meta["hfa_boost_runs"] == 0.0
+        assert meta["hfa_mult"] == 1.0
 
     def test_metadata_keys_present(self):
         _, _, meta = get_adjusted_lambdas(4.5, 4.5, _neutral_game("Fenway Park"))
         for key in ("park_name", "hfa_boost_runs", "hfa_mult", "travel_penalty"):
             assert key in meta, f"Missing metadata key: {key}"
 
-    def test_known_park_higher_boost_than_unknown(self):
-        # Yankee Stadium (0.0450) > default (0.0325)
+    def test_all_parks_same_lambda_no_travel(self):
+        # FIX C2: crowd boost eliminated — all parks produce the same λ_home (no travel).
         lh_yankee, _, _ = get_adjusted_lambdas(4.5, 4.5, _neutral_game("Yankee Stadium"))
         lh_unknown, _, _ = get_adjusted_lambdas(4.5, 4.5, _neutral_game("Future Stadium"))
-        assert lh_yankee > lh_unknown, "Named park should boost more than unknown-park default"
+        assert lh_yankee == pytest.approx(lh_unknown), "FIX C2: park name must not affect λ_home"
 
-    def test_worst_attendance_park_lower_boost(self):
-        # Tropicana Field (0.0250) < Yankee Stadium (0.0450)
+    def test_all_parks_same_lambda_regardless_of_size(self):
+        # FIX C2: Tropicana Field and Yankee Stadium produce identical λ_home (no travel).
         lh_yankee, _, _ = get_adjusted_lambdas(4.5, 4.5, _neutral_game("Yankee Stadium"))
         lh_trop, _, _   = get_adjusted_lambdas(4.5, 4.5, _neutral_game("Tropicana Field"))
-        assert lh_yankee > lh_trop, "High-attendance park must produce larger home boost"
+        assert lh_yankee == pytest.approx(lh_trop), "FIX C2: park size must not affect λ_home"
 
     def test_travel_only_reduces_away(self):
         # Coast-to-coast (3 time zones) must reduce λ_away, not λ_home.
@@ -89,12 +94,12 @@ class TestHFAPipelineMultiplicative:
             assert lh_out > 0, f"λ_home must be positive at {park}"
             assert la_out > 0, f"λ_away must be positive at {park}"
 
-    def test_crowd_boost_scales_with_input_lambda(self):
-        # Multiplicative: a higher base λ gets a proportionally larger absolute boost.
+    def test_hfa_mult_always_one_no_travel(self):
+        # FIX C2: hfa_mult is always exactly 1.0 when no travel (crowd boost gone).
         _, _, meta1 = get_adjusted_lambdas(4.0, 4.0, _neutral_game("Yankee Stadium"))
         _, _, meta2 = get_adjusted_lambdas(5.0, 5.0, _neutral_game("Yankee Stadium"))
-        # hfa_mult is the same (it's the ratio), but the absolute delta differs
-        assert meta1["hfa_mult"] == pytest.approx(meta2["hfa_mult"], abs=1e-6)
+        assert meta1["hfa_mult"] == 1.0
+        assert meta2["hfa_mult"] == 1.0
 
     def test_back_to_back_no_longer_in_hfa(self):
         # back_to_back is now owned by ContextualEngine; HFAEngine ignores it.
