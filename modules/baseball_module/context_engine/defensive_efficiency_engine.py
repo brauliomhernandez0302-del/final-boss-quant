@@ -56,7 +56,9 @@ _DER_WEIGHT   = 0.55
 _OAA_WEIGHT   = 0.45
 
 # Hard cap on total fielding adjustment: ±8 % (B2: expanded from ±5%)
+# Public alias for tests and external callers.
 _MAX_DEF_ADJ  = 0.08
+MAX_DEF_ADJ   = _MAX_DEF_ADJ
 
 
 # ── Data classes ─────────────────────────────────────────────────────────────

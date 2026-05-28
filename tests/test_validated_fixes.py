@@ -351,3 +351,30 @@ class TestBullpenClampExpansion:
         lh, la, _ = adjust_for_bullpen(4.5, 4.3, {})
         assert lh == pytest.approx(4.5)
         assert la == pytest.approx(4.3)
+
+    def test_bullpen_clamp_constants_exported(self):
+        from modules.baseball_module.context_engine.bullpen_engine import (
+            BULLPEN_CLAMP_LOW, BULLPEN_CLAMP_HIGH,
+        )
+        assert BULLPEN_CLAMP_HIGH == 1.15
+        assert BULLPEN_CLAMP_LOW  == 0.85
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Alias tests — exact form requested (PASO 0 B1+B2)
+# ═══════════════════════════════════════════════════════════════════
+class TestBullpenClampB1:
+    def test_bullpen_clamp_expanded(self):
+        from modules.baseball_module.context_engine.bullpen_engine import (
+            BULLPEN_CLAMP_LOW, BULLPEN_CLAMP_HIGH,
+        )
+        assert BULLPEN_CLAMP_HIGH == 1.15
+        assert BULLPEN_CLAMP_LOW  == 0.85
+
+
+class TestDEEClampB2:
+    def test_dee_max_adj_expanded(self):
+        from modules.baseball_module.context_engine.defensive_efficiency_engine import (
+            MAX_DEF_ADJ,
+        )
+        assert MAX_DEF_ADJ == 0.08

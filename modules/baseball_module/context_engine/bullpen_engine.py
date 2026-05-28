@@ -70,6 +70,11 @@ _K_K_BB_BP   = 180   # K%-BB% for team bullpen aggregate
 _NORMAL_IP_3D  = 9.0
 _DEFAULT_AVG_IPS = 5.5
 
+# Output clamp — public constants so tests and callers can reference them.
+# B1 expanded from [0.90, 1.10] to [0.85, 1.15] (54 games/0.5% were hitting ceiling).
+BULLPEN_CLAMP_LOW  = 0.85
+BULLPEN_CLAMP_HIGH = 1.15
+
 # Bullpen tier ERA adjustments (empirical MLB averages).
 # When starter exits early, Long Relief pitchers fill innings — ERA runs above avg.
 # When starter goes deep, High Leverage (setup/closer) pitches — ERA runs below avg.
@@ -475,7 +480,7 @@ class BullpenEngine:
         # ── Innings weighting (avg_ips already computed above for tier) ───
 
         total_mult = 1.0 + innings_weight * (raw_mult - 1.0)
-        total_mult = max(0.85, min(1.15, total_mult))  # B1: expanded from [0.90,1.10]
+        total_mult = max(BULLPEN_CLAMP_LOW, min(BULLPEN_CLAMP_HIGH, total_mult))
 
         log.debug(
             "   [%s bp] tier=%s ERA %.2f→%.2f(tier)→%.2f(reg) xwOBA=%.3f kbb=%.3f brl=%.3f "
