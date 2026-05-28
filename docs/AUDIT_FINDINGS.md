@@ -2560,3 +2560,114 @@ CLV>0:          100% en todos los thresholds
 ```
 
 **Listo para PASO 4 — Negative Binomial en simulator.py.**
+
+---
+
+## PASO 4 — NEGATIVE BINOMIAL en Monte Carlo (2026-05-28)
+
+### Motivación
+
+Análisis empírico sobre 5,422 partidos reales (2024-2026) confirmó que Poisson es inadecuado para runs de béisbol:
+
+| Métrica | Poisson (asume) | MLB real | Error |
+|---------|----------------|---------|-------|
+| var/mean | 1.0 | **2.263** | 2.3× |
+| P(0 runs) | 1.26% | **6.69%** | 5.3× |
+| P(1 run) | 5.53% | **11.03%** | 2.0× |
+| P(8+ runs) | 7.63% | **16.06%** | 2.1× |
+| P(4-5 runs) | 36.02% | **23.79%** | exceso |
+
+El Platt calibration con a=0.74/0.65 (baseline) era síntoma: el modelo debía comprimir probabilidades porque Poisson las hacía demasiado extremas. Señal de distribución incorrecta, no de lambdas incorrectos.
+
+### Parámetro r — Proceso de calibración
+
+**r óptimo teórico**: `r = mean² / (var - mean) = 4.427² / 5.59 = 3.51` (marginal).
+Descontando varianza cross-game (var_λ=0.348): `r_within = 3.67`.
+OLS condicional en λ del modelo: `r = 3.80`.
+
+**Barrido de r vs distribución empírica** (con 5% lambda noise):
+
+| r | var/mean | P(0 runs) | P(8+ runs) |
+|---|----------|-----------|-----------|
+| Poisson | 1.011 | 1.26% | 7.63% |
+| 3.0 | 2.48 | 6.63% | 16.13% |
+| 3.5 | 2.28 | 5.75% | 15.52% |
+| **6.0** | **1.75** | **3.67%** | **13.41%** |
+| Real MLB | 2.263 | 6.69% | 16.06% |
+
+### Pruebas de backtest
+
+**r=3.0 — RECHAZADO** (run `20260528_1340`):
+- Brier: +0.00049 (PASS)
+- ROI edge≥10%: −5.70pp → **NO-GO**
+- Bucket >70%: +11.0pp → **NO-GO**
+- Causa: r=3.0 comprimió probabilidades agresivamente hacia 50%. Bucket >70%: 190→17 juegos. Platt a=1.34 confirmó sobrecompresión.
+
+**r=6.0 — ACEPTADO** (run `20260528_1409`):
+
+| Métrica | Baseline (Poisson) | NB r=6.0 | Δ |
+|---------|------------------|---------|---|
+| Brier | 0.24214 | 0.24266 | +0.00052¹ |
+| ROI edge≥10% | +7.22% (592 bets) | **+7.39% (630 bets)** | **+0.17pp** |
+| ROI edge≥2% | +2.47% | **+3.10%** | +0.63pp |
+| ROI edge≥8% | +6.88% | +5.29% | −1.59pp |
+| Bucket 40-45% | +6.5pp | **+3.8pp** | −2.7pp ✓ |
+| Bucket 60-70% | +0.2pp | **−0.1pp** | −0.3pp ✓ |
+| Bucket >70% | +3.6pp | −2.5pp | ±6.1pp² |
+| Platt 2025 a | 0.74 | **0.98** | +0.24 |
+
+¹ Dentro de ruido estadístico: SE(Brier)=0.00266, z=0.20 (necesita |z|>1.96 para significancia).
+² Mejora en magnitud absoluta (|3.6| → |2.5|) pero cambió dirección.
+
+**Calibración completa NB r=6.0:**
+
+| Bucket | N | Pred% | Actual% | Diff |
+|--------|---|-------|---------|------|
+| <40% | 598 | 35.8% | 40.1% | +4.3% |
+| 40-45% | 740 | 42.7% | 46.5% | +3.8% |
+| 45-50% | 1024 | 47.6% | 50.0% | +2.4% |
+| 50-55% | 1042 | 52.4% | 52.3% | −0.1% |
+| 55-60% | 916 | 57.3% | 57.1% | −0.2% |
+| 60-70% | 877 | 63.8% | 63.7% | −0.1% |
+| >70% | 225 | 74.9% | 72.4% | −2.5% |
+
+**Platt post-backtest NB r=6.0:** 2024: a=1.1057/b=0.0778 | 2025: a=0.9795/b=0.1362 | 2026: a=0.7271/b=0.1084
+
+### Implementación
+
+Archivo: `modules/baseball_module/montecarlo/simulator.py`
+
+```python
+NB_DISPERSION: float = 6.0   # línea 24
+
+# Reemplaza rng.poisson(lh_noise) en líneas 166, 167, 210, 211:
+home_runs = rng.negative_binomial(NB_DISPERSION, NB_DISPERSION / (NB_DISPERSION + lh_noise))
+away_runs = rng.negative_binomial(NB_DISPERSION, NB_DISPERSION / (NB_DISPERSION + la_noise))
+```
+
+Numpy Generator soporta r flotante (`negative_binomial(n, p)` con n=6.0). La estructura de correlación bivariada (rho_game=−0.008, Cholesky) se mantiene intacta sobre los lambdas ruidosos — NB solo reemplaza el paso final de muestreo de counts.
+
+### Hallazgo colateral importante
+
+El bias del bucket <40% (+3.1pp baseline, +4.3pp con NB r=6.0) **NO proviene de Monte Carlo**. Ningún valor de r lo corrige desde abajo sin romper otros buckets. La fuente es el pipeline de lambdas sobreestimando la diferencia entre equipos favoritos/underdogs. Candidatos: TTE pesos de xwOBA, clamps del Pitcher Engine, o DEE MAX_DEF_ADJ.
+
+### Nuevo baseline del proyecto (post-PASO 4)
+
+```
+Run:            backtest_report_20260528_1409.json
+Distribución:   Negative Binomial (r=6.0)
+Brier:          0.24266  (estadísticamente = 0.24214)
+Brier Pinnacle: 0.24051
+Accuracy:       56.36%
+ROI edge≥2%:   +3.10%  (3545 bets)
+ROI edge≥5%:   +2.15%  (2117 bets)
+ROI edge≥8%:   +5.29%  (1051 bets)
+ROI edge≥10%:  +7.39%  (630 bets)   ← MÁXIMO HISTÓRICO
+CLV>0:          100% en todos los thresholds
+```
+
+### Próximos pasos sugeridos
+
+- **B1**: Bullpen clamp expansion `[0.90, 1.10]` → `[0.85, 1.15]` — señal comprimida artificialmente
+- **B2**: DEE `MAX_DEF_ADJ` 0.05 → 0.08 — residuales no absorbidos detectados en auditoría
+- **B3**: Ortogonalización DEE/Bullpen (más complejo, requiere análisis de correlación)
