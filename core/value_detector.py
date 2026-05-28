@@ -206,10 +206,12 @@ def kelly_criterion(
     """Calcula fracción Kelly óptima."""
     if odds <= 1.0 or model_prob <= 0:
         return 0.0
-    
+
     full_kelly = (model_prob * odds - 1) / (odds - 1)
+    if full_kelly <= 0:
+        return 0.0
+
     kelly = np.clip(full_kelly * fractional, CONFIG.MIN_KELLY, CONFIG.MAX_KELLY)
-    
     return round(kelly, 4)
 
 def sharpe_ratio(ev: float, ev_std: float) -> float:

@@ -34,7 +34,7 @@ _LG_WHIP           = LEAGUE_AVG_WHIP    # 1.30
 _LG_K_PCT          = 0.220              # starter league-avg K%
 _LG_BB_PCT         = 0.080              # starter league-avg BB%
 _LG_K_BB           = _LG_K_PCT - _LG_BB_PCT   # 0.140
-_LG_XWOBA_ALLOWED  = 0.320              # Statcast xwOBA allowed, starter avg
+_LG_XWOBA_ALLOWED  = 0.312              # Statcast xwOBA allowed, starter avg (aligned with Bullpen/TTE)
 _LG_BRL_PCT        = 8.0               # barrel% allowed, starter avg
 
 # Bayesian stabilisation constant for ERA estimators (TBF at 50% reliability).

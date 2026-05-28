@@ -2312,3 +2312,111 @@ Platt 2026: a=0.6528  b=0.0935
 λ_home mean: 4.374
 λ_away mean: 4.312
 ```
+
+---
+
+## FASE 2 — FIXES POST-AUDITORÍA COMPLETA (PASO 3 del plan)
+
+*Fecha: 2026-05-27. Auditoría de los 8 motores completa (ver Síntesis Global más abajo).
+Fixes implementados en orden de severidad.*
+
+---
+
+### FIX A2 — MIN_KELLY: Kelly fuerza apuestas con EV negativo
+
+**Archivo:** `core/value_detector.py` → `kelly_criterion()`
+**Severidad:** CRÍTICA (pérdida de bankroll garantizada)
+**Estado:** IMPLEMENTADO ✓
+
+**Problema:** `np.clip(full_kelly * 0.25, 0.01, 0.15)` clampea hacia arriba incluso
+cuando `full_kelly ≤ 0` (EV negativo). El sistema recomendaba apostar el 1% del
+bankroll en 3,342 de 4,694 games con EV negativo (71.2% del total).
+
+**Fix:**
+```python
+# ANTES
+kelly = np.clip(full_kelly * fractional, CONFIG.MIN_KELLY, CONFIG.MAX_KELLY)
+
+# DESPUÉS
+if full_kelly <= 0:
+    return 0.0
+kelly = np.clip(full_kelly * fractional, CONFIG.MIN_KELLY, CONFIG.MAX_KELLY)
+```
+
+**Validación empírica (4,694 games con odds):**
+- Antes: 3,342 bets con EV<0 recibían kelly=0.01
+- Después: 1,352 bets recomendadas (28.8%); 3,342 filtradas (71.2%)
+- 100% de bets recomendadas tienen EV>0 ✓
+
+---
+
+### FIX D1 — _LG_XWOBA_ALLOWED inconsistente en Pitcher Engine
+
+**Archivo:** `modules/baseball_module/context_engine/pitcher_engine.py`
+**Severidad:** MEDIA
+**Estado:** IMPLEMENTADO ✓
+
+**Problema:** Pitcher Engine usaba `_LG_XWOBA_ALLOWED=0.320` mientras Bullpen
+y TTE usaban `LG_XWOBA=0.312`. Brecha de 8 puntos de wOBA (2.6%) sin justificación.
+El modelo sobreestimaba sistemáticamente la calidad del pitcher promedio vs el
+bateador promedio.
+
+**Fix:** `_LG_XWOBA_ALLOWED: 0.320 → 0.312`
+
+---
+
+### FIX D2 — LEAGUE_AVG_RUNS sesgo sistemático
+
+**Archivo:** `config.py`
+**Severidad:** MEDIA
+**Estado:** IMPLEMENTADO ✓
+
+**Problema:** `LEAGUE_AVG_RUNS=4.5` vs empírico real de 4.427 (5,422 games).
+Sesgo de −1.6% que se propaga por todo el pipeline (HFA engine, denominadores).
+TTE under-prediction: −0.070 home, −0.098 away runs.
+
+**Fix:** `LEAGUE_AVG_RUNS: 4.5 → 4.427`
+
+**Nota:** El impacto en Brier será visible en el próximo run completo del pipeline
+(DB existente tiene lambdas pre-fix).
+
+---
+
+### FIX D4 — Home B2B penalty dirección incorrecta
+
+**Archivo:** `modules/baseball_module/context_engine/contextual_engine.py`
+**Severidad:** MEDIA
+**Estado:** IMPLEMENTADO ✓
+
+**Problema:** El mismo `_B2B_MULT=0.960` (−4%) se aplicaba a home y away B2B.
+Empírico: home B2B actual = +7.87% (dirección opuesta); away B2B actual = −4.41% ✓.
+El probable confound: los equipos home tienen B2B en homestand, con ventaja de
+no viajar ni hacer hoteles.
+
+**Fix:**
+```python
+# ANTES: _B2B_MULT = 0.960  (mismo para home y away)
+
+# DESPUÉS:
+_B2B_MULT_AWAY = 0.960   # away B2B: −4%, dirección correcta ✓
+_B2B_MULT_HOME = 1.000   # home B2B: neutralizado, dirección incorrecta confirmada
+```
+
+`_rest_days()` recibe `is_home: bool` para aplicar el multiplicador correcto.
+
+---
+
+### PASO 3 — BASELINE POST-PASO-1+2 (métricas sobre DB existente)
+
+```
+Brier:     0.24209  (sin cambio — DB lambdas son pre-fix; impacto visible en next run)
+Calibración:
+  [0.44,0.50): n=1163  pred=0.470  actual=0.487  diff=+0.017
+  [0.50,0.55): n=1069  pred=0.525  actual=0.529  diff=+0.004
+  [0.55,0.60): n= 952  pred=0.575  actual=0.556  diff=-0.019
+  [0.60,0.65): n= 608  pred=0.625  actual=0.645  diff=+0.020
+  [0.65,0.75): n= 443  pred=0.700  actual=0.666  diff=-0.034
+Kelly fix: 1,352 bets con EV>0 (28.8%); 3,342 filtradas con EV≤0 (71.2%)
+```
+
+**Pending PASO 4:** Negative Binomial en simulator.py (A1 — Poisson inadecuado).

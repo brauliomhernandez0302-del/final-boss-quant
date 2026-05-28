@@ -8,8 +8,9 @@ Consolidates small, game-specific adjustments that are:
 
 Factors:
   1. Rest / fatigue — per team, asymmetric
-       B2B  (rest_days == 0): −4 % on that team's λ
-       Rust (rest_days >= 3): −2 % on that team's λ
+       B2B home (rest_days == 0): 0 % — empirical audit: actual +7.87 % (FIX D4)
+       B2B away (rest_days == 0): −4 % on λ_away — empirical: −4.41 % ✓
+       Rust (rest_days >= 3): −2 % on that team's λ (dead code: 0/5422 games fire)
        1–2 days            : neutral (optimal MLB rhythm)
 
   2. Home plate umpire zone — symmetric (same multiplier on both λ)
@@ -33,7 +34,8 @@ from typing import Any, Dict, Optional, Tuple
 log = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-_B2B_MULT      = 0.960   # −4 % for back-to-back (empirical MLB: ~3–5 %)
+_B2B_MULT_AWAY = 0.960   # −4 % for away B2B (empirical: −4.41 %, correct direction)
+_B2B_MULT_HOME = 1.000   # home B2B: audit confirmed +7.87 % actual vs −4 % model — neutralized
 _RUST_MULT     = 0.980   # −2 % for extended rest ≥ 3 days
 _UMP_CLIP_LOW  = 0.960   # umpire zone_factor floor
 _UMP_CLIP_HIGH = 1.040   # umpire zone_factor ceiling
@@ -67,8 +69,8 @@ class ContextualEngine:
         away = game_data.get("away_team") or {}
 
         # ── 1. Rest / fatigue (asymmetric) ───────────────────────────────────
-        home_rest = self._rest_days(home, game_data.get("back_to_back_home", False))
-        away_rest = self._rest_days(away, game_data.get("back_to_back_away", False))
+        home_rest = self._rest_days(home, game_data.get("back_to_back_home", False), is_home=True)
+        away_rest = self._rest_days(away, game_data.get("back_to_back_away", False), is_home=False)
 
         lh_new = lh * home_rest.mult
         la_new = la * away_rest.mult
@@ -107,29 +109,32 @@ class ContextualEngine:
             self.mult   = mult
             self.reason = reason
 
-    def _rest_days(self, team: Dict, back_to_back_flag: bool) -> "_RestResult":
+    def _rest_days(self, team: Dict, back_to_back_flag: bool, is_home: bool = False) -> "_RestResult":
         """
         Determine rest multiplier for one team.
 
         Priority:
-          1. back_to_back_flag=True → rest=0 (B2B penalty), regardless of rest_days.
+          1. back_to_back_flag=True → rest=0 (B2B), regardless of rest_days.
              The flag is set from schedule data and is more specific than the
              default rest_days=1 placeholder.  An explicit API rest_days=0 is
              consistent; rest_days=1 is the default and should be overridden.
           2. rest_days from team dict (API-populated) for non-B2B cases.
           3. Absent/None → default 1 (optimal MLB rhythm).
+
+        B2B multipliers differ by side (FIX D4):
+          Home B2B: 1.000 — audit showed actual +7.87 % effect (homestand confound)
+          Away B2B: 0.960 — audit confirmed −4.41 % actual, model −4 % ✓
         """
         rest = team.get("rest_days")
 
-        # B2B flag overrides the rest_days default (1) but not a confirmed
-        # multi-day rest from the API (rest_days >= 2 wins on rest).
         if back_to_back_flag and (rest is None or rest <= 1):
             rest = 0
 
         rest = int(rest) if rest is not None else 1
 
         if rest == 0:
-            return self._RestResult(rest, _B2B_MULT, "b2b")
+            b2b_mult = _B2B_MULT_HOME if is_home else _B2B_MULT_AWAY
+            return self._RestResult(rest, b2b_mult, "b2b")
         if rest >= 3:
             return self._RestResult(rest, _RUST_MULT, "rust")
         return self._RestResult(rest, 1.0, "optimal")
