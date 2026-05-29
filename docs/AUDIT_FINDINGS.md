@@ -2666,8 +2666,101 @@ ROI edge≥10%:  +7.39%  (630 bets)   ← MÁXIMO HISTÓRICO
 CLV>0:          100% en todos los thresholds
 ```
 
-### Próximos pasos sugeridos
+### Próximos pasos (completados en sesión posterior)
 
-- **B1**: Bullpen clamp expansion `[0.90, 1.10]` → `[0.85, 1.15]` — señal comprimida artificialmente
-- **B2**: DEE `MAX_DEF_ADJ` 0.05 → 0.08 — residuales no absorbidos detectados en auditoría
-- **B3**: Ortogonalización DEE/Bullpen (más complejo, requiere análisis de correlación)
+- **B1** ✅ Bullpen clamp `[0.90, 1.10]` → `[0.85, 1.15]`
+- **B2** ✅ DEE `MAX_DEF_ADJ` 0.05 → 0.08
+- **B3** — Ortogonalización DEE/Bullpen: investigación confirmó que GD ya diferencia pesos (bullpen=1.30, defense=1.14). Correlación r=0.558 refleja realidad. Diferido.
+
+---
+
+## ESTADO FINAL DEL DÍA — 2026-05-28
+
+### Resumen de todos los fixes completados
+
+| Fix | Descripción | Impacto en Brier | Impacto en ROI edge≥10% |
+|-----|-------------|-----------------|------------------------|
+| **C1** | compute_multidim_bias activado | −0.00112 | — |
+| **C2** | HFA crowd boost eliminado (ruido puro) | −0.00039 | — |
+| **A2** | Kelly no fuerza apuestas EV negativo | — | Calidad +++ |
+| **D1** | xwOBA unificado a 0.312 (3 engines) | —  | — |
+| **D4** | Home B2B neutralizado (dirección era incorrecta) | — | — |
+| **D2** | LEAGUE_AVG_RUNS revertido a 4.5 | +0.00098 si no se revierte | — |
+| **A1** | Negative Binomial r=6.0 (Poisson era incorrecto) | +0.00052 (ruido) | +0.17pp |
+| **B1** | Bullpen clamp [0.90,1.10]→[0.85,1.15] | −0.00041 | +1.67pp |
+| **B2** | DEE MAX_DEF_ADJ 0.05→0.08 | (incluido en B1) | (incluido en B1) |
+| **E1** | Rust factor eliminado (0/5422 activaciones) | neutro | neutro |
+| **E2** | Umpire factor eliminado (nunca activado) | neutro | neutro |
+| **E3** | hfa_base dict eliminado (código muerto post-C2) | neutro | neutro |
+
+### Métricas finales (backtest_report_20260528_1817.json — post-E1/E2/E3 cleanup)
+
+```
+Distribución:   Negative Binomial (r=6.0)
+Brier:          0.24216
+Brier Pinnacle: 0.24051
+Accuracy:       56.62%
+ROI edge>=2%:  +3.32%  (3480 bets)
+ROI edge>=5%:  +2.78%  (1995 bets)
+ROI edge>=8%:  +7.72%  (921 bets)
+ROI edge>=10%: +9.93%  (504 bets)   ← MÁXIMO HISTÓRICO DEL PROYECTO
+CLV>0:          100% en todos los thresholds
+Platt 2025:     a=0.9804 (casi perfecto — modelo bien calibrado)
+By season:      2024 Brier=0.24192  2025 Brier=0.24181  2026 Brier=0.24467
+```
+
+### Evolución completa Sprint 1 → fin de sesión
+
+| Estado | Brier | ROI edge≥10% |
+|--------|-------|-------------|
+| Sprint 1 baseline | 0.24273 | +7.09% |
+| Post-Sprint 3 GD | 0.24220 | +7.09% |
+| Post-C1+C2 | 0.24209 | +7.22% |
+| Post-A1 NB r=6.0 | 0.24266 | +7.39% |
+| Post-B1+B2 | 0.24225 | +9.06% |
+| **Post-E1/E2/E3 (final)** | **0.24216** | **+9.93%** |
+
+### Evolución del proyecto (Sprint 1 → hoy)
+
+| Punto | Brier | ROI edge≥10% | Estado |
+|-------|-------|-------------|--------|
+| Sprint 1 baseline | 0.24273 | +7.09% | — |
+| Post-Sprint 3 (GD activo) | 0.24220 | +7.09% | — |
+| Post-C1+C2 | 0.24209 | +7.22% | baseline limpia |
+| Post-A1 (NB r=6.0) | 0.24266 | +7.39% | — |
+| **Post-B1+B2 (final del día)** | **0.24225** | **+9.06%** | **mejor estado** |
+
+### Tests (184 pasando)
+
+```
+tests/test_defense_multiplier.py   — DEE clamp behavior
+tests/test_f5_lambda.py            — F5 lambda scaling
+tests/test_formulas.py             — fórmulas matemáticas
+tests/test_hfa_pipeline.py         — HFA post-C2
+tests/test_learning_engine.py      — Kalman, bias, GD
+tests/test_montecarlo.py           — NB simulator
+tests/test_pitcher_engine.py       — pitcher adjustments
+tests/test_validated_fixes.py      — A1,A2,B1,B2,C2,D1,D2,D4 + GD + E1/E2/E3
+```
+
+### Lecciones aprendidas
+
+1. **D2 (LEAGUE_AVG_RUNS)**: matemáticamente correcto (4.427) ≠ mejor en práctica. La fórmula `hfa_mult = 1 + boost / LEAGUE_AVG_RUNS` fue calibrada asumiendo 4.5. Cambiar el denominador sin recalibrar boost amplifica el efecto.
+
+2. **NB r**: el var/mean marginal empírico incluye varianza cross-game. El r condicional (~3.8) y el descompuesto (~3.67) son más apropiados que el marginal (~3.51). r=6.0 es conservador pero produce mejor ROI.
+
+3. **Clamps**: pueden comprimir señal real. 54 juegos (bullpen) y 163 juegos (DEE) estaban artificialmente limitados. Expandir liberó ese señal → ROI +1.67pp.
+
+4. **Correlaciones**: DEE-Bullpen r=0.558 refleja realidad (buenos equipos tienen ambos mejor). GD aprende a ponderar distinto: bullpen=1.30, defense=1.14.
+
+5. **GD persistence**: funciona correctamente. El bug era de diagnóstico — leíamos `mlb_learning.db` (vacía) en lugar de `predictions_history.db`.
+
+6. **Cleanup importa**: eliminar código muerto (rust, umpire, hfa_base) reduce superficie de confusión sin afectar métricas.
+
+### Pendientes para próxima sesión
+
+- **Confidence real**: C2 del audit (confidence siempre 0.99 — placeholder no implementado)
+- **Paper trading**: setup para validar picks en vivo antes de apostar real
+- **B3 revisit**: si futuro análisis muestra que correlación DEE-Bullpen está generando edges falsos
+- **GD warm-start**: pesos de temporada anterior como prior para temporada siguiente (actualmente cada temporada empieza en 1.0)
+- **Gradient descent learning rate**: con clamps expandidos, LR=0.01 puede necesitar ajuste

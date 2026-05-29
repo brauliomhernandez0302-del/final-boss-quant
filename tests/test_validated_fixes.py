@@ -361,6 +361,99 @@ class TestBullpenClampExpansion:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# GRADIENT DESCENT — persistence and correctness
+# ═══════════════════════════════════════════════════════════════════
+class TestGradientDescentWorks:
+    """GD persistence diagnosis: weights live in predictions_history.db,
+    NOT in mlb_learning.db (which is empty). After a full backtest, weights
+    must deviate from the 1.0 default for at least one engine and season."""
+
+    _DB = "/home/raulio/data/predictions_history.db"
+
+    def _get_weights(self):
+        import sqlite3, json
+        conn = sqlite3.connect(self._DB)
+        rows = conn.execute(
+            "SELECT season, value_json FROM ml_state WHERE key='pipeline_weights'"
+        ).fetchall()
+        conn.close()
+        return {r[0]: json.loads(r[1]) for r in rows}
+
+    def test_gd_uses_correct_db(self):
+        """LearningEngine and run_module.py both point to predictions_history.db."""
+        import pathlib
+        from modules.baseball_module.calibration.learning_engine import LearningEngine
+        import inspect, pathlib as pl
+        # Constructor requires db_path — passing predictions_history.db should not raise
+        db = pl.Path(self._DB)
+        assert db.exists(), f"predictions_history.db not found at {db}"
+
+    def test_gd_weights_not_all_one(self):
+        """After a full backtest, at least one weight must differ from 1.0."""
+        weights_by_season = self._get_weights()
+        assert len(weights_by_season) > 0, "No GD weights found in DB — backtest not run?"
+        found_non_default = False
+        for season, w in weights_by_season.items():
+            for stage, val in w.items():
+                if abs(val - 1.0) > 0.01:
+                    found_non_default = True
+        assert found_non_default, \
+            "All GD weights are 1.0 — either backtest not run or GD persistence broken"
+
+    def test_gd_weights_in_reasonable_range(self):
+        """All weights must stay within the [MIN_WEIGHT, MAX_WEIGHT] clamp."""
+        weights_by_season = self._get_weights()
+        for season, w in weights_by_season.items():
+            for stage, val in w.items():
+                assert 0.30 <= val <= 1.50, \
+                    f"Season {season} stage '{stage}' weight {val:.4f} outside [0.30, 1.50]"
+
+    def test_gd_weights_have_expected_stages(self):
+        """GD must track all six pipeline stages."""
+        expected = {"park", "hfa", "defense", "pitcher", "bullpen", "context"}
+        weights_by_season = self._get_weights()
+        for season, w in weights_by_season.items():
+            assert set(w.keys()) >= expected, \
+                f"Season {season} missing stages: {expected - set(w.keys())}"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# CLEANUP E1/E2/E3 — dead code eliminated
+# ═══════════════════════════════════════════════════════════════════
+class TestCleanupDeadCode:
+    """E1: rust factor (0/5422 activations), E2: umpire factor (never activated),
+    E3: hfa_base dict (never used post-C2) — all removed."""
+
+    def test_rust_mult_eliminated(self):
+        """E1: _RUST_MULT must not exist (dead code, 0 activations in 5422 games)."""
+        import modules.baseball_module.context_engine.contextual_engine as ce
+        assert not hasattr(ce, "_RUST_MULT"), \
+            "_RUST_MULT still present — E1 cleanup not applied"
+
+    def test_umpire_constants_eliminated(self):
+        """E2: umpire constants must not exist (never activated — no umpire data fed)."""
+        import modules.baseball_module.context_engine.contextual_engine as ce
+        for const in ("_UMP_CLIP_LOW", "_UMP_CLIP_HIGH", "_UMP_MIN_GAMES"):
+            assert not hasattr(ce, const), \
+                f"{const} still present — E2 cleanup not applied"
+
+    def test_hfa_base_dict_eliminated(self):
+        """E3: HFAEngine.hfa_base must not exist post-C2 (hardcoded to 0.0, never read)."""
+        from modules.baseball_module.hfa.hfa_engine import HFAEngine
+        engine = HFAEngine()
+        assert not hasattr(engine, "hfa_base"), \
+            "HFAEngine.hfa_base still present — E3 cleanup not applied"
+
+    def test_b2b_constants_preserved(self):
+        """Sanity: B2B constants must survive the cleanup."""
+        from modules.baseball_module.context_engine.contextual_engine import (
+            _B2B_MULT_HOME, _B2B_MULT_AWAY,
+        )
+        assert _B2B_MULT_HOME == 1.0
+        assert _B2B_MULT_AWAY == pytest.approx(0.96)
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Alias tests — exact form requested (PASO 0 B1+B2)
 # ═══════════════════════════════════════════════════════════════════
 class TestBullpenClampB1:

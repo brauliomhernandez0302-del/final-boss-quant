@@ -3,20 +3,16 @@ HFA ENGINE — Asymmetric home field advantage for MLB lambda pipeline
 ====================================================================
 
 Scope — asymmetric adjustments ONLY:
-  1. Home crowd / familiarity boost   (adds to λ_home only)
-  2. Away-team travel fatigue         (subtracts from λ_away only)
+  Away-team travel fatigue (subtracts from λ_away only).
+
+Removed (E3 / FIX C2):
+  Home crowd/familiarity boost: confirmed pure noise (Pearson=-0.015,
+  direction 53% random). hfa_boost hardcoded to 0.0. The hfa_base
+  per-stadium dict has been removed entirely.
 
 NOT in scope (handled by ParkWeatherEngine, PASO 2):
   Park run-environment factor — symmetric, belongs in its own engine.
   Weather (temp, wind, rain)  — symmetric, belongs in ParkWeatherEngine.
-
-HFA base — empirically recalibrated to match +0.034 run/game home
-advantage across 5,422 games (2024-2026). Original crowd values ÷ 4.0.
-
-Formula: hfa_mult = 1 + hfa_boost / LEAGUE_AVG_RUNS
-Applied to λ_home only.  At league-average λ=4.5 the multiplier adds
-exactly hfa_boost runs; at other λ the additive effect scales slightly
-(≈±0.004 runs across the MLB λ range — within calibration tolerance).
 """
 
 import logging
@@ -36,52 +32,6 @@ class HFAEngine:
 
     def __init__(self):
         self.name = "HFA Engine"
-
-        # ── Crowd / familiarity boost per park (in runs, asymmetric) ──────────
-        # Empirically recalibrated: original crowd-boost estimates ÷ 4.0
-        # to match the +0.034 run/game home scoring advantage observed
-        # across 5,422 games (2024-2026). Original values (0.10–0.18) produced
-        # a +0.134 model spread — 3.9× the empirical truth.
-        #
-        # These values capture CROWD NOISE and HOME FAMILIARITY only.
-        # Thin air (Coors), dimensions (Fenway wall), turf — all symmetric
-        # and already encoded in ParkWeatherEngine's runs_factor per stadium.
-        self.hfa_base = {
-            "Yankee Stadium":            0.0450,  # loud, iconic; short RF porch is park factor
-            "Fenway Park":               0.0425,  # hostile atmosphere; Green Monster is park factor
-            "Dodger Stadium":            0.0400,
-            "Wrigley Field":             0.0400,
-            "Busch Stadium":             0.0375,
-            "Oracle Park":               0.0375,
-            "Citizens Bank Park":        0.0375,
-            "Progressive Field":         0.0350,
-            "Coors Field":               0.0350,  # crowd familiarity; altitude is in park factor
-            "Petco Park":                0.0350,
-            "Great American Ball Park":  0.0325,
-            "Comerica Park":             0.0325,
-            "Target Field":              0.0325,
-            "PNC Park":                  0.0325,
-            "T-Mobile Park":             0.0325,
-            "Truist Park":               0.0325,
-            "Camden Yards":              0.0325,
-            "Angel Stadium":             0.0325,
-            "American Family Field":     0.0325,
-            "Minute Maid Park":          0.0300,  # roof dampens crowd noise
-            "Globe Life Field":          0.0300,
-            "Kauffman Stadium":          0.0300,
-            "Chase Field":               0.0300,
-            "Guaranteed Rate Field":     0.0300,
-            "Rogers Centre":             0.0275,
-            "RingCentral Coliseum":      0.0275,
-            "Citi Field":                0.0275,  # historically low attendance
-            "Nationals Park":            0.0275,
-            "Tropicana Field":           0.0250,  # worst attendance in MLB
-            "loanDepot park":            0.0250,
-            # A's relocated to Sacramento 2025 — new fanbase, low initial HFA
-            "Sutter Health Park":        0.0250,
-            # Rogers Centre alias (MLB API returns both spellings)
-            "Rogers Center":             0.0275,
-        }
 
     # ── Public interface ───────────────────────────────────────────────────────
 
@@ -108,19 +58,11 @@ class HFAEngine:
 
         logger.debug("HFA Engine | park=%s  λh=%.3f  λa=%.3f  [crowd_boost=disabled]", park_name, lh, la)
 
-        # ── Step 1: Home crowd / familiarity boost — FIX C2: ELIMINATED ─────────
-        # Empirical analysis on 5,422 games confirmed crowd boost is pure noise:
-        #   Pearson(real_HFA, crowd_factor) = -0.015 (zero correlation)
-        #   Direction agreement:              53%    (indistinguishable from random)
-        #   Magnitude vs Kalman K_diff:       <5%    (negligible)
-        #   Gradient descent learned:         hfa_weight = 0.9706 (downweighting)
-        # The Kalman offense_home/offense_away + multidim_bias (FIX C1) now cover
-        # ~95% of the HFA signal empirically. The static hfa_base table (retained
-        # below as historical reference) contributed noise, not signal.
-        # See AUDIT_FINDINGS.md § FIX C2 for full analysis.
-        hfa_boost = 0.0   # FIX C2: was self.hfa_base.get(park_name, 0.0325)
-        hfa_mult  = 1.0   # no crowd boost applied
-        lh_new    = lh    # λ_home unchanged by crowd boost
+        # Crowd boost eliminated (FIX C2 / E3): Pearson=-0.015, direction 53% random.
+        # Kalman + multidim_bias cover ~95% of empirical HFA signal.
+        hfa_boost = 0.0
+        hfa_mult  = 1.0
+        lh_new    = lh
 
         # ── Step 2: Away-team travel fatigue (asymmetric, λ_away only) ────────
         # Travel penalty retained: 69.3% activation rate, max 1.3% λ reduction.
