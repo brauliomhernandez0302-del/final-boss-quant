@@ -28,6 +28,7 @@ class _FakeSession:
 
 def test_fangraphs_pit_fetcher_fetches_parses_and_caches_date_window(tmp_path):
     payload = {
+        "dateRange": "2025-03-27 and 2025-04-05",
         "data": [
             {
                 "xMLBAMID": "669923",
@@ -73,6 +74,7 @@ def test_fangraphs_pit_fetcher_fetches_parses_and_caches_date_window(tmp_path):
     assert result[669923]["xfip"] == 3.44
     assert result[669923]["fg_name"] == "Example Pitcher"
     assert result[669923]["fg_team"] == "NYY"
+    assert session.calls[0]["params"]["month"] == "1000"
     assert session.calls[0]["params"]["startdate"] == "2025-03-27"
     assert session.calls[0]["params"]["enddate"] == "2025-04-05"
 
@@ -114,3 +116,19 @@ def test_fangraphs_pit_fetcher_keeps_fangraphs_source_isolated(tmp_path):
         )
         == {}
     )
+
+
+def test_fangraphs_pit_fetcher_rejects_mismatched_date_range(tmp_path):
+    session = _FakeSession({"dateRange": "2025-01-01 and 2025-12-31", "data": []})
+    fetcher = FanGraphsPITFetcher(tmp_path / "pit.db", session=session)
+
+    try:
+        fetcher.fetch_pitcher_metrics_by_date_range(
+            season=2025,
+            start_date="2025-03-27",
+            end_date="2025-04-05",
+        )
+    except RuntimeError as exc:
+        assert "expected '2025-03-27 and 2025-04-05'" in str(exc)
+    else:
+        raise AssertionError("mismatched FanGraphs date range should be rejected")

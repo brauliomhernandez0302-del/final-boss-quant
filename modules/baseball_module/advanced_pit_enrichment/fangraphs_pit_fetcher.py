@@ -68,6 +68,7 @@ class FanGraphsPITFetcher:
         response.raise_for_status()
 
         payload = response.json()
+        _validate_date_range(payload=payload, start_date=start_date, end_date=end_date)
         rows = payload.get("data", []) if isinstance(payload, dict) else []
         parsed = self._parse_rows(rows)
         fingerprint = _fingerprint(
@@ -138,6 +139,7 @@ def _leaderboard_params(*, season: int, start_date: str, end_date: str) -> dict[
         "season": str(season),
         "season1": str(season),
         "ind": "0",
+        "month": "1000",
         "team": "0",
         "pageitems": "600",
         "pagenum": "1",
@@ -145,6 +147,16 @@ def _leaderboard_params(*, season: int, start_date: str, end_date: str) -> dict[
         "startdate": start_date,
         "enddate": end_date,
     }
+
+
+def _validate_date_range(*, payload: Any, start_date: str, end_date: str) -> None:
+    if not isinstance(payload, dict):
+        return
+
+    actual = payload.get("dateRange")
+    expected = f"{start_date} and {end_date}"
+    if actual and actual != expected:
+        raise RuntimeError(f"FanGraphs returned dateRange {actual!r}, expected {expected!r}")
 
 
 def _as_utc_cutoff(value: str) -> str:
