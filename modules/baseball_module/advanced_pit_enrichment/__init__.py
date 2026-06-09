@@ -7,5 +7,12 @@ fetchers and snapshot builders are fully validated.
 
 from .advanced_pitcher_snapshot_builder import AdvancedPitcherSnapshotBuilder
 from .pit_cache import PITCache, PITCacheRecord
+from .raw_savant_events_cache import RawSavantEvent, RawSavantEventsCache
 
-__all__ = ["AdvancedPitcherSnapshotBuilder", "PITCache", "PITCacheRecord"]
+__all__ = [
+    "AdvancedPitcherSnapshotBuilder",
+    "PITCache",
+    "PITCacheRecord",
+    "RawSavantEvent",
+    "RawSavantEventsCache",
+]
