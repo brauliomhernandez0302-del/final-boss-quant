@@ -6,8 +6,13 @@ This script intentionally stays disconnected from live and backtest pipelines.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Sequence
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from modules.baseball_module.advanced_pit_enrichment.fangraphs_pit_fetcher import (
     FanGraphsPITFetcher,
