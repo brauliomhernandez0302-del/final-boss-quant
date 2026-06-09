@@ -18,6 +18,7 @@ class SavantDailyPitcherMetrics:
     bip: int
     batted_ball_count: int
     est_woba: float | None
+    est_woba_count: int
     woba: float | None
     woba_numerator: float | None
     woba_denominator: float | None
@@ -26,6 +27,8 @@ class SavantDailyPitcherMetrics:
     avg_hit_speed: float | None
     ev95plus: int
     ev95percent: float | None
+    sweet_spot_count: int
+    sweet_spot_denominator: int
     sweet_spot_pct: float | None
 
 
@@ -87,6 +90,7 @@ def _aggregate_one(
         bip=len(batted_ball_events),
         batted_ball_count=len(batted_ball_events),
         est_woba=_mean(est_woba_values),
+        est_woba_count=len(est_woba_values),
         woba=_safe_div(woba_numerator, woba_denominator),
         woba_numerator=woba_numerator,
         woba_denominator=woba_denominator,
@@ -95,6 +99,8 @@ def _aggregate_one(
         avg_hit_speed=_mean(launch_speeds),
         ev95plus=ev95plus,
         ev95percent=_pct(ev95plus, len(launch_speeds)),
+        sweet_spot_count=sweet_spot_count,
+        sweet_spot_denominator=len(launch_angles),
         sweet_spot_pct=_pct(sweet_spot_count, len(launch_angles)),
     )
 

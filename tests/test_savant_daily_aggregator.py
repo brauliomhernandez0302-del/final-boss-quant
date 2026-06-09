@@ -81,6 +81,7 @@ def test_savant_daily_aggregator_computes_pitcher_math(tmp_path):
     assert row.bip == 2
     assert row.batted_ball_count == 2
     assert row.est_woba == pytest.approx(0.51)
+    assert row.est_woba_count == 2
     assert row.woba_numerator == pytest.approx(0.9)
     assert row.woba_denominator == pytest.approx(3.0)
     assert row.woba == pytest.approx(0.3)
@@ -89,6 +90,8 @@ def test_savant_daily_aggregator_computes_pitcher_math(tmp_path):
     assert row.avg_hit_speed == pytest.approx(97.5)
     assert row.ev95plus == 2
     assert row.ev95percent == pytest.approx(100.0)
+    assert row.sweet_spot_count == 2
+    assert row.sweet_spot_denominator == 2
     assert row.sweet_spot_pct == pytest.approx(100.0)
 
 
@@ -166,6 +169,8 @@ def test_ev95_percent_uses_batted_ball_denominator(tmp_path):
     assert row.batted_ball_count == 3
     assert row.ev95plus == 2
     assert row.ev95percent == pytest.approx(200.0 / 3.0)
+    assert row.sweet_spot_count == 2
+    assert row.sweet_spot_denominator == 3
     assert row.sweet_spot_pct == pytest.approx(200.0 / 3.0)
 
 

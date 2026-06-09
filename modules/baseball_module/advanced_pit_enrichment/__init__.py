@@ -10,6 +10,7 @@ from .pit_cache import PITCache, PITCacheRecord
 from .raw_savant_events_cache import RawSavantEvent, RawSavantEventsCache
 from .savant_daily_aggregator import SavantDailyAggregator, SavantDailyPitcherMetrics
 from .savant_raw_ingestor import SavantRawIngestionSummary, SavantRawIngestor
+from .savant_rolling_pit_builder import SavantRollingPitcherMetrics, SavantRollingPITBuilder
 
 __all__ = [
     "AdvancedPitcherSnapshotBuilder",
@@ -21,4 +22,6 @@ __all__ = [
     "SavantDailyPitcherMetrics",
     "SavantRawIngestionSummary",
     "SavantRawIngestor",
+    "SavantRollingPitcherMetrics",
+    "SavantRollingPITBuilder",
 ]
