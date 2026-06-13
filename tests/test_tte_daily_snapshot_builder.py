@@ -1,0 +1,236 @@
+import inspect
+
+from modules.baseball_module.advanced_pit_enrichment import (
+    PITCache,
+    TTEDailySnapshotBuilder,
+    TTEPITNamespaces,
+    TTEPITSources,
+    previous_day_cutoff_for_game_date,
+)
+
+
+def test_previous_day_cutoff_works():
+    assert (
+        previous_day_cutoff_for_game_date("2024-04-09")
+        == "2024-04-08T23:59:59Z"
+    )
+
+
+def test_build_for_game_uses_previous_day_not_same_day(tmp_path):
+    cache = PITCache(tmp_path / "pit.db")
+    _seed_tte(cache, as_of_date="2024-04-08T00:00:00Z", lambda_offense=4.66)
+    _seed_tte(cache, as_of_date="2024-04-09T00:00:00Z", lambda_offense=9.99)
+
+    snapshot = TTEDailySnapshotBuilder(cache).build_for_game(
+        team_id=147,
+        team_name="New York Yankees",
+        season=2024,
+        game_date="2024-04-09",
+    )
+
+    assert snapshot["found"] is True
+    assert snapshot["requested_as_of_date"] == "2024-04-08T23:59:59Z"
+    assert snapshot["team_offense_as_of_date"] == "2024-04-08T00:00:00+00:00"
+    assert snapshot["lambda_offense"] == 4.66
+
+
+def test_missing_team_snapshot_returns_found_false(tmp_path):
+    snapshot = TTEDailySnapshotBuilder(cache_db=tmp_path / "pit.db").build_team_snapshot(
+        team_id=147,
+        team_name="New York Yankees",
+        season=2024,
+        requested_as_of_date="2024-04-08T23:59:59Z",
+    )
+
+    assert snapshot == {
+        "found": False,
+        "team_id": 147,
+        "team_name": "New York Yankees",
+        "season": 2024,
+        "requested_as_of_date": "2024-04-08T23:59:59Z",
+        "team_offense_as_of_date": None,
+        "batter_rolling_found": False,
+        "team_rolling_found": False,
+        "lambda_offense": None,
+        "runs_per_game": None,
+        "team_est_woba": None,
+        "team_woba": None,
+        "team_brl_percent": None,
+        "team_ev95percent": None,
+        "pa": None,
+        "bip": None,
+        "source_fingerprints": {
+            "tte_team_daily": None,
+            "savant_team_offense_rolling": None,
+            "savant_batter_rolling": None,
+        },
+        "snapshot_version": "tte_daily_snapshot_v1",
+    }
+
+
+def test_existing_team_snapshot_returns_found_true(tmp_path):
+    cache = PITCache(tmp_path / "pit.db")
+    _seed_tte(
+        cache,
+        as_of_date="2024-04-08T00:00:00Z",
+        lambda_offense=4.66,
+        runs_per_game=5.1,
+        team_est_woba=0.341,
+        team_woba=0.330,
+        team_brl_percent=9.2,
+        team_ev95percent=41.5,
+        pa=321,
+        bip=211,
+    )
+
+    snapshot = TTEDailySnapshotBuilder(cache).build_team_snapshot(
+        team_id="147",
+        season=2024,
+        requested_as_of_date="2024-04-08T23:59:59Z",
+    )
+
+    assert snapshot["found"] is True
+    assert snapshot["team_id"] == 147
+    assert snapshot["team_name"] == "New York Yankees"
+    assert snapshot["lambda_offense"] == 4.66
+    assert snapshot["runs_per_game"] == 5.1
+    assert snapshot["team_est_woba"] == 0.341
+    assert snapshot["team_woba"] == 0.330
+    assert snapshot["team_brl_percent"] == 9.2
+    assert snapshot["team_ev95percent"] == 41.5
+    assert snapshot["pa"] == 321
+    assert snapshot["bip"] == 211
+
+
+def test_source_provenance_preserved(tmp_path):
+    cache = PITCache(tmp_path / "pit.db")
+    _seed_tte(cache, as_of_date="2024-04-08T00:00:00Z", fingerprint="tte-fp")
+    _seed_team_rolling(cache, as_of_date="2024-04-08T00:00:00Z", fingerprint="team-fp")
+    _seed_batter_rolling(cache, as_of_date="2024-04-08T00:00:00Z", fingerprint="batter-fp")
+
+    snapshot = TTEDailySnapshotBuilder(cache).build_team_snapshot(
+        team_id=147,
+        season=2024,
+        requested_as_of_date="2024-04-08T23:59:59Z",
+    )
+
+    assert snapshot["batter_rolling_found"] is True
+    assert snapshot["team_rolling_found"] is True
+    assert snapshot["source_fingerprints"] == {
+        "tte_team_daily": "tte-fp",
+        "savant_team_offense_rolling": "team-fp",
+        "savant_batter_rolling": "batter-fp",
+    }
+
+
+def test_none_values_preserved_without_fake_zeroes(tmp_path):
+    cache = PITCache(tmp_path / "pit.db")
+    _seed_tte(
+        cache,
+        as_of_date="2024-04-08T00:00:00Z",
+        lambda_offense=None,
+        runs_per_game=None,
+        team_est_woba=None,
+        team_woba=None,
+        team_brl_percent=None,
+        team_ev95percent=None,
+        pa=None,
+        bip=None,
+    )
+
+    snapshot = TTEDailySnapshotBuilder(cache).build_team_snapshot(
+        team_id=147,
+        season=2024,
+        requested_as_of_date="2024-04-08T23:59:59Z",
+    )
+
+    for key in (
+        "lambda_offense",
+        "runs_per_game",
+        "team_est_woba",
+        "team_woba",
+        "team_brl_percent",
+        "team_ev95percent",
+        "pa",
+        "bip",
+    ):
+        assert snapshot[key] is None
+
+
+def test_module_does_not_import_live_app_backtest_or_run_module():
+    import modules.baseball_module.advanced_pit_enrichment.tte_daily_snapshot_builder as module
+
+    source = inspect.getsource(module)
+    assert "import app" not in source
+    assert "from app" not in source
+    assert "backtest_and_retrain" not in source
+    assert "run_module" not in source
+    assert "true_talent_engine" not in source
+
+
+def test_default_behavior_untouched():
+    import backtest_and_retrain
+    import modules.baseball_module.offense.true_talent_engine as tte
+
+    assert hasattr(tte, "get_true_talent_lambda")
+    assert "TTEDailySnapshotBuilder" not in inspect.getsource(backtest_and_retrain)
+
+
+def _seed_tte(
+    cache,
+    *,
+    as_of_date,
+    team_id=147,
+    fingerprint="tte-fingerprint",
+    lambda_offense=4.5,
+    runs_per_game=4.8,
+    team_est_woba=0.320,
+    team_woba=0.318,
+    team_brl_percent=8.1,
+    team_ev95percent=38.2,
+    pa=100,
+    bip=70,
+):
+    cache.save_record(
+        namespace=TTEPITNamespaces.TTE_TEAM_DAILY,
+        entity_id=team_id,
+        season=2024,
+        as_of_date=as_of_date,
+        source=TTEPITSources.TTE_TEAM_DAILY,
+        source_fingerprint=fingerprint,
+        data={
+            "team_name": "New York Yankees",
+            "lambda_offense": lambda_offense,
+            "runs_per_game": runs_per_game,
+            "team_est_woba": team_est_woba,
+            "team_woba": team_woba,
+            "team_brl_percent": team_brl_percent,
+            "team_ev95percent": team_ev95percent,
+            "pa": pa,
+            "bip": bip,
+        },
+    )
+
+
+def _seed_team_rolling(cache, *, as_of_date, team_id=147, fingerprint="team-fingerprint"):
+    cache.save_record(
+        namespace=TTEPITNamespaces.TEAM_OFFENSE_ROLLING,
+        entity_id=team_id,
+        season=2024,
+        as_of_date=as_of_date,
+        source=TTEPITSources.TEAM_OFFENSE_ROLLING,
+        source_fingerprint=fingerprint,
+        data={"team_est_woba": 0.321},
+    )
+
+
+def _seed_batter_rolling(cache, *, as_of_date, team_id=147, fingerprint="batter-fingerprint"):
+    cache.save_record(
+        namespace=TTEPITNamespaces.BATTER_ROLLING,
+        entity_id=team_id,
+        season=2024,
+        as_of_date=as_of_date,
+        source=TTEPITSources.BATTER_ROLLING,
+        source_fingerprint=fingerprint,
+        data={"n_batters": 9},
+    )
