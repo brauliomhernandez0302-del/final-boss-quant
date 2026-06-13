@@ -13,6 +13,18 @@ from .pitcher_engine_snapshot_adapter import adapt_unified_pitcher_snapshot
 from .raw_savant_events_cache import RawSavantEvent, RawSavantEventsCache
 from .savant_daily_aggregator import SavantDailyAggregator, SavantDailyPitcherMetrics
 from .savant_raw_ingestor import SavantRawIngestionSummary, SavantRawIngestor
+from .savant_offense_daily_aggregator import (
+    SavantBatterRollingPITPersistence,
+    SavantDailyBatterOffenseMetrics,
+    SavantDailyTeamOffenseMetrics,
+    SavantOffenseDailyAggregator,
+    SavantOffenseRollingBuilder,
+    SavantRollingBatterOffenseMetrics,
+    SavantRollingTeamOffenseMetrics,
+    SavantRollingTeamOffenseResult,
+    SavantTeamOffenseDailyResult,
+    SavantTeamOffenseRollingPITPersistence,
+)
 from .savant_rolling_pit_builder import SavantRollingPitcherMetrics, SavantRollingPITBuilder
 from .savant_rolling_pit_persistence import SavantRollingPITPersistence
 from .tte_daily_snapshot_builder import (
@@ -35,6 +47,16 @@ __all__ = [
     "SavantDailyPitcherMetrics",
     "SavantRawIngestionSummary",
     "SavantRawIngestor",
+    "SavantBatterRollingPITPersistence",
+    "SavantDailyBatterOffenseMetrics",
+    "SavantDailyTeamOffenseMetrics",
+    "SavantOffenseDailyAggregator",
+    "SavantOffenseRollingBuilder",
+    "SavantRollingBatterOffenseMetrics",
+    "SavantRollingTeamOffenseMetrics",
+    "SavantRollingTeamOffenseResult",
+    "SavantTeamOffenseDailyResult",
+    "SavantTeamOffenseRollingPITPersistence",
     "SavantRollingPitcherMetrics",
     "SavantRollingPITBuilder",
     "SavantRollingPITPersistence",
