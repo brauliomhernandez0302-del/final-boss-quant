@@ -16,6 +16,10 @@ from modules.baseball_module.context_engine.pitcher_engine import adjust_for_pit
 
 
 class _FakeAPI:
+    def __init__(self):
+        self.pitcher_full_fallback_calls = []
+        self.pitcher_game_log_calls = []
+
     def get_team_offensive_stats(self, team_id, season):
         return {"woba": 0.330, "ops": 0.740, "wrc_plus": 105}
 
@@ -32,6 +36,9 @@ class _FakeAPI:
         return {"era": 4.00}
 
     def get_pitcher_stats_full_fallback(self, pitcher_id, season, **kwargs):
+        self.pitcher_full_fallback_calls.append(
+            {"pitcher_id": pitcher_id, "season": season, **kwargs}
+        )
         return (
             {
                 "name": f"Pitcher {pitcher_id}",
@@ -44,7 +51,10 @@ class _FakeAPI:
             "mlb_current",
         )
 
-    def get_pitcher_game_log(self, pitcher_id, season):
+    def get_pitcher_game_log(self, pitcher_id, season, **kwargs):
+        self.pitcher_game_log_calls.append(
+            {"pitcher_id": pitcher_id, "season": season, **kwargs}
+        )
         return {"era_last_5": 3.90, "quality_start_pct": 0.55}
 
     def get_pitcher_f5_stats(self, pitcher_id, season):
@@ -129,6 +139,7 @@ def _base_game_data():
 
 
 def test_flag_off_build_game_data_keeps_existing_full_season_enrichment_behavior():
+    api = _FakeAPI()
     game_data, _, _ = build_game_data(
         1,
         "2024-04-02",
@@ -137,7 +148,7 @@ def test_flag_off_build_game_data_keeps_existing_full_season_enrichment_behavior
         2024,
         100,
         200,
-        _FakeAPI(),
+        api,
         _FakeIntegrator(),
         None,
         savant_stats={100: {"est_woba": 0.301, "brl_percent": 6.5}},
@@ -150,6 +161,58 @@ def test_flag_off_build_game_data_keeps_existing_full_season_enrichment_behavior
     assert home["est_woba"] == 0.301
     assert home["brl_percent"] == 6.5
     assert home["days_rest"] == 5
+    assert api.pitcher_game_log_calls == [
+        {"pitcher_id": 100, "season": 2024},
+        {"pitcher_id": 200, "season": 2024},
+    ]
+    assert [c["pitcher_id"] for c in api.pitcher_full_fallback_calls] == [100, 200]
+
+
+def test_experimental_game_log_fallback_uses_prediction_cutoff():
+    api = _FakeAPI()
+
+    build_game_data(
+        1,
+        "2024-04-02",
+        "Boston Red Sox",
+        "New York Yankees",
+        2024,
+        100,
+        200,
+        api,
+        _FakeIntegrator(),
+        None,
+        pitcher_game_log_as_of_date="2024-04-01T18:00:00Z",
+    )
+
+    assert api.pitcher_game_log_calls == [
+        {"pitcher_id": 100, "season": 2024, "as_of_date": "2024-04-01T18:00:00Z"},
+        {"pitcher_id": 200, "season": 2024, "as_of_date": "2024-04-01T18:00:00Z"},
+    ]
+
+
+def test_experimental_mode_blocks_full_season_pitcher_fallback():
+    api = _FakeAPI()
+
+    game_data, _, _ = build_game_data(
+        1,
+        "2024-04-02",
+        "Boston Red Sox",
+        "New York Yankees",
+        2024,
+        100,
+        200,
+        api,
+        _FakeIntegrator(),
+        None,
+        pitcher_game_log_as_of_date="2024-04-01T18:00:00Z",
+        use_pitcher_full_season_fallback=False,
+    )
+
+    assert api.pitcher_full_fallback_calls == []
+    assert api.pitcher_game_log_calls == []
+    assert game_data["pitcher_home"]["era"] == 4.20
+    assert game_data["pitcher_away"]["era"] == 4.20
 
 
 def test_flag_on_uses_pit_snapshot_when_available(tmp_path):
@@ -168,6 +231,10 @@ def test_flag_on_uses_pit_snapshot_when_available(tmp_path):
     )
 
     assert meta["home"]["pit_found"] is True
+    assert meta["home_pitcher_pit_found"] is True
+    assert meta["away_pitcher_pit_found"] is False
+    assert meta["home_fangraphs_as_of_date"] == "2024-04-02T00:00:00+00:00"
+    assert meta["home_savant_as_of_date"] == "2024-04-02T00:00:00+00:00"
     assert meta["home"]["fangraphs_as_of_date"] == "2024-04-02T00:00:00+00:00"
     assert game_data["pitcher_home"]["siera"] == 2.95
     assert game_data["pitcher_home"]["est_woba"] == 0.301

@@ -395,6 +395,8 @@ def build_game_data(
     savant_stats: Optional[Dict[int, Dict]] = None,
     fg_stats: Optional[Dict[int, Dict]] = None,
     weather_fetcher: Optional["HistoricalWeatherFetcher"] = None,
+    pitcher_game_log_as_of_date: Optional[str] = None,
+    use_pitcher_full_season_fallback: bool = True,
 ) -> Tuple[Dict, float, float]:
     """
     Assemble game_data and (lh_base, la_base) from cached season-level stats.
@@ -427,6 +429,8 @@ def build_game_data(
     def _pitcher_stats(pid: Optional[int], is_home: bool, team_pitch: Dict) -> Dict:
         if not pid:
             return {}
+        if not use_pitcher_full_season_fallback:
+            return {}
         stats, source = api.get_pitcher_stats_full_fallback(
             pid, season,
             team_pitching=team_pitch,
@@ -437,7 +441,14 @@ def build_game_data(
             return {}
         # Enrich with game-log recency and F5 data (MLB levels only; skip for MiLB)
         if source not in ("aaa_current", "aa_current", "team_staff_era"):
-            gl = api.get_pitcher_game_log(pid, season)
+            if pitcher_game_log_as_of_date is None:
+                gl = api.get_pitcher_game_log(pid, season)
+            else:
+                gl = api.get_pitcher_game_log(
+                    pid,
+                    season,
+                    as_of_date=pitcher_game_log_as_of_date,
+                )
             if gl:
                 stats.update(gl)
             f5 = api.get_pitcher_f5_stats(pid, season)
@@ -650,6 +661,18 @@ def apply_experimental_pitcher_pit_mode(
         "home": _apply("pitcher_home", home_pitcher_id),
         "away": _apply("pitcher_away", away_pitcher_id),
     }
+    metadata.update(
+        {
+            "home_pitcher_pit_found": metadata["home"]["pit_found"],
+            "away_pitcher_pit_found": metadata["away"]["pit_found"],
+            "home_fangraphs_as_of_date": metadata["home"]["fangraphs_as_of_date"],
+            "home_savant_as_of_date": metadata["home"]["savant_as_of_date"],
+            "away_fangraphs_as_of_date": metadata["away"]["fangraphs_as_of_date"],
+            "away_savant_as_of_date": metadata["away"]["savant_as_of_date"],
+            "home_missing_fields": metadata["home"]["missing_fields"],
+            "away_missing_fields": metadata["away"]["missing_fields"],
+        }
+    )
     game_data["experimental_pitcher_pit"] = metadata
     return metadata
 
@@ -1448,6 +1471,12 @@ def main() -> None:
                 savant_stats=None if args.experimental_pitcher_pit_mode else savant_by_season.get(season),
                 fg_stats=None if args.experimental_pitcher_pit_mode else fg_by_season.get(season),
                 weather_fetcher=_weather_fetcher,
+                pitcher_game_log_as_of_date=(
+                    _prediction_cutoff_for_row(row)
+                    if args.experimental_pitcher_pit_mode
+                    else None
+                ),
+                use_pitcher_full_season_fallback=not args.experimental_pitcher_pit_mode,
             )
             if args.experimental_pitcher_pit_mode:
                 pit_meta = apply_experimental_pitcher_pit_mode(
