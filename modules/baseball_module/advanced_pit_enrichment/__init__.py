@@ -6,6 +6,7 @@ fetchers and snapshot builders are fully validated.
 """
 
 from .advanced_pitcher_snapshot_builder import AdvancedPitcherSnapshotBuilder
+from .fangraphs_daily_pit_persistence import FanGraphsDailyPITPersistence
 from .pit_cache import PITCache, PITCacheRecord
 from .raw_savant_events_cache import RawSavantEvent, RawSavantEventsCache
 from .savant_daily_aggregator import SavantDailyAggregator, SavantDailyPitcherMetrics
@@ -15,6 +16,7 @@ from .savant_rolling_pit_persistence import SavantRollingPITPersistence
 
 __all__ = [
     "AdvancedPitcherSnapshotBuilder",
+    "FanGraphsDailyPITPersistence",
     "PITCache",
     "PITCacheRecord",
     "RawSavantEvent",
