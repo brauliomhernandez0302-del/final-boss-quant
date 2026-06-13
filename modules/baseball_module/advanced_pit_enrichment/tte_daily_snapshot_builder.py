@@ -1,6 +1,7 @@
-"""Skeleton daily point-in-time Team/TTE snapshot construction.
+"""Daily point-in-time Team/TTE snapshot construction.
 
-This module defines the experimental Team/TTE PIT contract only. It does not
+This module defines the experimental Team/TTE PIT contract and populates the
+team offense portion from canonical Savant rolling snapshots. It does not
 calculate True Talent offense and is intentionally disconnected from live and
 backtest paths.
 """
@@ -88,23 +89,24 @@ class TTEDailySnapshotBuilder:
         )
 
         data = tte_record.data if tte_record else {}
+        team_data = team_record.data if team_record else {}
         snapshot = {
-            "found": tte_record is not None,
+            "found": team_record is not None,
             "team_id": _coerce_int(team_id),
-            "team_name": data.get("team_name", team_name),
+            "team_name": data.get("team_name", team_data.get("team_name", team_name)),
             "season": int(season),
             "requested_as_of_date": requested_as_of_date,
-            "team_offense_as_of_date": tte_record.as_of_date if tte_record else None,
+            "team_offense_as_of_date": team_record.as_of_date if team_record else None,
             "batter_rolling_found": batter_record is not None,
             "team_rolling_found": team_record is not None,
-            "lambda_offense": data.get("lambda_offense"),
-            "runs_per_game": data.get("runs_per_game"),
-            "team_est_woba": data.get("team_est_woba"),
-            "team_woba": data.get("team_woba"),
-            "team_brl_percent": data.get("team_brl_percent"),
-            "team_ev95percent": data.get("team_ev95percent"),
-            "pa": data.get("pa"),
-            "bip": data.get("bip"),
+            "lambda_offense": None,
+            "runs_per_game": _first_present(team_data, "runs_per_game"),
+            "team_est_woba": _first_present(team_data, "team_est_woba", "est_woba"),
+            "team_woba": _first_present(team_data, "team_woba", "woba"),
+            "team_brl_percent": _first_present(team_data, "team_brl_percent", "brl_percent"),
+            "team_ev95percent": _first_present(team_data, "team_ev95percent", "ev95percent"),
+            "pa": _first_present(team_data, "pa", "plate_appearances"),
+            "bip": _first_present(team_data, "bip", "batted_ball_count"),
             "source_fingerprints": {
                 "tte_team_daily": tte_record.source_fingerprint if tte_record else None,
                 "savant_team_offense_rolling": (
@@ -128,3 +130,10 @@ def _coerce_int(value: int | str) -> int | str:
         return int(value)
     except (TypeError, ValueError):
         return value
+
+
+def _first_present(primary: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in primary:
+            return primary[key]
+    return None
