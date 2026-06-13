@@ -437,8 +437,15 @@ class MLBStatsAPI:
         logger.error("  ❌ Sin stats válidas")
         return None, None
 
-    def get_pitcher_game_log(self, pitcher_id: int, season: int, last_n: int = 5):
-        cache_file = CACHE_DIR / f"pitcher_log_{pitcher_id}_{season}_{last_n}.json"
+    def get_pitcher_game_log(
+        self,
+        pitcher_id: int,
+        season: int,
+        last_n: int = 5,
+        as_of_date: Optional[str] = None,
+    ):
+        as_of_key = as_of_date or "live"
+        cache_file = CACHE_DIR / f"pitcher_log_{pitcher_id}_{season}_{last_n}_{as_of_key}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
             try:
                 with open(cache_file, "r") as f2:
@@ -454,6 +461,15 @@ class MLBStatsAPI:
             splits = data.get("stats", [{}])[0].get("splits", [])
             if not splits:
                 return None
+            if as_of_date:
+                try:
+                    cutoff_date = datetime.strptime(as_of_date[:10], "%Y-%m-%d").date()
+                    splits = [
+                        s for s in splits
+                        if s.get("date") and datetime.strptime(s.get("date", "")[:10], "%Y-%m-%d").date() <= cutoff_date
+                    ]
+                except Exception:
+                    pass
             starts = [s for s in splits if int(s.get("stat", {}).get("gamesStarted", 0)) > 0]
             if not starts:
                 starts = splits
@@ -472,7 +488,11 @@ class MLBStatsAPI:
             if last_date_str:
                 try:
                     last_date = datetime.strptime(last_date_str, "%Y-%m-%d")
-                    days_rest = (datetime.utcnow() - last_date).days
+                    if as_of_date:
+                        ref_date = datetime.strptime(as_of_date[:10], "%Y-%m-%d")
+                    else:
+                        ref_date = datetime.utcnow()
+                    days_rest = (ref_date - last_date).days
                 except Exception:
                     pass
             result = {
