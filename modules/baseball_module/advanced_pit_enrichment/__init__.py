@@ -9,6 +9,7 @@ from .advanced_pitcher_snapshot_builder import AdvancedPitcherSnapshotBuilder
 from .advanced_pitcher_daily_snapshot_builder import AdvancedPitcherDailySnapshotBuilder
 from .fangraphs_daily_pit_persistence import FanGraphsDailyPITPersistence
 from .pit_cache import PITCache, PITCacheRecord
+from .pitcher_engine_snapshot_adapter import adapt_unified_pitcher_snapshot
 from .raw_savant_events_cache import RawSavantEvent, RawSavantEventsCache
 from .savant_daily_aggregator import SavantDailyAggregator, SavantDailyPitcherMetrics
 from .savant_raw_ingestor import SavantRawIngestionSummary, SavantRawIngestor
@@ -21,6 +22,7 @@ __all__ = [
     "FanGraphsDailyPITPersistence",
     "PITCache",
     "PITCacheRecord",
+    "adapt_unified_pitcher_snapshot",
     "RawSavantEvent",
     "RawSavantEventsCache",
     "SavantDailyAggregator",
