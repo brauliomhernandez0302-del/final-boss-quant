@@ -561,6 +561,99 @@ def build_game_data(
     return game_data, lh, la
 
 
+_PIT_REQUIRED_FIELDS = (
+    "siera",
+    "xfip",
+    "fip",
+    "k_pct",
+    "bb_pct",
+    "innings_pitched",
+    "est_woba",
+    "brl_percent",
+    "ev95percent",
+)
+
+
+def _prediction_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
+    """Return the PIT cutoff for a historical game row."""
+    keys = row.keys() if hasattr(row, "keys") else row
+    for field in ("prediction_cutoff_utc", "prediction_cutoff", "as_of_date"):
+        if field in keys and row[field]:
+            return str(row[field])
+    return f"{str(row['game_date'])[:10]}T23:59:59Z"
+
+
+def _merge_pit_pitcher(base: Dict[str, Any], adapted: Dict[str, Any]) -> Dict[str, Any]:
+    """Overlay PIT values onto the existing MLB Stats API safe fallback dict."""
+    merged = dict(base)
+    for key, value in adapted.items():
+        if value is not None:
+            merged[key] = value
+    merged["pitcher_pit_snapshot"] = adapted
+    return merged
+
+
+def apply_experimental_pitcher_pit_mode(
+    *,
+    game_data: Dict[str, Any],
+    home_pitcher_id: Optional[int],
+    away_pitcher_id: Optional[int],
+    season: int,
+    requested_as_of_date: str,
+    snapshot_builder: Any,
+    adapter: Any,
+) -> Dict[str, Any]:
+    """Inject adapted PIT pitcher snapshots into game_data when available."""
+
+    def _apply(role: str, pitcher_id: Optional[int]) -> Dict[str, Any]:
+        meta = {
+            "pitcher_id": pitcher_id,
+            "pit_found": False,
+            "fangraphs_found": False,
+            "savant_found": False,
+            "fangraphs_as_of_date": None,
+            "savant_as_of_date": None,
+            "missing_fields": list(_PIT_REQUIRED_FIELDS),
+            "source_fingerprints": {"fangraphs": None, "savant": None},
+            "fallback_used": True,
+        }
+        if not pitcher_id:
+            return meta
+
+        snapshot = snapshot_builder.build_pitcher_snapshot(
+            pitcher=pitcher_id,
+            season=season,
+            requested_as_of_date=requested_as_of_date,
+        )
+        adapted = adapter(snapshot)
+        found = bool(adapted.get("found"))
+        meta.update(
+            {
+                "pit_found": found,
+                "fangraphs_found": bool(adapted.get("fangraphs_found")),
+                "savant_found": bool(adapted.get("savant_found")),
+                "fangraphs_as_of_date": adapted.get("fangraphs_as_of_date"),
+                "savant_as_of_date": adapted.get("savant_as_of_date"),
+                "missing_fields": [
+                    field for field in _PIT_REQUIRED_FIELDS if adapted.get(field) is None
+                ],
+                "source_fingerprints": adapted.get("source_fingerprints", {}),
+                "fallback_used": not found,
+            }
+        )
+        if found:
+            game_data[role] = _merge_pit_pitcher(game_data.get(role, {}), adapted)
+        return meta
+
+    metadata = {
+        "requested_as_of_date": requested_as_of_date,
+        "home": _apply("pitcher_home", home_pitcher_id),
+        "away": _apply("pitcher_away", away_pitcher_id),
+    }
+    game_data["experimental_pitcher_pit"] = metadata
+    return metadata
+
+
 # ── pipeline runner ────────────────────────────────────────────────────────
 
 def run_pipeline(
@@ -1089,10 +1182,28 @@ def main() -> None:
                         help="Ignore cached starter lookups (re-fetch everything)")
     parser.add_argument("--workers",     type=int,   default=1,
                         help="Parallel starter-fetch workers (default 1 = sequential)")
+    parser.add_argument("--db-path", type=Path, default=DB_PATH,
+                        help="SQLite game_outcomes DB path (default: production history DB)")
+    parser.add_argument("--cache-dir", type=Path, default=CACHE_DIR,
+                        help="Backtest cache directory (default: .cache/backtest)")
+    parser.add_argument("--report-dir", type=Path, default=REPORT_DIR,
+                        help="Directory for generated backtest reports")
+    parser.add_argument("--n-mc", type=int, default=N_MC,
+                        help="Monte Carlo simulations per game")
+    parser.add_argument("--experimental-pitcher-pit-mode", action="store_true",
+                        help="Use isolated daily PIT pitcher snapshots when available")
+    parser.add_argument("--pitcher-pit-cache-db", type=Path, default=None,
+                        help="PIT cache DB for --experimental-pitcher-pit-mode")
     args = parser.parse_args()
 
+    if args.experimental_pitcher_pit_mode and not args.pitcher_pit_cache_db:
+        parser.error("--pitcher-pit-cache-db is required with --experimental-pitcher-pit-mode")
+
+    args.cache_dir.mkdir(parents=True, exist_ok=True)
+    args.report_dir.mkdir(parents=True, exist_ok=True)
+
     # ── load game_outcomes rows ─────────────────────────────────────────────
-    conn = get_conn(DB_PATH)
+    conn = get_conn(args.db_path)
     _add_backtest_col(conn)
 
     where = "WHERE actual_home_runs IS NOT NULL"
@@ -1112,14 +1223,31 @@ def main() -> None:
     api = MLBStatsAPI()
     integrator = MLBDataIntegrator()
     park_factors = None  # park factors now read directly from STADIUM_DATABASE per venue
-    cache = DiskCache(CACHE_DIR)
-    learning = LearningEngine(db_path=DB_PATH)
+    cache = DiskCache(args.cache_dir)
+    learning = LearningEngine(db_path=args.db_path)
+
+    pit_snapshot_builder = None
+    pit_snapshot_adapter = None
+    if args.experimental_pitcher_pit_mode:
+        from modules.baseball_module.advanced_pit_enrichment import (
+            AdvancedPitcherDailySnapshotBuilder,
+            adapt_unified_pitcher_snapshot,
+        )
+
+        pit_snapshot_builder = AdvancedPitcherDailySnapshotBuilder(
+            cache_db=args.pitcher_pit_cache_db
+        )
+        pit_snapshot_adapter = adapt_unified_pitcher_snapshot
+        log.info(
+            "Experimental pitcher PIT mode ENABLED | pit_cache_db=%s",
+            args.pitcher_pit_cache_db,
+        )
 
     # ── load Savant + FanGraphs data per season ──────────────────────────────
     _enrich_cache_dir = ROOT / ".cache"
     savant_by_season: Dict[int, Dict[int, Dict]] = {}
     fg_by_season: Dict[int, Dict[int, Dict]] = {}
-    if _ENRICHMENT_AVAILABLE:
+    if _ENRICHMENT_AVAILABLE and not args.experimental_pitcher_pit_mode:
         _sv_fetcher = SavantFetcher(cache_dir=_enrich_cache_dir)
         _fg_fetcher = FanGraphsFetcher(cache_dir=_enrich_cache_dir)
         for _yr in seasons:
@@ -1128,9 +1256,11 @@ def main() -> None:
             fg_by_season[_yr]     = _fg_fetcher.get_all_pitcher_stats(_yr)
             log.info("  Savant: %d pitchers | FG: %d pitchers",
                      len(savant_by_season[_yr]), len(fg_by_season[_yr]))
+    elif args.experimental_pitcher_pit_mode:
+        log.info("Skipping full-season Savant/FanGraphs leaderboards in experimental PIT mode.")
 
     if args.no_cache:
-        cache = DiskCache(CACHE_DIR, ttl=1)  # effectively bypasses old entries
+        cache = DiskCache(args.cache_dir, ttl=1)  # effectively bypasses old entries
 
     # DEFERRED F7: weather fetcher built but not active.
     # Reactivar post-Sprint 3 cuando gradient descent funcione y pueda aprender
@@ -1254,6 +1384,14 @@ def main() -> None:
     # ── main backtest loop ──────────────────────────────────────────────────
     results: List[Dict] = []
     n_ok = n_err = 0
+    pit_usage = {
+        "home_pitcher_pit_found": 0,
+        "away_pitcher_pit_found": 0,
+        "home_pitcher_pit_missing": 0,
+        "away_pitcher_pit_missing": 0,
+        "full_season_pitcher_fetches_avoided": bool(args.experimental_pitcher_pit_mode),
+        "samples": [],
+    }
     t0 = time.time()
 
     # F3: track last game date AND venue per team to detect meaningful B2B.
@@ -1307,15 +1445,44 @@ def main() -> None:
                 starters["home_pitcher_id"],
                 starters["away_pitcher_id"],
                 api, integrator, park_factors,
-                savant_stats=savant_by_season.get(season),
-                fg_stats=fg_by_season.get(season),
+                savant_stats=None if args.experimental_pitcher_pit_mode else savant_by_season.get(season),
+                fg_stats=None if args.experimental_pitcher_pit_mode else fg_by_season.get(season),
                 weather_fetcher=_weather_fetcher,
             )
+            if args.experimental_pitcher_pit_mode:
+                pit_meta = apply_experimental_pitcher_pit_mode(
+                    game_data=game_data,
+                    home_pitcher_id=starters["home_pitcher_id"],
+                    away_pitcher_id=starters["away_pitcher_id"],
+                    season=season,
+                    requested_as_of_date=_prediction_cutoff_for_row(row),
+                    snapshot_builder=pit_snapshot_builder,
+                    adapter=pit_snapshot_adapter,
+                )
+                if pit_meta["home"]["pit_found"]:
+                    pit_usage["home_pitcher_pit_found"] += 1
+                else:
+                    pit_usage["home_pitcher_pit_missing"] += 1
+                if pit_meta["away"]["pit_found"]:
+                    pit_usage["away_pitcher_pit_found"] += 1
+                else:
+                    pit_usage["away_pitcher_pit_missing"] += 1
+                if len(pit_usage["samples"]) < 3:
+                    pit_usage["samples"].append(
+                        {
+                            "game_pk": game_pk,
+                            "game_date": game_date,
+                            "home_team": home_name,
+                            "away_team": away_name,
+                            "home_pitcher_pit": pit_meta["home"],
+                            "away_pitcher_pit": pit_meta["away"],
+                        }
+                    )
             # F3: inject B2B flags computed from schedule context above
             game_data["back_to_back_away"] = _b2b_away
             game_data["back_to_back_home"] = _b2b_home
 
-            pred = run_pipeline(game_data, lh, la, learning, season, N_MC)
+            pred = run_pipeline(game_data, lh, la, learning, season, args.n_mc)
 
             # persist to DB
             update_game_outcomes(
@@ -1412,6 +1579,30 @@ def main() -> None:
         "Pipeline complete: %d ok / %d err  (%.1fs, %.1f g/s)",
         n_ok, n_err, elapsed_total, len(rows) / elapsed_total,
     )
+    if args.experimental_pitcher_pit_mode:
+        print("\nEXPERIMENTAL PITCHER PIT SUMMARY")
+        print(json.dumps(
+            {
+                "games_processed": n_ok,
+                "failures": n_err,
+                "pit_pitcher_snapshots_used": (
+                    pit_usage["home_pitcher_pit_found"]
+                    + pit_usage["away_pitcher_pit_found"]
+                ),
+                "missing_pit_pitcher_snapshots": (
+                    pit_usage["home_pitcher_pit_missing"]
+                    + pit_usage["away_pitcher_pit_missing"]
+                ),
+                "home_pitcher_pit_found": pit_usage["home_pitcher_pit_found"],
+                "away_pitcher_pit_found": pit_usage["away_pitcher_pit_found"],
+                "full_season_pitcher_fetches_avoided": pit_usage[
+                    "full_season_pitcher_fetches_avoided"
+                ],
+                "sample_games": pit_usage["samples"],
+            },
+            indent=2,
+            sort_keys=True,
+        ))
 
     # ── step 4: recalibrate learning engine bias ───────────────────────────
     log.info("Recalibrating learning engine bias …")
@@ -1440,7 +1631,7 @@ def main() -> None:
             log.warning("  Platt failed for season %d: %s", season, exc)
 
     # ── step 5: report ─────────────────────────────────────────────────────
-    generate_report(results, REPORT_DIR)
+    generate_report(results, args.report_dir)
     conn.close()
 
 
