@@ -15,12 +15,15 @@ class SavantRollingPitcherMetrics:
     pitcher: int
     est_woba: float | None
     woba: float | None
+    woba_numerator: float | None
+    woba_denominator: float | None
     brl_percent: float | None
     barrel_count: int
     batted_ball_count: int
     pa: int
     bip: int
     avg_hit_speed: float | None
+    ev95plus: int
     ev95percent: float | None
     sweet_spot_pct: float | None
 
@@ -121,12 +124,15 @@ class _Accumulator:
             pitcher=pitcher,
             est_woba=_safe_div(self.est_woba_sum, self.est_woba_count),
             woba=_safe_div(self.woba_numerator, self.woba_denominator),
+            woba_numerator=self.woba_numerator if self.woba_denominator else None,
+            woba_denominator=self.woba_denominator if self.woba_denominator else None,
             brl_percent=_pct(self.barrel_count, self.batted_ball_count),
             barrel_count=self.barrel_count,
             batted_ball_count=self.batted_ball_count,
             pa=self.pa,
             bip=self.bip,
             avg_hit_speed=_safe_div(self.hit_speed_sum, self.hit_speed_count),
+            ev95plus=self.ev95plus,
             ev95percent=_pct(self.ev95plus, self.batted_ball_count),
             sweet_spot_pct=_pct(self.sweet_spot_count, self.sweet_spot_denominator),
         )

@@ -11,6 +11,7 @@ from .raw_savant_events_cache import RawSavantEvent, RawSavantEventsCache
 from .savant_daily_aggregator import SavantDailyAggregator, SavantDailyPitcherMetrics
 from .savant_raw_ingestor import SavantRawIngestionSummary, SavantRawIngestor
 from .savant_rolling_pit_builder import SavantRollingPitcherMetrics, SavantRollingPITBuilder
+from .savant_rolling_pit_persistence import SavantRollingPITPersistence
 
 __all__ = [
     "AdvancedPitcherSnapshotBuilder",
@@ -24,4 +25,5 @@ __all__ = [
     "SavantRawIngestor",
     "SavantRollingPitcherMetrics",
     "SavantRollingPITBuilder",
+    "SavantRollingPITPersistence",
 ]
