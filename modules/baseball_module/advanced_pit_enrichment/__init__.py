@@ -33,6 +33,7 @@ from .tte_daily_snapshot_builder import (
     TTEPITSources,
     previous_day_cutoff_for_game_date,
 )
+from .tte_pit_adapter import adapt_tte_pit_snapshot_to_lambda
 
 __all__ = [
     "AdvancedPitcherSnapshotBuilder",
@@ -63,5 +64,6 @@ __all__ = [
     "TTEDailySnapshotBuilder",
     "TTEPITNamespaces",
     "TTEPITSources",
+    "adapt_tte_pit_snapshot_to_lambda",
     "previous_day_cutoff_for_game_date",
 ]
