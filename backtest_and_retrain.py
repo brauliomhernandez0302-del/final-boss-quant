@@ -41,7 +41,7 @@ import sqlite3
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -592,6 +592,18 @@ def _prediction_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
         if field in keys and row[field]:
             return str(row[field])
     return f"{str(row['game_date'])[:10]}T23:59:59Z"
+
+
+def _experimental_pitcher_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
+    """Return the experimental pitcher PIT cutoff aligned to previous-day caches."""
+    keys = row.keys() if hasattr(row, "keys") else row
+    for field in ("prediction_cutoff_utc", "prediction_cutoff", "as_of_date"):
+        if field in keys and row[field]:
+            return str(row[field])
+    game_day = datetime.strptime(str(row["game_date"])[:10], "%Y-%m-%d").replace(
+        tzinfo=timezone.utc
+    )
+    return (game_day - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _merge_pit_pitcher(base: Dict[str, Any], adapted: Dict[str, Any]) -> Dict[str, Any]:
@@ -1472,7 +1484,7 @@ def main() -> None:
                 fg_stats=None if args.experimental_pitcher_pit_mode else fg_by_season.get(season),
                 weather_fetcher=_weather_fetcher,
                 pitcher_game_log_as_of_date=(
-                    _prediction_cutoff_for_row(row)
+                    _experimental_pitcher_pit_cutoff_for_row(row)
                     if args.experimental_pitcher_pit_mode
                     else None
                 ),
@@ -1484,7 +1496,7 @@ def main() -> None:
                     home_pitcher_id=starters["home_pitcher_id"],
                     away_pitcher_id=starters["away_pitcher_id"],
                     season=season,
-                    requested_as_of_date=_prediction_cutoff_for_row(row),
+                    requested_as_of_date=_experimental_pitcher_pit_cutoff_for_row(row),
                     snapshot_builder=pit_snapshot_builder,
                     adapter=pit_snapshot_adapter,
                 )

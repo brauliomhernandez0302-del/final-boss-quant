@@ -1,6 +1,7 @@
 import inspect
 
 from backtest_and_retrain import (
+    _experimental_pitcher_pit_cutoff_for_row,
     _prediction_cutoff_for_row,
     apply_experimental_pitcher_pit_mode,
     build_game_data,
@@ -311,6 +312,19 @@ def test_prediction_cutoff_prefers_explicit_cutoff():
         == "2024-04-01T18:00:00Z"
     )
     assert _prediction_cutoff_for_row({"game_date": "2024-04-02"}) == "2024-04-02T23:59:59Z"
+
+
+def test_experimental_pitcher_pit_cutoff_defaults_to_previous_day():
+    assert (
+        _experimental_pitcher_pit_cutoff_for_row({"game_date": "2024-04-02"})
+        == "2024-04-01T23:59:59Z"
+    )
+    assert (
+        _experimental_pitcher_pit_cutoff_for_row(
+            {"game_date": "2024-04-02", "prediction_cutoff_utc": "2024-04-01T18:00:00Z"}
+        )
+        == "2024-04-01T18:00:00Z"
+    )
 
 
 def test_backtest_module_does_not_import_live_app():
