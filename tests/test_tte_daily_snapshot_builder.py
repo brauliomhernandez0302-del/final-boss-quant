@@ -48,10 +48,13 @@ def test_missing_team_snapshot_returns_found_false(tmp_path):
         "team_id": 147,
         "team_name": "New York Yankees",
         "season": 2024,
+        "prior_season": None,
         "requested_as_of_date": "2024-04-08T23:59:59Z",
         "team_offense_as_of_date": None,
+        "prior_baseline_as_of_date": None,
         "batter_rolling_found": False,
         "team_rolling_found": False,
+        "prior_baseline_found": False,
         "lambda_offense": None,
         "runs_per_game": None,
         "team_est_woba": None,
@@ -63,10 +66,20 @@ def test_missing_team_snapshot_returns_found_false(tmp_path):
         "k_pct": None,
         "pa": None,
         "bip": None,
+        "team_est_woba_prior": None,
+        "team_woba_prior": None,
+        "bb_pct_prior": None,
+        "k_pct_prior": None,
+        "barrel_pa_prior": None,
+        "brl_percent_prior": None,
+        "ev95percent_prior": None,
+        "pa_prior": None,
+        "bip_prior": None,
         "source_fingerprints": {
             "tte_team_daily": None,
             "savant_team_offense_rolling": None,
             "savant_batter_rolling": None,
+            "savant_team_offense_prior_baseline": None,
         },
         "snapshot_version": "tte_daily_snapshot_v1",
     }
@@ -166,6 +179,7 @@ def test_source_provenance_preserved(tmp_path):
     _seed_tte(cache, as_of_date="2024-04-08T00:00:00Z", fingerprint="tte-fp")
     _seed_team_rolling(cache, as_of_date="2024-04-08T00:00:00Z", fingerprint="team-fp")
     _seed_batter_rolling(cache, as_of_date="2024-04-08T00:00:00Z", fingerprint="batter-fp")
+    _seed_prior_baseline(cache, as_of_date="2023-10-01T23:59:59Z", fingerprint="prior-fp")
 
     snapshot = TTEDailySnapshotBuilder(cache).build_team_snapshot(
         team_id=147,
@@ -179,6 +193,7 @@ def test_source_provenance_preserved(tmp_path):
         "tte_team_daily": "tte-fp",
         "savant_team_offense_rolling": "team-fp",
         "savant_batter_rolling": "batter-fp",
+        "savant_team_offense_prior_baseline": "prior-fp",
     }
 
 
@@ -219,6 +234,76 @@ def test_none_values_preserved_without_fake_zeroes(tmp_path):
         "bip",
     ):
         assert snapshot[key] is None
+
+
+def test_missing_prior_baseline_does_not_fake_values(tmp_path):
+    cache = PITCache(tmp_path / "pit.db")
+    _seed_team_rolling(cache, as_of_date="2024-04-08T00:00:00Z")
+
+    snapshot = TTEDailySnapshotBuilder(cache).build_team_snapshot(
+        team_id=147,
+        season=2024,
+        requested_as_of_date="2024-04-08T23:59:59Z",
+    )
+
+    assert snapshot["prior_baseline_found"] is False
+    assert snapshot["team_est_woba_prior"] is None
+    assert snapshot["bb_pct_prior"] is None
+    assert snapshot["k_pct_prior"] is None
+    assert snapshot["barrel_pa_prior"] is None
+
+
+def test_retrieves_prior_baseline_for_current_season(tmp_path):
+    cache = PITCache(tmp_path / "pit.db")
+    _seed_team_rolling(cache, as_of_date="2024-04-08T00:00:00Z")
+    _seed_prior_baseline(
+        cache,
+        as_of_date="2023-10-01T23:59:59Z",
+        team_est_woba_prior=0.333,
+        team_woba_prior=0.321,
+        bb_pct_prior=0.091,
+        k_pct_prior=0.203,
+        barrel_pa_prior=0.088,
+        pa_prior=6100,
+    )
+
+    snapshot = TTEDailySnapshotBuilder(cache).build_team_snapshot(
+        team_id=147,
+        season=2024,
+        requested_as_of_date="2024-04-08T23:59:59Z",
+    )
+
+    assert snapshot["prior_baseline_found"] is True
+    assert snapshot["prior_baseline_as_of_date"] == "2023-10-01T23:59:59+00:00"
+    assert snapshot["prior_season"] == 2023
+    assert snapshot["team_est_woba_prior"] == 0.333
+    assert snapshot["team_woba_prior"] == 0.321
+    assert snapshot["bb_pct_prior"] == 0.091
+    assert snapshot["k_pct_prior"] == 0.203
+    assert snapshot["barrel_pa_prior"] == 0.088
+    assert snapshot["pa_prior"] == 6100
+
+
+def test_prior_baseline_zero_rates_preserved(tmp_path):
+    cache = PITCache(tmp_path / "pit.db")
+    _seed_team_rolling(cache, as_of_date="2024-04-08T00:00:00Z")
+    _seed_prior_baseline(
+        cache,
+        as_of_date="2023-10-01T23:59:59Z",
+        bb_pct_prior=0.0,
+        k_pct_prior=0.0,
+        barrel_pa_prior=0.0,
+    )
+
+    snapshot = TTEDailySnapshotBuilder(cache).build_team_snapshot(
+        team_id=147,
+        season=2024,
+        requested_as_of_date="2024-04-08T23:59:59Z",
+    )
+
+    assert snapshot["bb_pct_prior"] == 0.0
+    assert snapshot["k_pct_prior"] == 0.0
+    assert snapshot["barrel_pa_prior"] == 0.0
 
 
 def test_exposes_tte_adapter_inputs_from_team_offense(tmp_path):
@@ -368,4 +453,47 @@ def _seed_batter_rolling(cache, *, as_of_date, team_id=147, fingerprint="batter-
         source=TTEPITSources.BATTER_ROLLING,
         source_fingerprint=fingerprint,
         data={"n_batters": 9},
+    )
+
+
+def _seed_prior_baseline(
+    cache,
+    *,
+    as_of_date,
+    team_id=147,
+    fingerprint="prior-fingerprint",
+    prior_season=2023,
+    team_est_woba_prior=0.315,
+    team_woba_prior=0.312,
+    bb_pct_prior=0.081,
+    k_pct_prior=0.225,
+    barrel_pa_prior=0.084,
+    brl_percent_prior=7.8,
+    ev95percent_prior=37.1,
+    pa_prior=6000,
+    bip_prior=4100,
+):
+    cache.save_record(
+        namespace=TTEPITNamespaces.TEAM_OFFENSE_PRIOR_BASELINE,
+        entity_id=team_id,
+        season=2024,
+        as_of_date=as_of_date,
+        source=TTEPITSources.TEAM_OFFENSE_PRIOR_BASELINE,
+        source_fingerprint=fingerprint,
+        data={
+            "team_id": team_id,
+            "season": 2024,
+            "prior_season": prior_season,
+            "team_est_woba_prior": team_est_woba_prior,
+            "team_woba_prior": team_woba_prior,
+            "bb_pct_prior": bb_pct_prior,
+            "k_pct_prior": k_pct_prior,
+            "barrel_pa_prior": barrel_pa_prior,
+            "brl_percent_prior": brl_percent_prior,
+            "ev95percent_prior": ev95percent_prior,
+            "pa_prior": pa_prior,
+            "bip_prior": bip_prior,
+            "source_fingerprint": fingerprint,
+            "baseline_version": "tte_prior_baseline_v1",
+        },
     )

@@ -16,7 +16,6 @@ def test_complete_snapshot_produces_lambda_when_formula_requirements_are_met():
             pa=300,
             bip=210,
         ),
-        league_baseline={"prior_lambda_offense": 4.5},
     )
 
     assert result["found"] is True
@@ -32,7 +31,6 @@ def test_complete_snapshot_produces_lambda_when_formula_requirements_are_met():
 def test_missing_est_woba_returns_none_with_fallback_used():
     result = adapt_tte_pit_snapshot_to_lambda(
         _snapshot(team_est_woba=None, team_barrel_pa=0.095, bb_pct=0.09, k_pct=0.21, pa=300),
-        league_baseline={"prior_lambda_offense": 4.5},
     )
 
     assert result["lambda_offense"] is None
@@ -43,7 +41,6 @@ def test_missing_est_woba_returns_none_with_fallback_used():
 def test_missing_bb_pct_returns_none_with_fallback_used():
     result = adapt_tte_pit_snapshot_to_lambda(
         _snapshot(team_est_woba=0.330, barrel_pa=0.095, bb_pct=None, k_pct=0.21, pa=300),
-        league_baseline={"prior_lambda_offense": 4.5},
     )
 
     assert result["lambda_offense"] is None
@@ -53,12 +50,12 @@ def test_missing_bb_pct_returns_none_with_fallback_used():
 def test_thin_pa_sample_is_marked_thin():
     result = adapt_tte_pit_snapshot_to_lambda(
         _snapshot(team_est_woba=0.330, team_barrel_pa=0.095, bb_pct=0.09, k_pct=0.21, pa=80),
-        league_baseline={"prior_lambda_offense": 4.5},
     )
 
     assert result["sample_size_status"] == "thin"
-    assert result["lambda_offense"] is None
-    assert result["fallback_used"] == "thin_sample:pa<150"
+    assert result["lambda_offense"] is not None
+    assert result["fallback_used"] is None
+    assert result["blend_prior_weight"] > result["blend_current_weight"]
 
 
 def test_none_values_preserved_without_fake_zeroes():
@@ -95,7 +92,6 @@ def test_true_zero_barrel_rate_with_valid_denominator_is_not_missing():
             pa=250,
             bip=180,
         ),
-        league_baseline={"prior_lambda_offense": 4.5},
     )
 
     assert result["team_brl_percent"] == 0.0
@@ -113,7 +109,6 @@ def test_true_zero_bb_or_k_rate_with_valid_pa_is_not_missing():
             k_pct=0.0,
             pa=250,
         ),
-        league_baseline={"prior_lambda_offense": 4.5},
     )
 
     assert result["fallback_used"] is None
@@ -124,8 +119,14 @@ def test_true_zero_bb_or_k_rate_with_valid_pa_is_not_missing():
 
 def test_no_fake_zero_for_missing_barrel_pa():
     result = adapt_tte_pit_snapshot_to_lambda(
-        _snapshot(team_est_woba=0.330, team_brl_percent=None, bb_pct=0.09, k_pct=0.21, pa=300),
-        league_baseline={"prior_lambda_offense": 4.5},
+        _snapshot(
+            team_est_woba=0.330,
+            team_brl_percent=None,
+            barrel_pa=None,
+            bb_pct=0.09,
+            k_pct=0.21,
+            pa=300,
+        ),
     )
 
     assert result["team_brl_percent"] is None
@@ -145,7 +146,6 @@ def test_provenance_preserved():
 
     result = adapt_tte_pit_snapshot_to_lambda(
         snapshot,
-        league_baseline={"prior_lambda_offense": 4.5},
     )
 
     assert result["provenance"]["snapshot_version"] == "tte_daily_snapshot_v1"
@@ -154,6 +154,25 @@ def test_provenance_preserved():
     assert result["provenance"]["source_fingerprints"] == {
         "savant_team_offense_rolling": "team-fp"
     }
+
+
+def test_missing_prior_baseline_returns_none_with_fallback_used():
+    result = adapt_tte_pit_snapshot_to_lambda(
+        _snapshot(prior_baseline_found=False, team_est_woba_prior=None)
+    )
+
+    assert result["prior_baseline_found"] is False
+    assert result["lambda_offense"] is None
+    assert "prior_baseline" in result["provenance"]["missing_inputs"]
+    assert result["fallback_used"].startswith("missing_inputs:")
+
+
+def test_larger_current_pa_uses_more_current_weight():
+    thin = adapt_tte_pit_snapshot_to_lambda(_snapshot(pa=80))
+    large = adapt_tte_pit_snapshot_to_lambda(_snapshot(pa=2000))
+
+    assert thin["blend_prior_weight"] > thin["blend_current_weight"]
+    assert large["blend_current_weight"] > large["blend_prior_weight"]
 
 
 def test_formula_version_present_for_missing_snapshot():
@@ -184,8 +203,23 @@ def _snapshot(**overrides):
         "team_woba": 0.318,
         "team_brl_percent": 8.1,
         "team_ev95percent": 38.2,
+        "barrel_pa": 0.084,
+        "bb_pct": 0.081,
+        "k_pct": 0.225,
         "pa": 200,
         "bip": 140,
+        "prior_season": 2023,
+        "prior_baseline_found": True,
+        "prior_baseline_as_of_date": "2023-10-01T23:59:59+00:00",
+        "team_est_woba_prior": 0.315,
+        "team_woba_prior": 0.312,
+        "bb_pct_prior": 0.081,
+        "k_pct_prior": 0.225,
+        "barrel_pa_prior": 0.084,
+        "brl_percent_prior": 7.8,
+        "ev95percent_prior": 37.1,
+        "pa_prior": 6000,
+        "bip_prior": 4100,
         "requested_as_of_date": "2024-04-08T23:59:59Z",
         "team_offense_as_of_date": "2024-04-08T00:00:00+00:00",
         "source_fingerprints": {"savant_team_offense_rolling": "team-fingerprint"},

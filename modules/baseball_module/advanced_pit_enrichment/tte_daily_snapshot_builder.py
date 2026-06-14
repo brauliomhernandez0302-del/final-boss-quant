@@ -20,6 +20,7 @@ class TTEPITNamespaces:
 
     BATTER_ROLLING = "savant.batter.rolling"
     TEAM_OFFENSE_ROLLING = "savant.team_offense.rolling"
+    TEAM_OFFENSE_PRIOR_BASELINE = "savant.team_offense.prior_baseline"
     TTE_TEAM_DAILY = "tte.team.daily"
 
 
@@ -28,6 +29,7 @@ class TTEPITSources:
 
     BATTER_ROLLING = "baseball_savant_batter_rolling"
     TEAM_OFFENSE_ROLLING = "baseball_savant_team_offense_rolling"
+    TEAM_OFFENSE_PRIOR_BASELINE = "baseball_savant_team_offense_prior_baseline"
     TTE_TEAM_DAILY = "tte_team_daily"
 
 
@@ -87,18 +89,29 @@ class TTEDailySnapshotBuilder:
             as_of_date=requested_as_of_date,
             source=TTEPITSources.BATTER_ROLLING,
         )
+        prior_record = self.cache.get_latest(
+            namespace=TTEPITNamespaces.TEAM_OFFENSE_PRIOR_BASELINE,
+            entity_id=team_id,
+            season=season,
+            as_of_date=requested_as_of_date,
+            source=TTEPITSources.TEAM_OFFENSE_PRIOR_BASELINE,
+        )
 
         data = tte_record.data if tte_record else {}
         team_data = team_record.data if team_record else {}
+        prior_data = prior_record.data if prior_record else {}
         snapshot = {
             "found": team_record is not None,
             "team_id": _coerce_int(team_id),
             "team_name": data.get("team_name", team_data.get("team_name", team_name)),
             "season": int(season),
+            "prior_season": prior_data.get("prior_season"),
             "requested_as_of_date": requested_as_of_date,
             "team_offense_as_of_date": team_record.as_of_date if team_record else None,
+            "prior_baseline_as_of_date": prior_record.as_of_date if prior_record else None,
             "batter_rolling_found": batter_record is not None,
             "team_rolling_found": team_record is not None,
+            "prior_baseline_found": prior_record is not None,
             "lambda_offense": None,
             "runs_per_game": _first_present(team_data, "runs_per_game"),
             "team_est_woba": _first_present(team_data, "team_est_woba", "est_woba"),
@@ -110,12 +123,24 @@ class TTEDailySnapshotBuilder:
             "k_pct": _first_present(team_data, "k_pct", "team_k_pct"),
             "pa": _first_present(team_data, "pa", "plate_appearances"),
             "bip": _first_present(team_data, "bip", "batted_ball_count"),
+            "team_est_woba_prior": prior_data.get("team_est_woba_prior"),
+            "team_woba_prior": prior_data.get("team_woba_prior"),
+            "bb_pct_prior": prior_data.get("bb_pct_prior"),
+            "k_pct_prior": prior_data.get("k_pct_prior"),
+            "barrel_pa_prior": prior_data.get("barrel_pa_prior"),
+            "brl_percent_prior": prior_data.get("brl_percent_prior"),
+            "ev95percent_prior": prior_data.get("ev95percent_prior"),
+            "pa_prior": prior_data.get("pa_prior"),
+            "bip_prior": prior_data.get("bip_prior"),
             "source_fingerprints": {
                 "tte_team_daily": tte_record.source_fingerprint if tte_record else None,
                 "savant_team_offense_rolling": (
                     team_record.source_fingerprint if team_record else None
                 ),
                 "savant_batter_rolling": batter_record.source_fingerprint if batter_record else None,
+                "savant_team_offense_prior_baseline": (
+                    prior_record.source_fingerprint if prior_record else None
+                ),
             },
             "snapshot_version": self.SNAPSHOT_VERSION,
         }

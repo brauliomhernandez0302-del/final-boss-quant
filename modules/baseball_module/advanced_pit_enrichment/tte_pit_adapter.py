@@ -42,8 +42,8 @@ def adapt_tte_pit_snapshot_to_lambda(
     """Convert a TTE PIT snapshot to a TTE-compatible lambda contract.
 
     The adapter computes a lambda only when legacy-formula inputs are complete.
-    Current TTEDailySnapshotBuilder snapshots do not yet include BB%, K%, or
-    barrel-per-PA, so those snapshots return an explicit safe fallback.
+    Prior-season baseline inputs are expected on the snapshot and are blended
+    using the same inverse-proportional PA rule as the legacy TTE.
     """
     baseline = league_baseline or {}
     output = _base_output(snapshot)
@@ -62,11 +62,6 @@ def adapt_tte_pit_snapshot_to_lambda(
         output["provenance"]["missing_inputs"] = missing_inputs
         return output
 
-    if sample_size_status == "thin":
-        output["fallback_used"] = f"thin_sample:pa<{MIN_OK_PA}"
-        output["provenance"]["missing_inputs"] = missing_inputs
-        return output
-
     if missing_inputs:
         output["fallback_used"] = "missing_inputs:" + ",".join(missing_inputs)
         output["provenance"]["missing_inputs"] = missing_inputs
@@ -75,6 +70,8 @@ def adapt_tte_pit_snapshot_to_lambda(
     lambda_offense, formula_provenance = _compute_lambda(snapshot, baseline)
     output["lambda_offense"] = lambda_offense
     output["fallback_used"] = None
+    output["blend_current_weight"] = formula_provenance["current_weight"]
+    output["blend_prior_weight"] = formula_provenance["prior_weight"]
     output["provenance"].update(formula_provenance)
     output["provenance"]["missing_inputs"] = []
     return output
@@ -93,11 +90,15 @@ def _base_output(snapshot: dict[str, Any]) -> dict[str, Any]:
         "bip": snapshot.get("bip"),
         "sample_size_status": "missing",
         "fallback_used": None,
+        "blend_current_weight": None,
+        "blend_prior_weight": None,
+        "prior_baseline_found": bool(snapshot.get("prior_baseline_found")),
         "formula_version": FORMULA_VERSION,
         "provenance": {
             "snapshot_version": snapshot.get("snapshot_version"),
             "requested_as_of_date": snapshot.get("requested_as_of_date"),
             "team_offense_as_of_date": snapshot.get("team_offense_as_of_date"),
+            "prior_baseline_as_of_date": snapshot.get("prior_baseline_as_of_date"),
             "source_fingerprints": snapshot.get("source_fingerprints", {}),
         },
     }
@@ -115,8 +116,11 @@ def _missing_formula_inputs(snapshot: dict[str, Any], baseline: dict[str, Any]) 
         missing.append("bb_pct")
     if _first_present(snapshot, "k_pct", "team_k_pct") is None:
         missing.append("k_pct")
-    if _first_present(baseline, "prior_lambda_offense", "lambda_prior") is None:
-        missing.append("prior_lambda_offense")
+    if not snapshot.get("prior_baseline_found"):
+        missing.append("prior_baseline")
+    for key in ("team_est_woba_prior", "barrel_pa_prior", "bb_pct_prior", "k_pct_prior"):
+        if _is_missing(snapshot.get(key)):
+            missing.append(key)
     return missing
 
 
@@ -132,7 +136,10 @@ def _compute_lambda(snapshot: dict[str, Any], baseline: dict[str, Any]) -> tuple
     barrel_cur = float(_first_present(snapshot, "team_barrel_pa", "barrel_pa"))
     bb_cur = float(_first_present(snapshot, "bb_pct", "team_bb_pct"))
     k_cur = float(_first_present(snapshot, "k_pct", "team_k_pct"))
-    lambda_prior = float(_first_present(baseline, "prior_lambda_offense", "lambda_prior"))
+    xwoba_prior = float(snapshot["team_est_woba_prior"])
+    barrel_prior = float(snapshot["barrel_pa_prior"])
+    bb_prior = float(snapshot["bb_pct_prior"])
+    k_prior = float(snapshot["k_pct_prior"])
 
     xwoba_reg = _regress(xwoba_cur, lg_xwoba, pa, K_XWOBA)
     barrel_reg = _regress(barrel_cur, lg_barrel_pa, pa, K_BARREL)
@@ -148,6 +155,15 @@ def _compute_lambda(snapshot: dict[str, Any], baseline: dict[str, Any]) -> tuple
     composite = f_xwoba * 0.50 + f_barrel * 0.30 + f_plate * 0.20
     lambda_cur = composite * lg_rpg
 
+    disc_prior = (bb_prior - k_prior) - (lg_bb_pct - lg_k_pct)
+    plate_prior = _clamp(1.0 + disc_prior * 3.5, PLATE_FACTOR_MIN, PLATE_FACTOR_MAX)
+    composite_prior = (
+        (xwoba_prior / lg_xwoba) * 0.50
+        + (barrel_prior / lg_barrel_pa) * 0.30
+        + plate_prior * 0.20
+    )
+    lambda_prior = composite_prior * lg_rpg
+
     prior_w = PRIOR_PA_EQUIVALENT / (PRIOR_PA_EQUIVALENT + pa)
     current_w = pa / (PRIOR_PA_EQUIVALENT + pa)
     lambda_offense = round(current_w * lambda_cur + prior_w * lambda_prior, 4)
@@ -161,6 +177,10 @@ def _compute_lambda(snapshot: dict[str, Any], baseline: dict[str, Any]) -> tuple
             "k_pct": k_cur,
             "pa": int(pa),
             "prior_lambda_offense": lambda_prior,
+            "team_est_woba_prior": xwoba_prior,
+            "barrel_pa_prior": barrel_prior,
+            "bb_pct_prior": bb_prior,
+            "k_pct_prior": k_prior,
         },
         "legacy_constants": {
             "k_xwoba": K_XWOBA,
@@ -181,6 +201,7 @@ def _compute_lambda(snapshot: dict[str, Any], baseline: dict[str, Any]) -> tuple
         "lambda_cur": round(lambda_cur, 4),
         "lambda_prior": round(lambda_prior, 4),
         "prior_weight": round(prior_w, 3),
+        "current_weight": round(current_w, 3),
     }
     return lambda_offense, provenance
 
