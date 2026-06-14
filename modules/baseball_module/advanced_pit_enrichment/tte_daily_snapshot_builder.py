@@ -105,6 +105,9 @@ class TTEDailySnapshotBuilder:
             "team_woba": _first_present(team_data, "team_woba", "woba"),
             "team_brl_percent": _first_present(team_data, "team_brl_percent", "brl_percent"),
             "team_ev95percent": _first_present(team_data, "team_ev95percent", "ev95percent"),
+            "barrel_pa": _first_present(team_data, "barrel_pa", "team_barrel_pa"),
+            "bb_pct": _first_present(team_data, "bb_pct", "team_bb_pct"),
+            "k_pct": _first_present(team_data, "k_pct", "team_k_pct"),
             "pa": _first_present(team_data, "pa", "plate_appearances"),
             "bip": _first_present(team_data, "bip", "batted_ball_count"),
             "source_fingerprints": {

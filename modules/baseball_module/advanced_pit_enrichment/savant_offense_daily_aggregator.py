@@ -35,6 +35,11 @@ class SavantDailyBatterOffenseMetrics:
     woba_denominator: float | None
     barrel_count: int
     brl_percent: float | None
+    barrel_pa: float | None
+    bb_count: int
+    k_count: int
+    bb_pct: float | None
+    k_pct: float | None
     avg_hit_speed: float | None
     ev95plus: int
     ev95percent: float | None
@@ -56,6 +61,11 @@ class SavantDailyTeamOffenseMetrics:
     woba_denominator: float | None
     barrel_count: int
     brl_percent: float | None
+    barrel_pa: float | None
+    bb_count: int
+    k_count: int
+    bb_pct: float | None
+    k_pct: float | None
     avg_hit_speed: float | None
     ev95plus: int
     ev95percent: float | None
@@ -82,6 +92,11 @@ class SavantRollingBatterOffenseMetrics:
     woba_denominator: float | None
     barrel_count: int
     brl_percent: float | None
+    barrel_pa: float | None
+    bb_count: int
+    k_count: int
+    bb_pct: float | None
+    k_pct: float | None
     avg_hit_speed: float | None
     ev95plus: int
     ev95percent: float | None
@@ -100,6 +115,11 @@ class SavantRollingTeamOffenseMetrics:
     woba_denominator: float | None
     barrel_count: int
     brl_percent: float | None
+    barrel_pa: float | None
+    bb_count: int
+    k_count: int
+    bb_pct: float | None
+    k_pct: float | None
     avg_hit_speed: float | None
     ev95plus: int
     ev95percent: float | None
@@ -399,6 +419,8 @@ class _Accumulator:
         self.woba_numerator = 0.0
         self.woba_denominator = 0.0
         self.barrel_count = 0
+        self.bb_count = 0
+        self.k_count = 0
         self.batted_ball_count = 0
         self.plate_appearances = 0
         self.hit_speed_sum = 0.0
@@ -423,6 +445,8 @@ class _Accumulator:
             self.sweet_spot_denominator += row.sweet_spot_denominator
 
         self.barrel_count += row.barrel_count
+        self.bb_count += row.bb_count
+        self.k_count += row.k_count
         self.batted_ball_count += row.batted_ball_count
         self.plate_appearances += row.plate_appearances
         self.ev95plus += row.ev95plus
@@ -456,6 +480,11 @@ class _Accumulator:
             "woba_denominator": self.woba_denominator if self.woba_denominator else None,
             "barrel_count": self.barrel_count,
             "brl_percent": _pct(self.barrel_count, self.batted_ball_count),
+            "barrel_pa": _rate(self.barrel_count, self.plate_appearances),
+            "bb_count": self.bb_count,
+            "k_count": self.k_count,
+            "bb_pct": _rate(self.bb_count, self.plate_appearances),
+            "k_pct": _rate(self.k_count, self.plate_appearances),
             "avg_hit_speed": _safe_div(self.hit_speed_sum, self.hit_speed_count),
             "ev95plus": self.ev95plus,
             "ev95percent": _pct(self.ev95plus, self.batted_ball_count),
@@ -490,6 +519,7 @@ def _aggregate_team(
 
 
 def _aggregate_common(events: list[RawSavantEvent]) -> dict[str, Any]:
+    pa_events = _plate_appearance_events(events)
     batted_ball_events = [event for event in events if event.launch_speed is not None]
     launch_speeds = [event.launch_speed for event in batted_ball_events if event.launch_speed is not None]
     launch_angles = [event.launch_angle for event in batted_ball_events if event.launch_angle is not None]
@@ -503,11 +533,18 @@ def _aggregate_common(events: list[RawSavantEvent]) -> dict[str, Any]:
     woba_numerator = sum(woba_values) if woba_values else None
     woba_denominator = sum(woba_denoms) if woba_denoms else None
     barrel_count = sum(1 for event in events if event.launch_speed_angle == 6)
+    plate_appearances = len(pa_events)
+    bb_count = sum(1 for event in pa_events if _event_label(event) == "walk")
+    k_count = sum(
+        1
+        for event in pa_events
+        if _event_label(event) in {"strikeout", "strikeout_double_play"}
+    )
     ev95plus = sum(1 for value in launch_speeds if value >= 95.0)
     sweet_spot_count = sum(1 for value in launch_angles if 8.0 <= value <= 32.0)
 
     return {
-        "plate_appearances": int(woba_denominator) if woba_denominator else 0,
+        "plate_appearances": plate_appearances,
         "batted_ball_count": len(batted_ball_events),
         "est_woba": _mean(est_woba_values),
         "est_woba_count": len(est_woba_values),
@@ -516,6 +553,11 @@ def _aggregate_common(events: list[RawSavantEvent]) -> dict[str, Any]:
         "woba_denominator": woba_denominator if woba_denominator else None,
         "barrel_count": barrel_count,
         "brl_percent": _pct(barrel_count, len(batted_ball_events)),
+        "barrel_pa": _rate(barrel_count, plate_appearances),
+        "bb_count": bb_count,
+        "k_count": k_count,
+        "bb_pct": _rate(bb_count, plate_appearances),
+        "k_pct": _rate(k_count, plate_appearances),
         "avg_hit_speed": _mean(launch_speeds),
         "ev95plus": ev95plus,
         "ev95percent": _pct(ev95plus, len(launch_speeds)),
@@ -562,7 +604,12 @@ def _rolling_payload(
         "woba_numerator": metrics.woba_numerator,
         "woba_denominator": metrics.woba_denominator,
         "brl_percent": metrics.brl_percent,
+        "barrel_pa": metrics.barrel_pa,
         "barrel_count": metrics.barrel_count,
+        "bb_count": metrics.bb_count,
+        "k_count": metrics.k_count,
+        "bb_pct": metrics.bb_pct,
+        "k_pct": metrics.k_pct,
         "batted_ball_count": metrics.batted_ball_count,
         "pa": metrics.plate_appearances,
         "plate_appearances": metrics.plate_appearances,
@@ -624,3 +671,57 @@ def _safe_div(numerator: float | None, denominator: float | int | None) -> float
 def _pct(numerator: int, denominator: int) -> float | None:
     value = _safe_div(float(numerator), denominator)
     return value * 100.0 if value is not None else None
+
+
+def _rate(numerator: int, denominator: int) -> float | None:
+    return _safe_div(float(numerator), denominator)
+
+
+def _plate_appearance_events(events: list[RawSavantEvent]) -> list[RawSavantEvent]:
+    by_pa: dict[tuple[int, int], RawSavantEvent] = {}
+    for event in events:
+        if not _is_plate_appearance_event(event):
+            continue
+        key = (event.game_pk, event.at_bat_number)
+        existing = by_pa.get(key)
+        if existing is None or event.pitch_number >= existing.pitch_number:
+            by_pa[key] = event
+    return list(by_pa.values())
+
+
+def _is_plate_appearance_event(event: RawSavantEvent) -> bool:
+    label = _event_label(event)
+    if not label:
+        return False
+    if event.woba_denom is not None:
+        return True
+    return label in _PA_EVENT_LABELS
+
+
+def _event_label(event: RawSavantEvent) -> str:
+    return str(event.events or event.raw_json.get("events") or "").strip().lower()
+
+
+_PA_EVENT_LABELS = {
+    "single",
+    "double",
+    "triple",
+    "home_run",
+    "field_out",
+    "force_out",
+    "grounded_into_double_play",
+    "fielders_choice",
+    "fielders_choice_out",
+    "double_play",
+    "strikeout",
+    "strikeout_double_play",
+    "walk",
+    "intent_walk",
+    "hit_by_pitch",
+    "sac_fly",
+    "sac_fly_double_play",
+    "sac_bunt",
+    "sac_bunt_double_play",
+    "catcher_interf",
+    "field_error",
+}

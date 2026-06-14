@@ -58,6 +58,9 @@ def test_missing_team_snapshot_returns_found_false(tmp_path):
         "team_woba": None,
         "team_brl_percent": None,
         "team_ev95percent": None,
+        "barrel_pa": None,
+        "bb_pct": None,
+        "k_pct": None,
         "pa": None,
         "bip": None,
         "source_fingerprints": {
@@ -151,6 +154,9 @@ def test_existing_team_offense_returns_found_true(tmp_path):
     assert snapshot["team_woba"] == 0.330
     assert snapshot["team_brl_percent"] == 9.2
     assert snapshot["team_ev95percent"] == 41.5
+    assert snapshot["barrel_pa"] == 0.091
+    assert snapshot["bb_pct"] == 0.085
+    assert snapshot["k_pct"] == 0.221
     assert snapshot["pa"] == 321
     assert snapshot["bip"] == 211
 
@@ -186,6 +192,9 @@ def test_none_values_preserved_without_fake_zeroes(tmp_path):
         team_woba=None,
         team_brl_percent=None,
         team_ev95percent=None,
+        barrel_pa=None,
+        bb_pct=None,
+        k_pct=None,
         pa=None,
         bip=None,
     )
@@ -203,10 +212,34 @@ def test_none_values_preserved_without_fake_zeroes(tmp_path):
         "team_woba",
         "team_brl_percent",
         "team_ev95percent",
+        "barrel_pa",
+        "bb_pct",
+        "k_pct",
         "pa",
         "bip",
     ):
         assert snapshot[key] is None
+
+
+def test_exposes_tte_adapter_inputs_from_team_offense(tmp_path):
+    cache = PITCache(tmp_path / "pit.db")
+    _seed_team_rolling(
+        cache,
+        as_of_date="2024-04-08T00:00:00Z",
+        barrel_pa=0.073,
+        bb_pct=0.101,
+        k_pct=0.199,
+    )
+
+    snapshot = TTEDailySnapshotBuilder(cache).build_team_snapshot(
+        team_id=147,
+        season=2024,
+        requested_as_of_date="2024-04-08T23:59:59Z",
+    )
+
+    assert snapshot["barrel_pa"] == 0.073
+    assert snapshot["bb_pct"] == 0.101
+    assert snapshot["k_pct"] == 0.199
 
 
 def test_lambda_offense_remains_none_without_real_formula(tmp_path):
@@ -255,6 +288,9 @@ def _seed_tte(
     team_woba=0.318,
     team_brl_percent=8.1,
     team_ev95percent=38.2,
+    barrel_pa=0.091,
+    bb_pct=0.085,
+    k_pct=0.221,
     pa=100,
     bip=70,
 ):
@@ -291,6 +327,9 @@ def _seed_team_rolling(
     team_woba=0.318,
     team_brl_percent=8.1,
     team_ev95percent=38.2,
+    barrel_pa=0.091,
+    bb_pct=0.085,
+    k_pct=0.221,
     pa=100,
     bip=70,
 ):
@@ -301,6 +340,9 @@ def _seed_team_rolling(
         "woba": team_woba,
         "brl_percent": team_brl_percent,
         "ev95percent": team_ev95percent,
+        "barrel_pa": barrel_pa,
+        "bb_pct": bb_pct,
+        "k_pct": k_pct,
         "pa": pa,
         "bip": bip,
     }

@@ -10,7 +10,7 @@ def test_complete_snapshot_produces_lambda_when_formula_requirements_are_met():
             team_woba=0.320,
             team_brl_percent=10.0,
             team_ev95percent=42.0,
-            team_barrel_pa=0.095,
+            barrel_pa=0.095,
             bb_pct=0.090,
             k_pct=0.210,
             pa=300,
@@ -38,6 +38,16 @@ def test_missing_est_woba_returns_none_with_fallback_used():
     assert result["lambda_offense"] is None
     assert result["fallback_used"] == "missing_inputs:team_est_woba"
     assert result["provenance"]["missing_inputs"] == ["team_est_woba"]
+
+
+def test_missing_bb_pct_returns_none_with_fallback_used():
+    result = adapt_tte_pit_snapshot_to_lambda(
+        _snapshot(team_est_woba=0.330, barrel_pa=0.095, bb_pct=None, k_pct=0.21, pa=300),
+        league_baseline={"prior_lambda_offense": 4.5},
+    )
+
+    assert result["lambda_offense"] is None
+    assert result["fallback_used"] == "missing_inputs:bb_pct"
 
 
 def test_thin_pa_sample_is_marked_thin():
@@ -79,7 +89,7 @@ def test_true_zero_barrel_rate_with_valid_denominator_is_not_missing():
             team_est_woba=0.310,
             team_woba=0.300,
             team_brl_percent=0.0,
-            team_barrel_pa=0.0,
+            barrel_pa=0.0,
             bb_pct=0.08,
             k_pct=0.22,
             pa=250,
@@ -91,6 +101,24 @@ def test_true_zero_barrel_rate_with_valid_denominator_is_not_missing():
     assert result["team_brl_percent"] == 0.0
     assert result["fallback_used"] is None
     assert "barrel_pa" not in result["provenance"]["missing_inputs"]
+    assert result["lambda_offense"] is not None
+
+
+def test_true_zero_bb_or_k_rate_with_valid_pa_is_not_missing():
+    result = adapt_tte_pit_snapshot_to_lambda(
+        _snapshot(
+            team_est_woba=0.315,
+            barrel_pa=0.08,
+            bb_pct=0.0,
+            k_pct=0.0,
+            pa=250,
+        ),
+        league_baseline={"prior_lambda_offense": 4.5},
+    )
+
+    assert result["fallback_used"] is None
+    assert "bb_pct" not in result["provenance"]["missing_inputs"]
+    assert "k_pct" not in result["provenance"]["missing_inputs"]
     assert result["lambda_offense"] is not None
 
 
@@ -108,7 +136,7 @@ def test_no_fake_zero_for_missing_barrel_pa():
 def test_provenance_preserved():
     snapshot = _snapshot(
         team_est_woba=0.330,
-        team_barrel_pa=0.095,
+        barrel_pa=0.095,
         bb_pct=0.09,
         k_pct=0.21,
         pa=300,
