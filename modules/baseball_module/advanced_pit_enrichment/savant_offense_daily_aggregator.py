@@ -130,6 +130,7 @@ class SavantRollingTeamOffenseMetrics:
 class SavantRollingTeamOffenseResult:
     rows: dict[str, SavantRollingTeamOffenseMetrics]
     missing_team_rows: int
+    rows_processed: int = 0
 
 
 class SavantOffenseDailyAggregator:
@@ -165,8 +166,11 @@ class SavantOffenseDailyAggregator:
         start_date: str,
         end_date: str,
     ) -> SavantTeamOffenseDailyResult:
-        events = self.cache.get_events_by_date_range(start_date=start_date, end_date=end_date)
-        grouped: dict[tuple[str, str], list[RawSavantEvent]] = defaultdict(list)
+        events = self.cache.iter_team_offense_events_by_date_range(
+            start_date=start_date,
+            end_date=end_date,
+        )
+        grouped: dict[tuple[str, str], list[Any]] = defaultdict(list)
         missing_team_rows = 0
 
         for event in events:
@@ -181,6 +185,41 @@ class SavantOffenseDailyAggregator:
             for (game_date, team), team_events in sorted(grouped.items())
         ]
         return SavantTeamOffenseDailyResult(rows=rows, missing_team_rows=missing_team_rows)
+
+    def aggregate_teams_rolling_by_date_range(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+        as_of_date: str,
+    ) -> SavantRollingTeamOffenseResult:
+        accumulators: dict[str, _RawTeamAccumulator] = {}
+        missing_team_rows = 0
+        rows_processed = 0
+
+        for event in self.cache.iter_team_offense_events_by_date_range(
+            start_date=start_date,
+            end_date=end_date,
+        ):
+            rows_processed += 1
+            if event.game_date > as_of_date:
+                continue
+            batting_team = _batting_team(event)
+            if batting_team is None:
+                missing_team_rows += 1
+                continue
+            accumulator = accumulators.setdefault(batting_team, _RawTeamAccumulator())
+            accumulator.add_event(event)
+
+        rows = {
+            team: accumulator.to_team_metrics(as_of_date=as_of_date, batting_team=team)
+            for team, accumulator in sorted(accumulators.items())
+        }
+        return SavantRollingTeamOffenseResult(
+            rows=rows,
+            missing_team_rows=missing_team_rows,
+            rows_processed=rows_processed,
+        )
 
 
 class SavantOffenseRollingBuilder:
@@ -229,25 +268,10 @@ class SavantOffenseRollingBuilder:
         season_start_date: str,
         as_of_date: str,
     ) -> SavantRollingTeamOffenseResult:
-        daily_result = self.daily_aggregator.aggregate_teams_by_date_range(
+        return self.daily_aggregator.aggregate_teams_rolling_by_date_range(
             start_date=season_start_date,
             end_date=as_of_date,
-        )
-        accumulators: dict[str, _Accumulator] = {}
-
-        for row in daily_result.rows:
-            if row.game_date > as_of_date:
-                continue
-            accumulator = accumulators.setdefault(row.batting_team, _Accumulator())
-            accumulator.add(row)
-
-        rows = {
-            team: accumulator.to_team_metrics(as_of_date=as_of_date, batting_team=team)
-            for team, accumulator in sorted(accumulators.items())
-        }
-        return SavantRollingTeamOffenseResult(
-            rows=rows,
-            missing_team_rows=daily_result.missing_team_rows,
+            as_of_date=as_of_date,
         )
 
 
@@ -492,6 +516,94 @@ class _Accumulator:
         }
 
 
+class _RawTeamAccumulator:
+    def __init__(self):
+        self.est_woba_sum = 0.0
+        self.est_woba_count = 0
+        self.woba_numerator = 0.0
+        self.woba_denominator = 0.0
+        self.has_woba_value = False
+        self.has_woba_denom = False
+        self.barrel_count = 0
+        self.batted_ball_count = 0
+        self.hit_speed_sum = 0.0
+        self.hit_speed_count = 0
+        self.ev95plus = 0
+        self.sweet_spot_count = 0
+        self.sweet_spot_denominator = 0
+        self.pa_events: dict[tuple[int, int], Any] = {}
+
+    def add_event(self, event: Any) -> None:
+        if event.estimated_woba_using_speedangle is not None:
+            self.est_woba_sum += event.estimated_woba_using_speedangle
+            self.est_woba_count += 1
+        if event.woba_value is not None:
+            self.woba_numerator += event.woba_value
+            self.has_woba_value = True
+        if event.woba_denom is not None:
+            self.woba_denominator += event.woba_denom
+            self.has_woba_denom = True
+
+        if event.launch_speed_angle == 6:
+            self.barrel_count += 1
+        if event.launch_speed is not None:
+            self.batted_ball_count += 1
+            self.hit_speed_sum += event.launch_speed
+            self.hit_speed_count += 1
+            if event.launch_speed >= 95.0:
+                self.ev95plus += 1
+            if event.launch_angle is not None:
+                self.sweet_spot_denominator += 1
+                if 8.0 <= event.launch_angle <= 32.0:
+                    self.sweet_spot_count += 1
+
+        if _is_plate_appearance_event(event):
+            key = (event.game_pk, event.at_bat_number)
+            existing = self.pa_events.get(key)
+            if existing is None or event.pitch_number >= existing.pitch_number:
+                self.pa_events[key] = event
+
+    def to_team_metrics(
+        self,
+        *,
+        as_of_date: str,
+        batting_team: str,
+    ) -> SavantRollingTeamOffenseMetrics:
+        plate_appearance_events = list(self.pa_events.values())
+        plate_appearances = len(plate_appearance_events)
+        bb_count = sum(1 for event in plate_appearance_events if _event_label(event) == "walk")
+        k_count = sum(
+            1
+            for event in plate_appearance_events
+            if _event_label(event) in {"strikeout", "strikeout_double_play"}
+        )
+
+        woba_numerator = self.woba_numerator if self.has_woba_value else None
+        woba_denominator = self.woba_denominator if self.has_woba_denom else None
+
+        return SavantRollingTeamOffenseMetrics(
+            as_of_date=as_of_date,
+            batting_team=batting_team,
+            plate_appearances=plate_appearances,
+            batted_ball_count=self.batted_ball_count,
+            est_woba=_safe_div(self.est_woba_sum, self.est_woba_count),
+            woba=_safe_div(woba_numerator, woba_denominator),
+            woba_numerator=woba_numerator if woba_denominator else None,
+            woba_denominator=woba_denominator if woba_denominator else None,
+            barrel_count=self.barrel_count,
+            brl_percent=_pct(self.barrel_count, self.batted_ball_count),
+            barrel_pa=_rate(self.barrel_count, plate_appearances),
+            bb_count=bb_count,
+            k_count=k_count,
+            bb_pct=_rate(bb_count, plate_appearances),
+            k_pct=_rate(k_count, plate_appearances),
+            avg_hit_speed=_safe_div(self.hit_speed_sum, self.hit_speed_count),
+            ev95plus=self.ev95plus,
+            ev95percent=_pct(self.ev95plus, self.batted_ball_count),
+            sweet_spot_pct=_pct(self.sweet_spot_count, self.sweet_spot_denominator),
+        )
+
+
 def _aggregate_batter(
     *,
     game_date: str,
@@ -509,7 +621,7 @@ def _aggregate_team(
     *,
     game_date: str,
     batting_team: str,
-    events: list[RawSavantEvent],
+    events: list[Any],
 ) -> SavantDailyTeamOffenseMetrics:
     return SavantDailyTeamOffenseMetrics(
         game_date=game_date,
@@ -518,7 +630,7 @@ def _aggregate_team(
     )
 
 
-def _aggregate_common(events: list[RawSavantEvent]) -> dict[str, Any]:
+def _aggregate_common(events: list[Any]) -> dict[str, Any]:
     pa_events = _plate_appearance_events(events)
     batted_ball_events = [event for event in events if event.launch_speed is not None]
     launch_speeds = [event.launch_speed for event in batted_ball_events if event.launch_speed is not None]
@@ -567,16 +679,28 @@ def _aggregate_common(events: list[RawSavantEvent]) -> dict[str, Any]:
     }
 
 
-def _batting_team(event: RawSavantEvent) -> str | None:
-    raw = event.raw_json
+def _batting_team(event: Any) -> str | None:
+    raw = getattr(event, "raw_json", None)
     for key in ("batting_team", "bat_team", "batter_team", "team_batting"):
-        value = _clean_team(raw.get(key))
+        value = _clean_team(getattr(event, key, None))
+        if value:
+            return value
+        value = _clean_team(raw.get(key)) if raw else None
         if value:
             return value
 
-    inning_topbot = str(raw.get("inning_topbot") or raw.get("inning_half") or "").lower()
-    home_team = _clean_team(raw.get("home_team"))
-    away_team = _clean_team(raw.get("away_team"))
+    inning_topbot = str(
+        getattr(event, "inning_topbot", None)
+        or getattr(event, "inning_half", None)
+        or (raw.get("inning_topbot") if raw else None)
+        or (raw.get("inning_half") if raw else None)
+        or ""
+    ).lower()
+    home_team = _clean_team(getattr(event, "home_team", None))
+    away_team = _clean_team(getattr(event, "away_team", None))
+    if raw:
+        home_team = home_team or _clean_team(raw.get("home_team"))
+        away_team = away_team or _clean_team(raw.get("away_team"))
     if home_team and away_team:
         if inning_topbot.startswith("top"):
             return away_team
@@ -677,8 +801,8 @@ def _rate(numerator: int, denominator: int) -> float | None:
     return _safe_div(float(numerator), denominator)
 
 
-def _plate_appearance_events(events: list[RawSavantEvent]) -> list[RawSavantEvent]:
-    by_pa: dict[tuple[int, int], RawSavantEvent] = {}
+def _plate_appearance_events(events: list[Any]) -> list[Any]:
+    by_pa: dict[tuple[int, int], Any] = {}
     for event in events:
         if not _is_plate_appearance_event(event):
             continue
@@ -689,7 +813,7 @@ def _plate_appearance_events(events: list[RawSavantEvent]) -> list[RawSavantEven
     return list(by_pa.values())
 
 
-def _is_plate_appearance_event(event: RawSavantEvent) -> bool:
+def _is_plate_appearance_event(event: Any) -> bool:
     label = _event_label(event)
     if not label:
         return False
@@ -698,8 +822,9 @@ def _is_plate_appearance_event(event: RawSavantEvent) -> bool:
     return label in _PA_EVENT_LABELS
 
 
-def _event_label(event: RawSavantEvent) -> str:
-    return str(event.events or event.raw_json.get("events") or "").strip().lower()
+def _event_label(event: Any) -> str:
+    raw = getattr(event, "raw_json", None)
+    return str(event.events or (raw.get("events") if raw else None) or "").strip().lower()
 
 
 _PA_EVENT_LABELS = {

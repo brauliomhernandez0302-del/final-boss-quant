@@ -33,6 +33,29 @@ class RawSavantEvent:
     fetched_at: str
 
 
+@dataclass(frozen=True)
+class RawSavantTeamOffenseEvent:
+    game_date: str
+    game_pk: int
+    at_bat_number: int
+    pitch_number: int
+    events: str | None
+    launch_speed: float | None
+    launch_angle: float | None
+    estimated_woba_using_speedangle: float | None
+    woba_value: float | None
+    woba_denom: float | None
+    launch_speed_angle: int | None
+    batting_team: str | None
+    bat_team: str | None
+    batter_team: str | None
+    team_batting: str | None
+    home_team: str | None
+    away_team: str | None
+    inning_topbot: str | None
+    inning_half: str | None
+
+
 class RawSavantEventsCache:
     """Persistent raw event cache keyed by Statcast pitch identity."""
 
@@ -119,6 +142,94 @@ class RawSavantEventsCache:
             ).fetchall()
 
         return [_row_to_event(row) for row in rows]
+
+    def iter_team_offense_events_by_date_range(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> Iterable[RawSavantTeamOffenseEvent]:
+        """Yield only columns needed for team offense aggregation.
+
+        Team attribution fields are stored in raw_json by Savant, so this uses
+        SQLite JSON extraction to avoid decoding the full JSON payload in Python
+        for every raw event.
+        """
+        _validate_date(start_date, field_name="start_date")
+        _validate_date(end_date, field_name="end_date")
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    game_date,
+                    game_pk,
+                    at_bat_number,
+                    pitch_number,
+                    events,
+                    launch_speed,
+                    launch_angle,
+                    estimated_woba_using_speedangle,
+                    woba_value,
+                    woba_denom,
+                    launch_speed_angle,
+                    json_extract(raw_json, '$.batting_team') AS batting_team,
+                    json_extract(raw_json, '$.bat_team') AS bat_team,
+                    json_extract(raw_json, '$.batter_team') AS batter_team,
+                    json_extract(raw_json, '$.team_batting') AS team_batting,
+                    json_extract(raw_json, '$.home_team') AS home_team,
+                    json_extract(raw_json, '$.away_team') AS away_team,
+                    json_extract(raw_json, '$.inning_topbot') AS inning_topbot,
+                    json_extract(raw_json, '$.inning_half') AS inning_half
+                FROM raw_savant_events
+                WHERE game_date >= ?
+                  AND game_date <= ?
+                ORDER BY game_date, game_pk, at_bat_number, pitch_number
+                """,
+                (start_date, end_date),
+            )
+            for row in rows:
+                yield _row_to_team_offense_event(row)
+
+    def count_events_by_date_range(self, *, start_date: str, end_date: str) -> int:
+        _validate_date(start_date, field_name="start_date")
+        _validate_date(end_date, field_name="end_date")
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
+
+        with self._connect() as conn:
+            return int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM raw_savant_events
+                    WHERE game_date >= ?
+                      AND game_date <= ?
+                    """,
+                    (start_date, end_date),
+                ).fetchone()[0]
+            )
+
+    def count_distinct_dates_by_date_range(self, *, start_date: str, end_date: str) -> int:
+        _validate_date(start_date, field_name="start_date")
+        _validate_date(end_date, field_name="end_date")
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
+
+        with self._connect() as conn:
+            return int(
+                conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT game_date)
+                    FROM raw_savant_events
+                    WHERE game_date >= ?
+                      AND game_date <= ?
+                    """,
+                    (start_date, end_date),
+                ).fetchone()[0]
+            )
 
     def count_events(self) -> int:
         with self._connect() as conn:
@@ -216,6 +327,30 @@ def _row_to_event(row: sqlite3.Row) -> RawSavantEvent:
         raw_json=json.loads(row["raw_json"]),
         source_fingerprint=row["source_fingerprint"],
         fetched_at=row["fetched_at"],
+    )
+
+
+def _row_to_team_offense_event(row: sqlite3.Row) -> RawSavantTeamOffenseEvent:
+    return RawSavantTeamOffenseEvent(
+        game_date=row["game_date"],
+        game_pk=int(row["game_pk"]),
+        at_bat_number=int(row["at_bat_number"]),
+        pitch_number=int(row["pitch_number"]),
+        events=row["events"],
+        launch_speed=row["launch_speed"],
+        launch_angle=row["launch_angle"],
+        estimated_woba_using_speedangle=row["estimated_woba_using_speedangle"],
+        woba_value=row["woba_value"],
+        woba_denom=row["woba_denom"],
+        launch_speed_angle=_nullable_int(row["launch_speed_angle"]),
+        batting_team=_optional_str(row["batting_team"]),
+        bat_team=_optional_str(row["bat_team"]),
+        batter_team=_optional_str(row["batter_team"]),
+        team_batting=_optional_str(row["team_batting"]),
+        home_team=_optional_str(row["home_team"]),
+        away_team=_optional_str(row["away_team"]),
+        inning_topbot=_optional_str(row["inning_topbot"]),
+        inning_half=_optional_str(row["inning_half"]),
     )
 
 

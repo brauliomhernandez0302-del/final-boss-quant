@@ -4,6 +4,7 @@ import sqlite3
 from modules.baseball_module.advanced_pit_enrichment import (
     PITCache,
     RawSavantEventsCache,
+    SavantOffenseRollingBuilder,
     TTEPITNamespaces,
     TTEPITSources,
     TTEPriorBaselineBuilder,
@@ -103,6 +104,76 @@ def test_prior_season_allowed_but_current_future_rows_not_used(tmp_path):
     assert result.rows["147"]["pa_prior"] == 1
 
 
+def test_prior_baseline_uses_bulk_team_projection_without_full_raw_decoding(tmp_path):
+    raw_db = tmp_path / "raw.db"
+    pit_db = tmp_path / "pit.db"
+    events = []
+    game_pk = 1
+    for team_id in ("147", "158"):
+        for idx in range(75):
+            events.append(
+                _event(
+                    game_date="2023-04-01" if idx < 40 else "2023-04-02",
+                    game_pk=game_pk,
+                    at_bat_number=idx + 1,
+                    pitch_number=1,
+                    batting_team=team_id,
+                    events="walk" if idx % 3 == 0 else "single",
+                    launch_speed=100 if idx % 2 == 0 else 88,
+                    launch_angle=20,
+                    launch_speed_angle=6 if idx % 2 == 0 else 3,
+                    woba_value=0.7 if idx % 3 == 0 else 0.9,
+                    woba_denom=1,
+                )
+            )
+            game_pk += 1
+    _cache_with_events(raw_db, events)
+    spy_cache = _SpyRawSavantEventsCache(raw_db)
+    rolling_builder = SavantOffenseRollingBuilder(cache=spy_cache)
+    builder = TTEPriorBaselineBuilder(
+        raw_cache_db=raw_db,
+        pit_cache_db=pit_db,
+        rolling_builder=rolling_builder,
+    )
+    builder.raw_cache = spy_cache
+
+    result = builder.persist_prior_baseline(
+        season=2024,
+        prior_season_start_date="2023-04-01",
+        prior_season_end_date="2023-10-01",
+        prior_season=2023,
+        fetched_at="2026-06-20T12:00:00Z",
+    )
+
+    assert spy_cache.full_event_queries == 0
+    assert spy_cache.team_projection_queries == 1
+    assert spy_cache.count_queries == 1
+    assert spy_cache.distinct_date_queries == 1
+    assert result.build_report is not None
+    assert result.build_report["raw_event_count"] == 150
+    assert result.build_report["distinct_game_dates"] == 2
+    assert result.build_report["distinct_teams"] == 2
+    assert result.build_report["rows_processed"] == 150
+    assert set(result.rows) == {"147", "158"}
+    assert result.rows["147"]["pa_prior"] == 75
+    assert result.rows["158"]["pa_prior"] == 75
+    assert result.rows["147"]["source_fingerprint"].startswith(
+        "savant:raw:team_offense_prior:tte_prior_baseline_v1:2024:2023:"
+    )
+
+    builder.persist_prior_baseline(
+        season=2024,
+        prior_season_start_date="2023-04-01",
+        prior_season_end_date="2023-10-01",
+        prior_season=2023,
+        fetched_at="2026-06-20T12:00:00Z",
+    )
+    con = sqlite3.connect(pit_db)
+    count = con.execute("select count(*) from pit_metric_cache").fetchone()[0]
+    con.close()
+    assert count == 2
+
+
 def test_none_values_preserved_for_missing_denominators(tmp_path):
     raw_db = tmp_path / "raw.db"
     pit_db = tmp_path / "pit.db"
@@ -184,6 +255,37 @@ def _cache_with_events(db_path, events):
     cache = RawSavantEventsCache(db_path)
     cache.save_events(events, source_fingerprint="test-source")
     return cache
+
+
+class _SpyRawSavantEventsCache(RawSavantEventsCache):
+    def __init__(self, db_path):
+        super().__init__(db_path)
+        self.full_event_queries = 0
+        self.team_projection_queries = 0
+        self.count_queries = 0
+        self.distinct_date_queries = 0
+
+    def get_events_by_date_range(self, *, start_date, end_date):
+        self.full_event_queries += 1
+        return super().get_events_by_date_range(start_date=start_date, end_date=end_date)
+
+    def iter_team_offense_events_by_date_range(self, *, start_date, end_date):
+        self.team_projection_queries += 1
+        return super().iter_team_offense_events_by_date_range(
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    def count_events_by_date_range(self, *, start_date, end_date):
+        self.count_queries += 1
+        return super().count_events_by_date_range(start_date=start_date, end_date=end_date)
+
+    def count_distinct_dates_by_date_range(self, *, start_date, end_date):
+        self.distinct_date_queries += 1
+        return super().count_distinct_dates_by_date_range(
+            start_date=start_date,
+            end_date=end_date,
+        )
 
 
 def _event(

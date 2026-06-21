@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ class TTEPriorBaselineBuildResult:
     season: int
     prior_season: int
     as_of_date: str
+    build_report: dict[str, Any] | None = None
 
 
 class TTEPriorBaselineBuilder:
@@ -58,22 +60,67 @@ class TTEPriorBaselineBuilder:
         fetched_at: str | None = None,
     ) -> TTEPriorBaselineBuildResult:
         """Persist one prior-season baseline per team for the requested current season."""
+        total_started = time.perf_counter()
         prior = prior_season or int(season) - 1
+        print(
+            "[TTEPriorBaselineBuilder] start "
+            f"season={season} prior_season={prior} "
+            f"window={prior_season_start_date}..{prior_season_end_date}",
+            flush=True,
+        )
+
+        stage_started = time.perf_counter()
+        raw_event_count = self.raw_cache.count_events_by_date_range(
+            start_date=prior_season_start_date,
+            end_date=prior_season_end_date,
+        )
+        distinct_dates = self.raw_cache.count_distinct_dates_by_date_range(
+            start_date=prior_season_start_date,
+            end_date=prior_season_end_date,
+        )
+        metadata_elapsed = time.perf_counter() - stage_started
+        print(
+            "[TTEPriorBaselineBuilder] raw metadata "
+            f"raw_event_count={raw_event_count} distinct_game_dates={distinct_dates} "
+            f"elapsed_sec={metadata_elapsed:.3f}",
+            flush=True,
+        )
+
+        stage_started = time.perf_counter()
         result = self.rolling_builder.build_teams_for_as_of_date(
             season_start_date=prior_season_start_date,
             as_of_date=prior_season_end_date,
         )
+        aggregation_elapsed = time.perf_counter() - stage_started
+        distinct_teams = len(result.rows)
+        print(
+            "[TTEPriorBaselineBuilder] aggregation "
+            f"rows_processed={result.rows_processed} distinct_teams={distinct_teams} "
+            f"missing_batting_team_rows={result.missing_team_rows} "
+            f"elapsed_sec={aggregation_elapsed:.3f}",
+            flush=True,
+        )
+
+        stage_started = time.perf_counter()
         fingerprint = _baseline_fingerprint(
-            raw_cache=self.raw_cache,
             season=season,
             prior_season=prior,
             prior_season_start_date=prior_season_start_date,
             prior_season_end_date=prior_season_end_date,
             baseline_version=self.BASELINE_VERSION,
+            raw_event_count=raw_event_count,
+            distinct_dates=distinct_dates,
+        )
+        fingerprint_elapsed = time.perf_counter() - stage_started
+        print(
+            "[TTEPriorBaselineBuilder] fingerprint "
+            f"source_fingerprint={fingerprint} elapsed_sec={fingerprint_elapsed:.3f}",
+            flush=True,
         )
         fetched = fetched_at or datetime.now(timezone.utc).isoformat()
         cutoff = f"{prior_season_end_date}T23:59:59Z"
 
+        stage_started = time.perf_counter()
         persisted: dict[str, dict[str, Any]] = {}
         for team_id, metrics in result.rows.items():
             payload = {
@@ -109,12 +156,35 @@ class TTEPriorBaselineBuilder:
                 fetched_at=fetched,
             )
             persisted[str(team_id)] = payload
+        persistence_elapsed = time.perf_counter() - stage_started
+        total_elapsed = time.perf_counter() - total_started
+        build_report = {
+            "raw_event_count": raw_event_count,
+            "distinct_game_dates": distinct_dates,
+            "distinct_teams": distinct_teams,
+            "rows_processed": result.rows_processed,
+            "missing_batting_team_rows": result.missing_team_rows,
+            "baseline_rows_produced": len(persisted),
+            "elapsed_sec": {
+                "metadata": metadata_elapsed,
+                "aggregation": aggregation_elapsed,
+                "fingerprint": fingerprint_elapsed,
+                "persistence": persistence_elapsed,
+                "total": total_elapsed,
+            },
+        }
+        print(
+            "[TTEPriorBaselineBuilder] complete "
+            f"baseline_rows_produced={len(persisted)} total_elapsed_sec={total_elapsed:.3f}",
+            flush=True,
+        )
 
         return TTEPriorBaselineBuildResult(
             rows=persisted,
             season=int(season),
             prior_season=int(prior),
             as_of_date=cutoff,
+            build_report=build_report,
         )
 
     def get_latest_prior_baseline(
@@ -135,19 +205,14 @@ class TTEPriorBaselineBuilder:
 
 def _baseline_fingerprint(
     *,
-    raw_cache: RawSavantEventsCache,
     season: int,
     prior_season: int,
     prior_season_start_date: str,
     prior_season_end_date: str,
     baseline_version: str,
+    raw_event_count: int,
+    distinct_dates: int,
 ) -> str:
-    events = raw_cache.get_events_by_date_range(
-        start_date=prior_season_start_date,
-        end_date=prior_season_end_date,
-    )
-    raw_event_count = len(events)
-    distinct_dates = len({event.game_date for event in events})
     payload = {
         "baseline_version": baseline_version,
         "distinct_dates": distinct_dates,
