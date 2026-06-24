@@ -1,7 +1,10 @@
 import importlib
+import json
 import sys
+from pathlib import Path
 
 import pytest
+import requests
 
 import modules.baseball_module.advanced_pit_enrichment.savant_raw_ingestor as raw_ingestor
 from modules.baseball_module.advanced_pit_enrichment import RawSavantEventsCache
@@ -38,6 +41,16 @@ class _FakeSession:
         day = params["game_date_gt"]
         assert params["game_date_lt"] == day
         return _FakeResponse(self.by_day[day])
+
+
+class _FailingSession(_FakeSession):
+    def get(self, url, *, params, timeout):
+        day = params["game_date_gt"]
+        self.calls.append({"url": url, "params": params, "timeout": timeout})
+        value = self.by_day[day]
+        if isinstance(value, Exception):
+            raise value
+        return _FakeResponse(value)
 
 
 def _csv(*rows):
@@ -188,3 +201,119 @@ def test_savant_raw_ingestor_does_not_import_live_or_backtest_modules(tmp_path):
     assert cache.count_events() == 0
 
     assert PIPELINE_MODULES.isdisjoint(sys.modules)
+
+
+def test_historical_resume_skips_completed_dates_and_updates_manifest(tmp_path):
+    session = _FakeSession(
+        {
+            "2023-03-30": _csv(
+                "2023-03-30,700001,1,1,605400,592450,Nola,field_out,95,20,0.320,0,1,6\n",
+            ),
+            "2023-03-31": _csv(
+                "2023-03-31,700002,1,1,605401,592451,Other,single,98,18,0.500,0.9,1,6\n",
+            ),
+        }
+    )
+    db_path = tmp_path / "raw_savant_2023.db"
+    manifest_path = tmp_path / "raw_savant_2023.manifest.json"
+    ingestor = SavantRawIngestor(db_path, session=session, sleep=lambda _: None)
+
+    first = ingestor.ingest_historical_date_range(
+        season=2023,
+        start_date="2023-03-30",
+        end_date="2023-03-31",
+        manifest_path=manifest_path,
+    )
+    second = ingestor.ingest_historical_date_range(
+        season=2023,
+        start_date="2023-03-30",
+        end_date="2023-03-31",
+        manifest_path=manifest_path,
+    )
+    manifest = json.loads(manifest_path.read_text())
+
+    assert first.fetched_dates == ("2023-03-30", "2023-03-31")
+    assert second.fetched_dates == ()
+    assert second.skipped_dates == ("2023-03-30", "2023-03-31")
+    assert len(session.calls) == 2
+    assert ingestor.cache.count_events() == 2
+    assert manifest["completed_dates"] == ["2023-03-30", "2023-03-31"]
+    assert manifest["failed_dates"] == {}
+    assert manifest["total_events_saved"] == 2
+    assert manifest["distinct_game_dates"] == 2
+    assert manifest["season"] == 2023
+    assert manifest["schema_version"] == "raw_savant_events_v1"
+    assert manifest["source_fingerprint"].startswith("savant:historical-cache:")
+    assert Path(manifest["database_path"]) == db_path.resolve()
+
+
+def test_historical_partial_failure_preserves_completed_data_and_records_failure(tmp_path):
+    session = _FailingSession(
+        {
+            "2023-03-30": _csv(
+                "2023-03-30,700001,1,1,605400,592450,Nola,field_out,95,20,0.320,0,1,6\n",
+            ),
+            "2023-03-31": requests.ConnectionError("temporary outage"),
+        }
+    )
+    db_path = tmp_path / "raw_savant_2023.db"
+    manifest_path = tmp_path / "raw_savant_2023.manifest.json"
+    ingestor = SavantRawIngestor(db_path, session=session, sleep=lambda _: None)
+
+    summary = ingestor.ingest_historical_date_range(
+        season=2023,
+        start_date="2023-03-30",
+        end_date="2023-03-31",
+        manifest_path=manifest_path,
+        max_retries=2,
+    )
+    manifest = json.loads(manifest_path.read_text())
+
+    assert summary.completed_dates == ("2023-03-30",)
+    assert "2023-03-31" in summary.failed_dates
+    assert ingestor.cache.count_events() == 1
+    assert manifest["completed_dates"] == ["2023-03-30"]
+    assert "ConnectionError" in manifest["failed_dates"]["2023-03-31"]
+    assert manifest["total_events_saved"] == 1
+    assert manifest_path.exists()
+
+
+def test_historical_rerun_retries_failed_date_without_duplicate_events(tmp_path):
+    db_path = tmp_path / "raw_savant_2023.db"
+    manifest_path = tmp_path / "raw_savant_2023.manifest.json"
+    failing = _FailingSession(
+        {
+            "2023-03-30": _csv(
+                "2023-03-30,700001,1,1,605400,592450,Nola,field_out,95,20,0.320,0,1,6\n",
+            ),
+            "2023-03-31": requests.Timeout("timeout"),
+        }
+    )
+    SavantRawIngestor(db_path, session=failing, sleep=lambda _: None).ingest_historical_date_range(
+        season=2023,
+        start_date="2023-03-30",
+        end_date="2023-03-31",
+        manifest_path=manifest_path,
+        max_retries=1,
+    )
+
+    resumed = _FakeSession(
+        {
+            "2023-03-31": _csv(
+                "2023-03-31,700002,1,1,605401,592451,Other,single,98,18,0.500,0.9,1,6\n",
+            )
+        }
+    )
+    summary = SavantRawIngestor(
+        db_path, session=resumed, sleep=lambda _: None
+    ).ingest_historical_date_range(
+        season=2023,
+        start_date="2023-03-30",
+        end_date="2023-03-31",
+        manifest_path=manifest_path,
+    )
+
+    assert summary.skipped_dates == ("2023-03-30",)
+    assert summary.fetched_dates == ("2023-03-31",)
+    assert summary.failed_dates == {}
+    assert RawSavantEventsCache(db_path).count_events() == 2

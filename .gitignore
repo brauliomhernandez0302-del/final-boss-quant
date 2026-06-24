@@ -13,6 +13,7 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+data/pit_raw/
 
 # Logs / cache
 *.log

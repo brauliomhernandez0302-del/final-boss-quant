@@ -59,6 +59,8 @@ class RawSavantTeamOffenseEvent:
 class RawSavantEventsCache:
     """Persistent raw event cache keyed by Statcast pitch identity."""
 
+    SCHEMA_VERSION = "raw_savant_events_v1"
+
     def __init__(self, db_path: Path | str):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -239,6 +241,15 @@ class RawSavantEventsCache:
         with self._connect() as conn:
             return int(
                 conn.execute("SELECT COUNT(DISTINCT game_date) FROM raw_savant_events").fetchone()[0]
+            )
+
+    def count_distinct_pitchers(self) -> int:
+        with self._connect() as conn:
+            return int(
+                conn.execute(
+                    "SELECT COUNT(DISTINCT pitcher) FROM raw_savant_events "
+                    "WHERE pitcher IS NOT NULL"
+                ).fetchone()[0]
             )
 
     def _init_schema(self) -> None:
