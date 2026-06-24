@@ -17,6 +17,7 @@ from .tte_daily_snapshot_builder import TTEPITNamespaces, TTEPITSources
 
 
 BASELINE_VERSION = "tte_prior_baseline_v1"
+NON_MLB_TEAM_IDS = frozenset({"AL", "NL"})
 
 
 @dataclass(frozen=True)
@@ -92,10 +93,19 @@ class TTEPriorBaselineBuilder:
             as_of_date=prior_season_end_date,
         )
         aggregation_elapsed = time.perf_counter() - stage_started
-        distinct_teams = len(result.rows)
+        excluded_non_mlb_teams = sorted(
+            str(team_id) for team_id in result.rows if str(team_id) in NON_MLB_TEAM_IDS
+        )
+        team_rows = {
+            team_id: metrics
+            for team_id, metrics in result.rows.items()
+            if str(team_id) not in NON_MLB_TEAM_IDS
+        }
+        distinct_teams = len(team_rows)
         print(
             "[TTEPriorBaselineBuilder] aggregation "
             f"rows_processed={result.rows_processed} distinct_teams={distinct_teams} "
+            f"excluded_non_mlb_teams={excluded_non_mlb_teams} "
             f"missing_batting_team_rows={result.missing_team_rows} "
             f"elapsed_sec={aggregation_elapsed:.3f}",
             flush=True,
@@ -122,7 +132,7 @@ class TTEPriorBaselineBuilder:
 
         stage_started = time.perf_counter()
         persisted: dict[str, dict[str, Any]] = {}
-        for team_id, metrics in result.rows.items():
+        for team_id, metrics in team_rows.items():
             payload = {
                 "team_id": _coerce_int(team_id),
                 "team_name": (team_names or {}).get(str(team_id)),
@@ -162,6 +172,7 @@ class TTEPriorBaselineBuilder:
             "raw_event_count": raw_event_count,
             "distinct_game_dates": distinct_dates,
             "distinct_teams": distinct_teams,
+            "excluded_non_mlb_teams": excluded_non_mlb_teams,
             "rows_processed": result.rows_processed,
             "missing_batting_team_rows": result.missing_team_rows,
             "baseline_rows_produced": len(persisted),

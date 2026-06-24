@@ -174,6 +174,44 @@ def test_prior_baseline_uses_bulk_team_projection_without_full_raw_decoding(tmp_
     assert count == 2
 
 
+def test_prior_baseline_excludes_all_star_pseudo_teams(tmp_path):
+    raw_db = tmp_path / "raw.db"
+    pit_db = tmp_path / "pit.db"
+    events = [
+        _event(
+            game_date="2023-07-11",
+            game_pk=717421,
+            at_bat_number=index,
+            pitch_number=1,
+            batting_team=team,
+            events="single",
+            launch_speed=100,
+            launch_angle=20,
+            launch_speed_angle=6,
+            woba_value=0.9,
+            woba_denom=1,
+        )
+        for index, team in enumerate(("AL", "NL", "ATL"), start=1)
+    ]
+    _cache_with_events(raw_db, events)
+
+    result = TTEPriorBaselineBuilder(
+        raw_cache_db=raw_db,
+        pit_cache_db=pit_db,
+    ).persist_prior_baseline(
+        season=2024,
+        prior_season_start_date="2023-03-30",
+        prior_season_end_date="2023-10-01",
+        prior_season=2023,
+        fetched_at="2026-06-24T12:00:00Z",
+    )
+
+    assert set(result.rows) == {"ATL"}
+    assert result.build_report is not None
+    assert result.build_report["distinct_teams"] == 1
+    assert result.build_report["excluded_non_mlb_teams"] == ["AL", "NL"]
+
+
 def test_none_values_preserved_for_missing_denominators(tmp_path):
     raw_db = tmp_path / "raw.db"
     pit_db = tmp_path / "pit.db"
