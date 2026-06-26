@@ -523,9 +523,15 @@ def build_game_data(
 
     def _pitcher_dict(name: str, ps: dict, team_pitch: dict,
                       sv: dict = None, fg: dict = None) -> Dict:
-        # Use team staff ERA as fallback so we never silently inject 4.38.
-        team_era = float(team_pitch.get("team_era", LEAGUE_AVG_ERA)) if team_pitch else LEAGUE_AVG_ERA
-        team_whip = float(team_pitch.get("team_whip", LEAGUE_AVG_WHIP)) if team_pitch else LEAGUE_AVG_WHIP
+        # In experimental pitcher PIT mode, missing pitcher snapshots must not
+        # inherit full-season team staff stats. Use league average until PIT
+        # overlays explicit point-in-time fields.
+        if use_pitcher_full_season_fallback:
+            team_era = float(team_pitch.get("team_era", LEAGUE_AVG_ERA)) if team_pitch else LEAGUE_AVG_ERA
+            team_whip = float(team_pitch.get("team_whip", LEAGUE_AVG_WHIP)) if team_pitch else LEAGUE_AVG_WHIP
+        else:
+            team_era = LEAGUE_AVG_ERA
+            team_whip = LEAGUE_AVG_WHIP
         era = ps.get("era", team_era)
         sv  = sv or {}
         fg  = fg or {}

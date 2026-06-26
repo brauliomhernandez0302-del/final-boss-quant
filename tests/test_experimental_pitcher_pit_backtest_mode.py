@@ -1,6 +1,7 @@
 import inspect
 
 from backtest_and_retrain import (
+    LEAGUE_AVG_ERA,
     _experimental_pitcher_pit_cutoff_for_row,
     _prediction_cutoff_for_row,
     apply_experimental_pitcher_pit_mode,
@@ -212,8 +213,8 @@ def test_experimental_mode_blocks_full_season_pitcher_fallback():
 
     assert api.pitcher_full_fallback_calls == []
     assert api.pitcher_game_log_calls == []
-    assert game_data["pitcher_home"]["era"] == 4.20
-    assert game_data["pitcher_away"]["era"] == 4.20
+    assert game_data["pitcher_home"]["era"] == LEAGUE_AVG_ERA
+    assert game_data["pitcher_away"]["era"] == LEAGUE_AVG_ERA
 
 
 def test_flag_on_uses_pit_snapshot_when_available(tmp_path):
