@@ -63,8 +63,8 @@ class _TrackingIntegrator:
 
 def test_team_tte_pit_mode_uses_previous_day_cutoff_and_lambdas(tmp_path):
     cache = PITCache(tmp_path / "pit.db")
-    _seed_team_tte_pit(cache, team_id=111, as_of_date="2024-04-01T00:00:00Z", est_woba=0.350)
-    _seed_team_tte_pit(cache, team_id=147, as_of_date="2024-04-01T00:00:00Z", est_woba=0.300)
+    _seed_team_tte_pit(cache, team_id="BOS", as_of_date="2024-04-01T00:00:00Z", est_woba=0.350)
+    _seed_team_tte_pit(cache, team_id="NYY", as_of_date="2024-04-01T00:00:00Z", est_woba=0.300)
     game_data = _game_data()
 
     meta = backtest.apply_experimental_team_tte_pit_mode(
@@ -85,8 +85,8 @@ def test_team_tte_pit_mode_uses_previous_day_cutoff_and_lambdas(tmp_path):
 
 def test_team_tte_pit_skip_reason_none_when_both_lambdas_exist(tmp_path):
     cache = PITCache(tmp_path / "pit.db")
-    _seed_team_tte_pit(cache, team_id=111, as_of_date="2024-04-01T00:00:00Z", est_woba=0.350)
-    _seed_team_tte_pit(cache, team_id=147, as_of_date="2024-04-01T00:00:00Z", est_woba=0.300)
+    _seed_team_tte_pit(cache, team_id="BOS", as_of_date="2024-04-01T00:00:00Z", est_woba=0.350)
+    _seed_team_tte_pit(cache, team_id="NYY", as_of_date="2024-04-01T00:00:00Z", est_woba=0.300)
 
     meta = backtest.apply_experimental_team_tte_pit_mode(
         game_data=_game_data(),
@@ -101,7 +101,7 @@ def test_team_tte_pit_skip_reason_none_when_both_lambdas_exist(tmp_path):
 
 def test_team_tte_pit_mode_does_not_use_future_snapshot(tmp_path):
     cache = PITCache(tmp_path / "pit.db")
-    _seed_team_tte_pit(cache, team_id=111, as_of_date="2024-04-02T00:00:00Z", est_woba=0.410)
+    _seed_team_tte_pit(cache, team_id="BOS", as_of_date="2024-04-02T00:00:00Z", est_woba=0.410)
     game_data = _game_data()
 
     meta = backtest.apply_experimental_team_tte_pit_mode(
@@ -119,7 +119,7 @@ def test_team_tte_pit_mode_does_not_use_future_snapshot(tmp_path):
 
 def test_home_missing_team_tte_pit_skips_before_prediction(tmp_path, monkeypatch):
     cache = PITCache(tmp_path / "pit.db")
-    _seed_team_tte_pit(cache, team_id=147, as_of_date="2024-04-01T00:00:00Z", est_woba=0.300)
+    _seed_team_tte_pit(cache, team_id="NYY", as_of_date="2024-04-01T00:00:00Z", est_woba=0.300)
     game_data = _game_data()
 
     meta = backtest.apply_experimental_team_tte_pit_mode(
@@ -136,7 +136,7 @@ def test_home_missing_team_tte_pit_skips_before_prediction(tmp_path, monkeypatch
 
 def test_away_missing_team_tte_pit_skips_before_prediction(tmp_path, monkeypatch):
     cache = PITCache(tmp_path / "pit.db")
-    _seed_team_tte_pit(cache, team_id=111, as_of_date="2024-04-01T00:00:00Z", est_woba=0.350)
+    _seed_team_tte_pit(cache, team_id="BOS", as_of_date="2024-04-01T00:00:00Z", est_woba=0.350)
     game_data = _game_data()
 
     meta = backtest.apply_experimental_team_tte_pit_mode(
@@ -189,8 +189,8 @@ def test_team_tte_pit_cutoff_always_defaults_to_previous_day():
 
 def test_team_tte_pit_run_pipeline_skips_legacy_true_talent(monkeypatch, tmp_path):
     cache = PITCache(tmp_path / "pit.db")
-    _seed_team_tte_pit(cache, team_id=111, as_of_date="2024-04-01T00:00:00Z", est_woba=0.350)
-    _seed_team_tte_pit(cache, team_id=147, as_of_date="2024-04-01T00:00:00Z", est_woba=0.300)
+    _seed_team_tte_pit(cache, team_id="BOS", as_of_date="2024-04-01T00:00:00Z", est_woba=0.350)
+    _seed_team_tte_pit(cache, team_id="NYY", as_of_date="2024-04-01T00:00:00Z", est_woba=0.300)
     game_data = _game_data()
 
     monkeypatch.setattr(backtest, "_TTE_AVAILABLE", True)

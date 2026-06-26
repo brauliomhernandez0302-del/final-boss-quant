@@ -148,6 +148,41 @@ TEAM_IDS: Dict[str, int] = {
     "Washington Nationals": 120,
 }
 
+TEAM_TTE_PIT_ENTITY_IDS: Dict[str, str] = {
+    "Arizona Diamondbacks": "AZ",
+    "Atlanta Braves": "ATL",
+    "Baltimore Orioles": "BAL",
+    "Boston Red Sox": "BOS",
+    "Chicago Cubs": "CHC",
+    "Chicago White Sox": "CWS",
+    "Cincinnati Reds": "CIN",
+    "Cleveland Guardians": "CLE",
+    "Colorado Rockies": "COL",
+    "Detroit Tigers": "DET",
+    "Houston Astros": "HOU",
+    "Kansas City Royals": "KC",
+    "Los Angeles Angels": "LAA",
+    "Los Angeles Dodgers": "LAD",
+    "Miami Marlins": "MIA",
+    "Milwaukee Brewers": "MIL",
+    "Minnesota Twins": "MIN",
+    "New York Mets": "NYM",
+    "New York Yankees": "NYY",
+    "Athletics": "ATH",
+    "Oakland Athletics": "ATH",
+    "Sacramento Athletics": "ATH",
+    "Philadelphia Phillies": "PHI",
+    "Pittsburgh Pirates": "PIT",
+    "San Diego Padres": "SD",
+    "San Francisco Giants": "SF",
+    "Seattle Mariners": "SEA",
+    "St. Louis Cardinals": "STL",
+    "Tampa Bay Rays": "TB",
+    "Texas Rangers": "TEX",
+    "Toronto Blue Jays": "TOR",
+    "Washington Nationals": "WSH",
+}
+
 # ── F2: Team city coordinates (lat, lon) and timezone offset (UTC hours) ──────
 # Used to compute geodesic travel distance and time-zone crossings for the
 # away team before each game.  Coordinates are city-centre; tz_offset is the
@@ -720,31 +755,33 @@ def apply_experimental_team_tte_pit_mode(
     )
 
     def _apply(side: str, team_id: Optional[int], team_name: str) -> Dict[str, Any]:
+        pit_entity_id = TEAM_TTE_PIT_ENTITY_IDS.get(team_name, str(team_id) if team_id else None)
         meta = {
             "team_id": team_id,
+            "pit_entity_id": pit_entity_id,
             "team_name": team_name,
             "pit_found": False,
             "lambda_offense": None,
-            "fallback_used": "missing_team_id" if not team_id else "snapshot_not_found",
+            "fallback_used": "missing_team_id" if not pit_entity_id else "snapshot_not_found",
             "requested_as_of_date": requested,
             "team_offense_as_of_date": None,
             "prior_baseline_as_of_date": None,
             "missing_inputs": [],
             "source_fingerprints": {},
         }
-        if not team_id:
+        if not pit_entity_id:
             return meta
 
         if requested_as_of_date:
             snapshot = snapshot_builder.build_team_snapshot(
-                team_id=team_id,
+                team_id=pit_entity_id,
                 season=season,
                 requested_as_of_date=requested_as_of_date,
                 team_name=team_name,
             )
         else:
             snapshot = snapshot_builder.build_for_game(
-                team_id=team_id,
+                team_id=pit_entity_id,
                 season=season,
                 game_date=game_date,
                 team_name=team_name,
