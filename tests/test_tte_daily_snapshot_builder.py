@@ -357,8 +357,11 @@ def test_default_behavior_untouched():
     import backtest_and_retrain
     import modules.baseball_module.offense.true_talent_engine as tte
 
+    source = inspect.getsource(backtest_and_retrain)
     assert hasattr(tte, "get_true_talent_lambda")
-    assert "TTEDailySnapshotBuilder" not in inspect.getsource(backtest_and_retrain)
+    assert "--use-team-tte-pit" in source
+    assert "team_tte_pit_snapshot_builder = None" in source
+    assert "if args.use_team_tte_pit:" in source
 
 
 def _seed_tte(

@@ -397,6 +397,7 @@ def build_game_data(
     weather_fetcher: Optional["HistoricalWeatherFetcher"] = None,
     pitcher_game_log_as_of_date: Optional[str] = None,
     use_pitcher_full_season_fallback: bool = True,
+    use_team_full_season_offense_base: bool = True,
 ) -> Tuple[Dict, float, float]:
     """
     Assemble game_data and (lh_base, la_base) from cached season-level stats.
@@ -417,13 +418,19 @@ def build_game_data(
     home_bp = (api.get_bullpen_era(htid, season) or {}) if htid else {}
     away_bp = (api.get_bullpen_era(atid, season) or {}) if atid else {}
 
-    # ── RPG for base lambda ─────────────────────────────────────────────────
-    home_rpg_api = integrator._fetch_team_rpg(htid, season) if htid else LEAGUE_AVG_RUNS
-    away_rpg_api = integrator._fetch_team_rpg(atid, season) if atid else LEAGUE_AVG_RUNS
+    if use_team_full_season_offense_base:
+        # ── RPG for base lambda ─────────────────────────────────────────────
+        home_rpg_api = integrator._fetch_team_rpg(htid, season) if htid else LEAGUE_AVG_RUNS
+        away_rpg_api = integrator._fetch_team_rpg(atid, season) if atid else LEAGUE_AVG_RUNS
 
-    # ── base lambdas (season RPG blend — same logic as live run_module) ─────
-    lh = integrator.get_team_lambda(home_name, home_rpg_api, team_id=htid)
-    la = integrator.get_team_lambda(away_name, away_rpg_api, team_id=atid)
+        # ── base lambdas (season RPG blend — same logic as live run_module) ─
+        lh = integrator.get_team_lambda(home_name, home_rpg_api, team_id=htid)
+        la = integrator.get_team_lambda(away_name, away_rpg_api, team_id=atid)
+    else:
+        home_rpg_api = LEAGUE_AVG_RUNS
+        away_rpg_api = LEAGUE_AVG_RUNS
+        lh = LEAGUE_AVG_RUNS
+        la = LEAGUE_AVG_RUNS
 
     # ── pitcher stats (5-level fallback) ────────────────────────────────────
     def _pitcher_stats(pid: Optional[int], is_home: bool, team_pitch: Dict) -> Dict:
@@ -606,6 +613,14 @@ def _experimental_pitcher_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) 
     return (game_day - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _team_tte_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
+    """Return the Team/TTE PIT cutoff aligned to previous-day team snapshots."""
+    game_day = datetime.strptime(str(row["game_date"])[:10], "%Y-%m-%d").replace(
+        tzinfo=timezone.utc
+    )
+    return (game_day - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _merge_pit_pitcher(base: Dict[str, Any], adapted: Dict[str, Any]) -> Dict[str, Any]:
     """Overlay PIT values onto the existing MLB Stats API safe fallback dict."""
     merged = dict(base)
@@ -689,6 +704,181 @@ def apply_experimental_pitcher_pit_mode(
     return metadata
 
 
+def apply_experimental_team_tte_pit_mode(
+    *,
+    game_data: Dict[str, Any],
+    season: int,
+    game_date: str,
+    snapshot_builder: Any,
+    adapter: Any,
+    requested_as_of_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build Team/TTE PIT lambdas for a historical game without touching live TTE."""
+
+    requested = requested_as_of_date or _team_tte_pit_cutoff_for_row(
+        {"game_date": game_date}
+    )
+
+    def _apply(side: str, team_id: Optional[int], team_name: str) -> Dict[str, Any]:
+        meta = {
+            "team_id": team_id,
+            "team_name": team_name,
+            "pit_found": False,
+            "lambda_offense": None,
+            "fallback_used": "missing_team_id" if not team_id else "snapshot_not_found",
+            "requested_as_of_date": requested,
+            "team_offense_as_of_date": None,
+            "prior_baseline_as_of_date": None,
+            "missing_inputs": [],
+            "source_fingerprints": {},
+        }
+        if not team_id:
+            return meta
+
+        if requested_as_of_date:
+            snapshot = snapshot_builder.build_team_snapshot(
+                team_id=team_id,
+                season=season,
+                requested_as_of_date=requested_as_of_date,
+                team_name=team_name,
+            )
+        else:
+            snapshot = snapshot_builder.build_for_game(
+                team_id=team_id,
+                season=season,
+                game_date=game_date,
+                team_name=team_name,
+            )
+        adapted = adapter(snapshot)
+        missing_inputs = adapted.get("provenance", {}).get("missing_inputs", [])
+        meta.update(
+            {
+                "pit_found": adapted.get("lambda_offense") is not None,
+                "lambda_offense": adapted.get("lambda_offense"),
+                "fallback_used": adapted.get("fallback_used"),
+                "requested_as_of_date": snapshot.get("requested_as_of_date"),
+                "team_offense_as_of_date": snapshot.get("team_offense_as_of_date"),
+                "prior_baseline_as_of_date": snapshot.get("prior_baseline_as_of_date"),
+                "team_rolling_found": snapshot.get("team_rolling_found"),
+                "prior_baseline_found": snapshot.get("prior_baseline_found"),
+                "blend_current_weight": adapted.get("blend_current_weight"),
+                "blend_prior_weight": adapted.get("blend_prior_weight"),
+                "sample_size_status": adapted.get("sample_size_status"),
+                "missing_inputs": missing_inputs,
+                "source_fingerprints": snapshot.get("source_fingerprints", {}),
+            }
+        )
+        if adapted.get("lambda_offense") is not None:
+            game_data[f"{side}_team"]["tte_pit_lambda_offense"] = adapted["lambda_offense"]
+            game_data[f"{side}_team"]["tte_pit_snapshot"] = adapted
+        return meta
+
+    home = _apply(
+        "home",
+        game_data.get("home_team_id"),
+        game_data.get("home_team", {}).get("name", ""),
+    )
+    away = _apply(
+        "away",
+        game_data.get("away_team_id"),
+        game_data.get("away_team", {}).get("name", ""),
+    )
+    metadata = {
+        "requested_as_of_date": requested,
+        "home": home,
+        "away": away,
+        "home_team_tte_pit_found": home["pit_found"],
+        "away_team_tte_pit_found": away["pit_found"],
+        "home_lambda_offense": home["lambda_offense"],
+        "away_lambda_offense": away["lambda_offense"],
+        "home_fallback_used": home["fallback_used"],
+        "away_fallback_used": away["fallback_used"],
+    }
+    game_data["experimental_team_tte_pit"] = metadata
+    return metadata
+
+
+def team_tte_pit_skip_reason(metadata: Dict[str, Any]) -> Optional[str]:
+    """Return strict Team/TTE PIT skip reason, or None when both sides are covered."""
+    home_missing = metadata.get("home", {}).get("lambda_offense") is None
+    away_missing = metadata.get("away", {}).get("lambda_offense") is None
+    if home_missing and away_missing:
+        return "missing_both_team_tte_pit"
+    if home_missing:
+        return "missing_home_team_tte_pit"
+    if away_missing:
+        return "missing_away_team_tte_pit"
+    return None
+
+
+def _update_team_tte_pit_usage(
+    usage: Dict[str, Any],
+    metadata: Dict[str, Any],
+    *,
+    skipped: bool,
+    skip_reason: Optional[str],
+    sample: Optional[Dict[str, Any]] = None,
+) -> None:
+    usage["games_attempted"] += 1
+    home_found = bool(metadata.get("home", {}).get("pit_found"))
+    away_found = bool(metadata.get("away", {}).get("pit_found"))
+    if home_found:
+        usage["home_team_tte_pit_found"] += 1
+    else:
+        usage["home_team_tte_pit_missing"] += 1
+    if away_found:
+        usage["away_team_tte_pit_found"] += 1
+    else:
+        usage["away_team_tte_pit_missing"] += 1
+
+    if skipped:
+        usage["games_skipped_missing_team_tte_pit"] += 1
+        if skip_reason == "missing_both_team_tte_pit":
+            usage["both_missing"] += 1
+        elif skip_reason == "missing_home_team_tte_pit":
+            usage["home_missing_only"] += 1
+        elif skip_reason == "missing_away_team_tte_pit":
+            usage["away_missing_only"] += 1
+    else:
+        usage["games_processed_with_both_team_tte_pit"] += 1
+
+    if sample is not None and len(usage["samples"]) < 3:
+        usage["samples"].append(sample)
+
+
+def _team_tte_pit_usage_summary(
+    usage: Dict[str, Any],
+    *,
+    games_processed: int,
+    failures: int,
+) -> Dict[str, Any]:
+    return {
+        "games_attempted": usage["games_attempted"],
+        "games_processed": games_processed,
+        "failures": failures,
+        "games_processed_with_both_team_tte_pit": usage[
+            "games_processed_with_both_team_tte_pit"
+        ],
+        "games_skipped_missing_team_tte_pit": usage[
+            "games_skipped_missing_team_tte_pit"
+        ],
+        "home_missing": usage["home_team_tte_pit_missing"],
+        "away_missing": usage["away_team_tte_pit_missing"],
+        "both_missing": usage["both_missing"],
+        "home_missing_only": usage["home_missing_only"],
+        "away_missing_only": usage["away_missing_only"],
+        "home_team_tte_pit_found": usage["home_team_tte_pit_found"],
+        "away_team_tte_pit_found": usage["away_team_tte_pit_found"],
+        "team_tte_pit_lambdas_used": (
+            usage["home_team_tte_pit_found"] + usage["away_team_tte_pit_found"]
+        ),
+        "missing_team_tte_pit_lambdas": (
+            usage["home_team_tte_pit_missing"] + usage["away_team_tte_pit_missing"]
+        ),
+        "sample_games": usage["samples"],
+    }
+
+
 # ── pipeline runner ────────────────────────────────────────────────────────
 
 def run_pipeline(
@@ -698,6 +888,9 @@ def run_pipeline(
     learning: LearningEngine,
     season: int,
     n_mc: int = N_MC,
+    use_team_tte_pit: bool = False,
+    team_tte_pit_snapshot_builder: Any = None,
+    team_tte_pit_adapter: Any = None,
 ) -> Dict[str, Any]:
     """Run the full pipeline identical to run_module.py.
 
@@ -717,7 +910,29 @@ def run_pipeline(
     htid = game_data.get("home_team_id")
     atid = game_data.get("away_team_id")
     tte_active = False
-    if _TTE_AVAILABLE and htid and atid:
+    team_tte_pit_meta = None
+    if use_team_tte_pit:
+        if team_tte_pit_snapshot_builder is None or team_tte_pit_adapter is None:
+            raise ValueError("Team/TTE PIT mode requires snapshot builder and adapter")
+        team_tte_pit_meta = game_data.get("experimental_team_tte_pit")
+        if team_tte_pit_meta is None:
+            team_tte_pit_meta = apply_experimental_team_tte_pit_mode(
+                game_data=game_data,
+                season=season,
+                game_date=str(game_data.get("game_date", "")),
+                snapshot_builder=team_tte_pit_snapshot_builder,
+                adapter=team_tte_pit_adapter,
+                requested_as_of_date=game_data.get("team_tte_pit_requested_as_of_date"),
+            )
+        skip_reason = team_tte_pit_skip_reason(team_tte_pit_meta)
+        if skip_reason:
+            raise ValueError(f"Team/TTE PIT strict coverage failed: {skip_reason}")
+        if team_tte_pit_meta["home"]["lambda_offense"] is not None:
+            lh = float(team_tte_pit_meta["home"]["lambda_offense"])
+        if team_tte_pit_meta["away"]["lambda_offense"] is not None:
+            la = float(team_tte_pit_meta["away"]["lambda_offense"])
+        tte_active = True
+    elif _TTE_AVAILABLE and htid and atid:
         try:
             lh, _ = _get_tte_lambda(htid, home_team, season)
             la, _ = _get_tte_lambda(atid, away_team, season)
@@ -853,6 +1068,7 @@ def run_pipeline(
         "p_home_raw":  round(p_home_mc, 5),   # pre-Platt, for Platt refitting
         "p_away_raw":  round(p_away_mc, 5),
         "stage_factors": _sf,
+        "team_tte_pit": team_tte_pit_meta,
         "n_mc":        mc["n"],
     }
 
@@ -912,10 +1128,22 @@ def _devig(o1: float, o2: float) -> Tuple[float, float]:
 def generate_report(
     results: List[Dict],
     out_path: Path,
+    team_tte_pit_summary: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Compute and print a full backtest summary; save JSON sidecar."""
     n = len(results)
     if n == 0:
+        if team_tte_pit_summary is not None:
+            report = {
+                "run_at": datetime.now(timezone.utc).isoformat(),
+                "total_games": 0,
+                "seasons": [],
+                "team_tte_pit": team_tte_pit_summary,
+            }
+            report_path = out_path / f"backtest_report_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
+            report_path.write_text(json.dumps(report, indent=2))
+            print(f"\nNo scored results. Report saved → {report_path}")
+            return
         log.warning("No results to report.")
         return
 
@@ -1062,6 +1290,8 @@ def generate_report(
     lhs = sorted(r["lh"] for r in results)
     las = sorted(r["la"] for r in results)
 
+    team_tte_rows = [r for r in results if r.get("team_tte_pit")]
+
     def _pct(lst: list, p: float) -> float:
         idx = int(len(lst) * p)
         return round(lst[min(idx, len(lst) - 1)], 3)
@@ -1129,6 +1359,37 @@ def generate_report(
                    "mean": round(sum(las) / len(las), 3)},
         },
     }
+    if team_tte_pit_summary is not None:
+        report["team_tte_pit"] = team_tte_pit_summary
+    elif team_tte_rows:
+        report["team_tte_pit"] = {
+            "games_with_metadata": len(team_tte_rows),
+            "home_found": sum(
+                1 for r in team_tte_rows
+                if r["team_tte_pit"].get("home", {}).get("pit_found")
+            ),
+            "away_found": sum(
+                1 for r in team_tte_rows
+                if r["team_tte_pit"].get("away", {}).get("pit_found")
+            ),
+            "home_missing": sum(
+                1 for r in team_tte_rows
+                if not r["team_tte_pit"].get("home", {}).get("pit_found")
+            ),
+            "away_missing": sum(
+                1 for r in team_tte_rows
+                if not r["team_tte_pit"].get("away", {}).get("pit_found")
+            ),
+            "sample_games": [
+                {
+                    "game_pk": r["game_pk"],
+                    "season": r["season"],
+                    "home": r["team_tte_pit"].get("home"),
+                    "away": r["team_tte_pit"].get("away"),
+                }
+                for r in team_tte_rows[:3]
+            ],
+        }
 
     # ── save JSON ────────────────────────────────────────────────────────────
     report_path = out_path / f"backtest_report_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
@@ -1229,10 +1490,16 @@ def main() -> None:
                         help="Use isolated daily PIT pitcher snapshots when available")
     parser.add_argument("--pitcher-pit-cache-db", type=Path, default=None,
                         help="PIT cache DB for --experimental-pitcher-pit-mode")
+    parser.add_argument("--use-team-tte-pit", action="store_true",
+                        help="Use isolated Team/TTE PIT offensive lambdas when available")
+    parser.add_argument("--team-tte-pit-cache-db", type=Path, default=None,
+                        help="PIT cache DB for --use-team-tte-pit")
     args = parser.parse_args()
 
     if args.experimental_pitcher_pit_mode and not args.pitcher_pit_cache_db:
         parser.error("--pitcher-pit-cache-db is required with --experimental-pitcher-pit-mode")
+    if args.use_team_tte_pit and not args.team_tte_pit_cache_db:
+        parser.error("--team-tte-pit-cache-db is required with --use-team-tte-pit")
 
     args.cache_dir.mkdir(parents=True, exist_ok=True)
     args.report_dir.mkdir(parents=True, exist_ok=True)
@@ -1276,6 +1543,23 @@ def main() -> None:
         log.info(
             "Experimental pitcher PIT mode ENABLED | pit_cache_db=%s",
             args.pitcher_pit_cache_db,
+        )
+
+    team_tte_pit_snapshot_builder = None
+    team_tte_pit_adapter = None
+    if args.use_team_tte_pit:
+        from modules.baseball_module.advanced_pit_enrichment import (
+            TTEDailySnapshotBuilder,
+            adapt_tte_pit_snapshot_to_lambda,
+        )
+
+        team_tte_pit_snapshot_builder = TTEDailySnapshotBuilder(
+            cache_db=args.team_tte_pit_cache_db
+        )
+        team_tte_pit_adapter = adapt_tte_pit_snapshot_to_lambda
+        log.info(
+            "Team/TTE PIT mode ENABLED | pit_cache_db=%s",
+            args.team_tte_pit_cache_db,
         )
 
     # ── load Savant + FanGraphs data per season ──────────────────────────────
@@ -1427,6 +1711,19 @@ def main() -> None:
         "full_season_pitcher_fetches_avoided": bool(args.experimental_pitcher_pit_mode),
         "samples": [],
     }
+    team_tte_pit_usage = {
+        "games_attempted": 0,
+        "games_processed_with_both_team_tte_pit": 0,
+        "games_skipped_missing_team_tte_pit": 0,
+        "home_team_tte_pit_found": 0,
+        "away_team_tte_pit_found": 0,
+        "home_team_tte_pit_missing": 0,
+        "away_team_tte_pit_missing": 0,
+        "both_missing": 0,
+        "home_missing_only": 0,
+        "away_missing_only": 0,
+        "samples": [],
+    }
     t0 = time.time()
 
     # F3: track last game date AND venue per team to detect meaningful B2B.
@@ -1489,6 +1786,7 @@ def main() -> None:
                     else None
                 ),
                 use_pitcher_full_season_fallback=not args.experimental_pitcher_pit_mode,
+                use_team_full_season_offense_base=not args.use_team_tte_pit,
             )
             if args.experimental_pitcher_pit_mode:
                 pit_meta = apply_experimental_pitcher_pit_mode(
@@ -1519,12 +1817,56 @@ def main() -> None:
                             "away_pitcher_pit": pit_meta["away"],
                         }
                     )
+            if args.use_team_tte_pit:
+                game_data["team_tte_pit_requested_as_of_date"] = _team_tte_pit_cutoff_for_row(row)
+                team_meta = apply_experimental_team_tte_pit_mode(
+                    game_data=game_data,
+                    season=season,
+                    game_date=game_date,
+                    requested_as_of_date=game_data["team_tte_pit_requested_as_of_date"],
+                    snapshot_builder=team_tte_pit_snapshot_builder,
+                    adapter=team_tte_pit_adapter,
+                )
+                skip_reason = team_tte_pit_skip_reason(team_meta)
+                sample = {
+                    "game_pk": game_pk,
+                    "game_date": game_date,
+                    "home_team": home_name,
+                    "away_team": away_name,
+                    "team_tte_pit_skip": bool(skip_reason),
+                    "skip_reason": skip_reason,
+                    "home_team_tte_pit": team_meta.get("home"),
+                    "away_team_tte_pit": team_meta.get("away"),
+                }
+                _update_team_tte_pit_usage(
+                    team_tte_pit_usage,
+                    team_meta,
+                    skipped=bool(skip_reason),
+                    skip_reason=skip_reason,
+                    sample=sample,
+                )
+                if skip_reason:
+                    log.info(
+                        "game_pk=%d SKIPPED Team/TTE PIT coverage: %s",
+                        game_pk,
+                        skip_reason,
+                    )
+                    continue
             # F3: inject B2B flags computed from schedule context above
             game_data["back_to_back_away"] = _b2b_away
             game_data["back_to_back_home"] = _b2b_home
 
-            pred = run_pipeline(game_data, lh, la, learning, season, args.n_mc)
-
+            pred = run_pipeline(
+                game_data,
+                lh,
+                la,
+                learning,
+                season,
+                args.n_mc,
+                use_team_tte_pit=args.use_team_tte_pit,
+                team_tte_pit_snapshot_builder=team_tte_pit_snapshot_builder,
+                team_tte_pit_adapter=team_tte_pit_adapter,
+            )
             # persist to DB
             update_game_outcomes(
                 conn, game_pk,
@@ -1581,6 +1923,7 @@ def main() -> None:
                 "model_edge_away": (pred["p_away"] - pin_fa) if pin_fa else None,
                 "clv_home": (pred["p_home"] / pin_fh - 1.0) if (pin_fh and pin_fh > 0) else None,
                 "clv_away": (pred["p_away"] / pin_fa - 1.0) if (pin_fa and pin_fa > 0) else None,
+                "team_tte_pit":    pred.get("team_tte_pit"),
             })
             n_ok += 1
 
@@ -1644,6 +1987,14 @@ def main() -> None:
             indent=2,
             sort_keys=True,
         ))
+    if args.use_team_tte_pit:
+        team_tte_summary = _team_tte_pit_usage_summary(
+            team_tte_pit_usage,
+            games_processed=n_ok,
+            failures=n_err,
+        )
+        print("\nTEAM/TTE PIT SUMMARY")
+        print(json.dumps(team_tte_summary, indent=2, sort_keys=True))
 
     # ── step 4: recalibrate learning engine bias ───────────────────────────
     log.info("Recalibrating learning engine bias …")
@@ -1672,7 +2023,19 @@ def main() -> None:
             log.warning("  Platt failed for season %d: %s", season, exc)
 
     # ── step 5: report ─────────────────────────────────────────────────────
-    generate_report(results, args.report_dir)
+    generate_report(
+        results,
+        args.report_dir,
+        team_tte_pit_summary=(
+            _team_tte_pit_usage_summary(
+                team_tte_pit_usage,
+                games_processed=n_ok,
+                failures=n_err,
+            )
+            if args.use_team_tte_pit
+            else None
+        ),
+    )
     conn.close()
 
 
