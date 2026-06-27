@@ -4,6 +4,7 @@ from modules.baseball_module.advanced_pit_enrichment import (
     AdvancedPitcherDailySnapshotBuilder,
     FanGraphsDailyPITPersistence,
     PITCache,
+    PitcherPriorBaselinePersistence,
     SavantRollingPITPersistence,
 )
 import modules.baseball_module.advanced_pit_enrichment.advanced_pitcher_daily_snapshot_builder as snapshot_module
@@ -86,6 +87,44 @@ def _seed_savant(
     )
 
 
+def _seed_prior(
+    cache,
+    *,
+    entity_id=605400,
+    target_season=2025,
+    as_of_date="2024-09-29T23:59:59Z",
+    source_fingerprint="prior-window",
+    data=None,
+):
+    payload = {
+        "prior_season": target_season - 1,
+        "est_woba": 0.315,
+        "woba": 0.305,
+        "brl_percent": 7.2,
+        "barrel_count": 20,
+        "batted_ball_count": 280,
+        "ev95percent": 36.5,
+        "sweet_spot_pct": 34.0,
+        "pa": 420,
+        "bip": 280,
+        "source_window_start_date": f"{target_season - 1}-03-28",
+        "source_window_end_date": f"{target_season - 1}-09-29",
+        "metric_version": "pitcher_prior_baseline_v1",
+    }
+    if data:
+        payload.update(data)
+    cache.save_record(
+        namespace=PitcherPriorBaselinePersistence.NAMESPACE,
+        entity_id=entity_id,
+        season=target_season,
+        as_of_date=as_of_date,
+        source=PitcherPriorBaselinePersistence.SOURCE,
+        source_fingerprint=source_fingerprint,
+        data=payload,
+        fetched_at="2026-06-26T12:00:00Z",
+    )
+
+
 def test_merge_both_sources(tmp_path):
     cache = _cache(tmp_path)
     _seed_fangraphs(cache)
@@ -122,6 +161,42 @@ def test_merge_both_sources(tmp_path):
     assert snapshot["bip"] == 31
     assert snapshot["savant_pa"] == 50
     assert snapshot["savant_bip"] == 31
+
+
+def test_current_pit_takes_priority_over_prior_baseline(tmp_path):
+    cache = _cache(tmp_path)
+    _seed_savant(cache, data={"est_woba": 0.299})
+    _seed_prior(cache, data={"est_woba": 0.399})
+
+    snapshot = AdvancedPitcherDailySnapshotBuilder(cache).build_pitcher_snapshot(
+        pitcher=605400,
+        season=2025,
+        requested_as_of_date="2025-04-05T12:00:00Z",
+    )
+
+    assert snapshot["provenance_source"] == "current_pit"
+    assert snapshot["prior_baseline_found"] is False
+    assert snapshot["est_woba"] == 0.299
+
+
+def test_prior_baseline_used_only_when_current_pit_is_missing(tmp_path):
+    cache = _cache(tmp_path)
+    _seed_prior(cache)
+
+    snapshot = AdvancedPitcherDailySnapshotBuilder(cache).build_pitcher_snapshot(
+        pitcher=605400,
+        season=2025,
+        requested_as_of_date="2025-04-05T12:00:00Z",
+    )
+
+    assert snapshot["found"] is True
+    assert snapshot["fangraphs_found"] is False
+    assert snapshot["savant_found"] is False
+    assert snapshot["prior_baseline_found"] is True
+    assert snapshot["provenance_source"] == "prior_season_baseline"
+    assert snapshot["prior_season"] == 2024
+    assert snapshot["est_woba"] == 0.315
+    assert snapshot["source_fingerprints"]["prior_season_baseline"] == "prior-window"
 
 
 def test_fangraphs_only(tmp_path):
@@ -170,6 +245,8 @@ def test_both_missing_returns_found_false(tmp_path):
     assert snapshot["savant_found"] is False
     assert snapshot["fangraphs_as_of_date"] is None
     assert snapshot["savant_as_of_date"] is None
+    assert snapshot["prior_baseline_found"] is False
+    assert snapshot["provenance_source"] == "league_average_safe_fallback"
 
 
 def test_latest_lte_requested_as_of_date(tmp_path):
@@ -246,6 +323,7 @@ def test_source_provenance_correct(tmp_path):
     assert snapshot["source_fingerprints"] == {
         "fangraphs": "fg-old",
         "savant": "savant-current",
+        "prior_season_baseline": None,
     }
     assert snapshot["snapshot_version"] == "advanced_pitcher_daily_snapshot_v1"
 

@@ -690,8 +690,11 @@ def apply_experimental_pitcher_pit_mode(
             "pit_found": False,
             "fangraphs_found": False,
             "savant_found": False,
+            "prior_baseline_found": False,
             "fangraphs_as_of_date": None,
             "savant_as_of_date": None,
+            "prior_baseline_as_of_date": None,
+            "provenance_source": "league_average_safe_fallback",
             "missing_fields": list(_PIT_REQUIRED_FIELDS),
             "source_fingerprints": {"fangraphs": None, "savant": None},
             "fallback_used": True,
@@ -711,8 +714,13 @@ def apply_experimental_pitcher_pit_mode(
                 "pit_found": found,
                 "fangraphs_found": bool(adapted.get("fangraphs_found")),
                 "savant_found": bool(adapted.get("savant_found")),
+                "prior_baseline_found": bool(adapted.get("prior_baseline_found")),
                 "fangraphs_as_of_date": adapted.get("fangraphs_as_of_date"),
                 "savant_as_of_date": adapted.get("savant_as_of_date"),
+                "prior_baseline_as_of_date": adapted.get("prior_baseline_as_of_date"),
+                "provenance_source": adapted.get(
+                    "provenance_source", "league_average_safe_fallback"
+                ),
                 "missing_fields": [
                     field for field in _PIT_REQUIRED_FIELDS if adapted.get(field) is None
                 ],
@@ -1751,6 +1759,9 @@ def main() -> None:
         "away_pitcher_pit_found": 0,
         "home_pitcher_pit_missing": 0,
         "away_pitcher_pit_missing": 0,
+        "current_pit_snapshots_used": 0,
+        "prior_season_baselines_used": 0,
+        "league_average_safe_fallbacks_used": 0,
         "full_season_pitcher_fetches_avoided": bool(args.experimental_pitcher_pit_mode),
         "samples": [],
     }
@@ -1849,6 +1860,16 @@ def main() -> None:
                     pit_usage["away_pitcher_pit_found"] += 1
                 else:
                     pit_usage["away_pitcher_pit_missing"] += 1
+                for side in ("home", "away"):
+                    provenance_source = pit_meta[side].get(
+                        "provenance_source", "league_average_safe_fallback"
+                    )
+                    if provenance_source == "current_pit":
+                        pit_usage["current_pit_snapshots_used"] += 1
+                    elif provenance_source == "prior_season_baseline":
+                        pit_usage["prior_season_baselines_used"] += 1
+                    else:
+                        pit_usage["league_average_safe_fallbacks_used"] += 1
                 if len(pit_usage["samples"]) < 3:
                     pit_usage["samples"].append(
                         {
@@ -2022,6 +2043,11 @@ def main() -> None:
                 ),
                 "home_pitcher_pit_found": pit_usage["home_pitcher_pit_found"],
                 "away_pitcher_pit_found": pit_usage["away_pitcher_pit_found"],
+                "current_pit_snapshots_used": pit_usage["current_pit_snapshots_used"],
+                "prior_season_baselines_used": pit_usage["prior_season_baselines_used"],
+                "league_average_safe_fallbacks_used": pit_usage[
+                    "league_average_safe_fallbacks_used"
+                ],
                 "full_season_pitcher_fetches_avoided": pit_usage[
                     "full_season_pitcher_fetches_avoided"
                 ],

@@ -11,6 +11,7 @@ from modules.baseball_module.advanced_pit_enrichment import (
     AdvancedPitcherDailySnapshotBuilder,
     FanGraphsDailyPITPersistence,
     PITCache,
+    PitcherPriorBaselinePersistence,
     SavantRollingPITPersistence,
     adapt_unified_pitcher_snapshot,
 )
@@ -118,6 +119,33 @@ def _seed_daily_pit(cache, *, entity_id, as_of_date, siera=3.21, est_woba=0.301)
             "metric_version": "savant_rolling_v1",
         },
         fetched_at="2026-06-13T12:00:00Z",
+    )
+
+
+def _seed_prior_pitcher_baseline(cache, *, entity_id, est_woba=0.315):
+    cache.save_record(
+        namespace=PitcherPriorBaselinePersistence.NAMESPACE,
+        entity_id=entity_id,
+        season=2024,
+        as_of_date="2023-10-01T23:59:59Z",
+        source=PitcherPriorBaselinePersistence.SOURCE,
+        source_fingerprint=f"prior-{entity_id}",
+        data={
+            "prior_season": 2023,
+            "est_woba": est_woba,
+            "woba": 0.305,
+            "brl_percent": 7.2,
+            "barrel_count": 20,
+            "batted_ball_count": 280,
+            "ev95percent": 36.5,
+            "sweet_spot_pct": 34.0,
+            "pa": 420,
+            "bip": 280,
+            "source_window_start_date": "2023-03-30",
+            "source_window_end_date": "2023-10-01",
+            "metric_version": "pitcher_prior_baseline_v1",
+        },
+        fetched_at="2026-06-26T12:00:00Z",
     )
 
 
@@ -243,6 +271,48 @@ def test_flag_on_uses_pit_snapshot_when_available(tmp_path):
     assert game_data["pitcher_home"]["days_rest"] == 5
 
 
+def test_current_pit_takes_priority_over_prior_baseline(tmp_path):
+    cache = PITCache(tmp_path / "pit.db")
+    _seed_daily_pit(cache, entity_id=100, as_of_date="2024-04-02T00:00:00Z", est_woba=0.301)
+    _seed_prior_pitcher_baseline(cache, entity_id=100, est_woba=0.399)
+    game_data = _base_game_data()
+
+    meta = apply_experimental_pitcher_pit_mode(
+        game_data=game_data,
+        home_pitcher_id=100,
+        away_pitcher_id=None,
+        season=2024,
+        requested_as_of_date="2024-04-02T23:59:59Z",
+        snapshot_builder=AdvancedPitcherDailySnapshotBuilder(cache),
+        adapter=adapt_unified_pitcher_snapshot,
+    )
+
+    assert meta["home"]["provenance_source"] == "current_pit"
+    assert meta["home"]["prior_baseline_found"] is False
+    assert game_data["pitcher_home"]["est_woba"] == 0.301
+
+
+def test_prior_baseline_is_used_when_current_pit_is_missing(tmp_path):
+    cache = PITCache(tmp_path / "pit.db")
+    _seed_prior_pitcher_baseline(cache, entity_id=100)
+    game_data = _base_game_data()
+
+    meta = apply_experimental_pitcher_pit_mode(
+        game_data=game_data,
+        home_pitcher_id=100,
+        away_pitcher_id=None,
+        season=2024,
+        requested_as_of_date="2024-04-02T23:59:59Z",
+        snapshot_builder=AdvancedPitcherDailySnapshotBuilder(cache),
+        adapter=adapt_unified_pitcher_snapshot,
+    )
+
+    assert meta["home"]["pit_found"] is True
+    assert meta["home"]["prior_baseline_found"] is True
+    assert meta["home"]["provenance_source"] == "prior_season_baseline"
+    assert game_data["pitcher_home"]["est_woba"] == 0.315
+
+
 def test_flag_on_does_not_use_future_pit_snapshot(tmp_path):
     cache = PITCache(tmp_path / "pit.db")
     _seed_daily_pit(cache, entity_id=100, as_of_date="2024-04-03T00:00:00Z", siera=1.00)
@@ -277,6 +347,8 @@ def test_missing_pit_snapshot_falls_back_safely(tmp_path):
 
     assert meta["home"]["pit_found"] is False
     assert meta["away"]["pit_found"] is False
+    assert meta["home"]["provenance_source"] == "league_average_safe_fallback"
+    assert meta["away"]["provenance_source"] == "league_average_safe_fallback"
     assert game_data["pitcher_home"]["era"] == 4.50
     assert game_data["pitcher_away"]["days_rest"] == 4
 

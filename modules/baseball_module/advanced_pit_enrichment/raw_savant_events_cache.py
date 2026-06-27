@@ -56,6 +56,22 @@ class RawSavantTeamOffenseEvent:
     inning_half: str | None
 
 
+@dataclass(frozen=True)
+class RawSavantPitcherMetricEvent:
+    """Projected raw row used by one-pass pitcher metric aggregation."""
+
+    game_pk: int
+    at_bat_number: int
+    pitch_number: int
+    pitcher: int
+    launch_speed: float | None
+    launch_angle: float | None
+    estimated_woba_using_speedangle: float | None
+    woba_value: float | None
+    woba_denom: float | None
+    launch_speed_angle: int | None
+
+
 class RawSavantEventsCache:
     """Persistent raw event cache keyed by Statcast pitch identity."""
 
@@ -194,6 +210,59 @@ class RawSavantEventsCache:
             )
             for row in rows:
                 yield _row_to_team_offense_event(row)
+
+    def iter_pitcher_metric_events_by_date_range(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> Iterable[RawSavantPitcherMetricEvent]:
+        """Stream only persisted columns required by pitcher metric semantics.
+
+        Deliberately excludes ``raw_json`` and does not materialize the result
+        set, keeping full-season aggregation bounded by pitcher count.
+        """
+        _validate_date(start_date, field_name="start_date")
+        _validate_date(end_date, field_name="end_date")
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    game_pk,
+                    at_bat_number,
+                    pitch_number,
+                    pitcher,
+                    launch_speed,
+                    launch_angle,
+                    estimated_woba_using_speedangle,
+                    woba_value,
+                    woba_denom,
+                    launch_speed_angle
+                FROM raw_savant_events
+                WHERE game_date >= ?
+                  AND game_date <= ?
+                  AND pitcher IS NOT NULL
+                """,
+                (start_date, end_date),
+            )
+            for row in rows:
+                yield RawSavantPitcherMetricEvent(
+                    game_pk=int(row["game_pk"]),
+                    at_bat_number=int(row["at_bat_number"]),
+                    pitch_number=int(row["pitch_number"]),
+                    pitcher=int(row["pitcher"]),
+                    launch_speed=row["launch_speed"],
+                    launch_angle=row["launch_angle"],
+                    estimated_woba_using_speedangle=row[
+                        "estimated_woba_using_speedangle"
+                    ],
+                    woba_value=row["woba_value"],
+                    woba_denom=row["woba_denom"],
+                    launch_speed_angle=_nullable_int(row["launch_speed_angle"]),
+                )
 
     def count_events_by_date_range(self, *, start_date: str, end_date: str) -> int:
         _validate_date(start_date, field_name="start_date")

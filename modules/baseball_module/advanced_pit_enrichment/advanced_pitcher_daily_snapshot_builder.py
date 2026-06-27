@@ -7,6 +7,7 @@ from typing import Any
 
 from .fangraphs_daily_pit_persistence import FanGraphsDailyPITPersistence
 from .pit_cache import PITCache, PITCacheRecord
+from .pitcher_prior_baseline import PitcherPriorBaselinePersistence
 from .savant_rolling_pit_persistence import SavantRollingPITPersistence
 
 
@@ -41,18 +42,39 @@ class AdvancedPitcherDailySnapshotBuilder:
             as_of_date=requested_as_of_date,
             source=SavantRollingPITPersistence.SOURCE,
         )
+        prior_record = None
+        if fangraphs_record is None and savant_record is None:
+            prior_record = self.cache.get_latest(
+                namespace=PitcherPriorBaselinePersistence.NAMESPACE,
+                entity_id=pitcher,
+                season=season,
+                as_of_date=requested_as_of_date,
+                source=PitcherPriorBaselinePersistence.SOURCE,
+            )
 
         snapshot: dict[str, Any] = {
-            "found": bool(fangraphs_record or savant_record),
+            "found": bool(fangraphs_record or savant_record or prior_record),
             "mlbam_id": _coerce_int(pitcher),
             "requested_as_of_date": requested_as_of_date,
             "fangraphs_found": fangraphs_record is not None,
             "savant_found": savant_record is not None,
+            "prior_baseline_found": prior_record is not None,
             "fangraphs_as_of_date": fangraphs_record.as_of_date if fangraphs_record else None,
             "savant_as_of_date": savant_record.as_of_date if savant_record else None,
+            "prior_baseline_as_of_date": prior_record.as_of_date if prior_record else None,
+            "provenance_source": (
+                "current_pit"
+                if fangraphs_record or savant_record
+                else "prior_season_baseline"
+                if prior_record
+                else "league_average_safe_fallback"
+            ),
             "source_fingerprints": {
                 "fangraphs": fangraphs_record.source_fingerprint if fangraphs_record else None,
                 "savant": savant_record.source_fingerprint if savant_record else None,
+                "prior_season_baseline": (
+                    prior_record.source_fingerprint if prior_record else None
+                ),
             },
             "snapshot_version": self.SNAPSHOT_VERSION,
         }
@@ -61,6 +83,9 @@ class AdvancedPitcherDailySnapshotBuilder:
             _merge_fangraphs(snapshot, fangraphs_record.data)
         if savant_record:
             _merge_savant(snapshot, savant_record.data)
+        if prior_record:
+            _merge_savant(snapshot, prior_record.data)
+            snapshot["prior_season"] = prior_record.data.get("prior_season")
 
         return snapshot
 
