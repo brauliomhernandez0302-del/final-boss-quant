@@ -72,6 +72,27 @@ class RawSavantPitcherMetricEvent:
     launch_speed_angle: int | None
 
 
+@dataclass(frozen=True)
+class RawSavantTeamDefenseEvent:
+    """Projected final-PA row used by team defense PIT aggregation.
+
+    Team and contact fields live inside ``raw_json`` in the durable raw cache.
+    They are extracted by SQLite so callers never decode the full payload.
+    """
+
+    game_date: str
+    game_pk: int
+    at_bat_number: int
+    pitch_number: int
+    events: str
+    home_team: str | None
+    away_team: str | None
+    inning_topbot: str | None
+    batting_team: str | None
+    estimated_ba_using_speedangle: float | None
+    bb_type: str | None
+
+
 class RawSavantEventsCache:
     """Persistent raw event cache keyed by Statcast pitch identity."""
 
@@ -264,6 +285,77 @@ class RawSavantEventsCache:
                     launch_speed_angle=_nullable_int(row["launch_speed_angle"]),
                 )
 
+    def iter_team_defense_events_by_date_range(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> Iterable[RawSavantTeamDefenseEvent]:
+        """Stream projected final-PA rows needed by team defense aggregation.
+
+        ``events IS NOT NULL`` selects terminal plate-appearance rows. The
+        consumer still deduplicates ``(game_pk, at_bat_number)`` defensively.
+        JSON extraction is performed inside SQLite and ``raw_json`` is never
+        materialized or decoded in Python.
+        """
+        _validate_date(start_date, field_name="start_date")
+        _validate_date(end_date, field_name="end_date")
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    game_date,
+                    game_pk,
+                    at_bat_number,
+                    pitch_number,
+                    events,
+                    json_extract(raw_json, '$.home_team') AS home_team,
+                    json_extract(raw_json, '$.away_team') AS away_team,
+                    COALESCE(
+                        json_extract(raw_json, '$.inning_topbot'),
+                        json_extract(raw_json, '$.inning_half')
+                    ) AS inning_topbot,
+                    COALESCE(
+                        json_extract(raw_json, '$.batting_team'),
+                        json_extract(raw_json, '$.bat_team'),
+                        json_extract(raw_json, '$.batter_team'),
+                        json_extract(raw_json, '$.team_batting')
+                    ) AS batting_team,
+                    CAST(
+                        NULLIF(
+                            json_extract(raw_json, '$.estimated_ba_using_speedangle'),
+                            ''
+                        ) AS REAL
+                    ) AS estimated_ba_using_speedangle,
+                    json_extract(raw_json, '$.bb_type') AS bb_type
+                FROM raw_savant_events
+                WHERE game_date >= ?
+                  AND game_date <= ?
+                  AND events IS NOT NULL
+                ORDER BY game_date, game_pk, at_bat_number, pitch_number DESC
+                """,
+                (start_date, end_date),
+            )
+            for row in rows:
+                yield RawSavantTeamDefenseEvent(
+                    game_date=row["game_date"],
+                    game_pk=int(row["game_pk"]),
+                    at_bat_number=int(row["at_bat_number"]),
+                    pitch_number=int(row["pitch_number"]),
+                    events=str(row["events"]),
+                    home_team=_optional_str(row["home_team"]),
+                    away_team=_optional_str(row["away_team"]),
+                    inning_topbot=_optional_str(row["inning_topbot"]),
+                    batting_team=_optional_str(row["batting_team"]),
+                    estimated_ba_using_speedangle=_optional_float(
+                        row["estimated_ba_using_speedangle"]
+                    ),
+                    bb_type=_optional_str(row["bb_type"]),
+                )
+
     def count_events_by_date_range(self, *, start_date: str, end_date: str) -> int:
         _validate_date(start_date, field_name="start_date")
         _validate_date(end_date, field_name="end_date")
@@ -301,6 +393,25 @@ class RawSavantEventsCache:
                     (start_date, end_date),
                 ).fetchone()[0]
             )
+
+    def source_fingerprints_by_date_range(self, *, start_date: str, end_date: str) -> tuple[str, ...]:
+        """Return deterministic raw-source fingerprints covering a date range."""
+        _validate_date(start_date, field_name="start_date")
+        _validate_date(end_date, field_name="end_date")
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT source_fingerprint
+                FROM raw_savant_events
+                WHERE game_date >= ?
+                  AND game_date <= ?
+                ORDER BY source_fingerprint
+                """,
+                (start_date, end_date),
+            ).fetchall()
+        return tuple(str(row[0]) for row in rows if row[0])
 
     def count_events(self) -> int:
         with self._connect() as conn:
