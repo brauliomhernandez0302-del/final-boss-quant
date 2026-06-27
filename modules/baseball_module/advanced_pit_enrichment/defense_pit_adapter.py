@@ -45,6 +45,18 @@ def adapt_defense_pit_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         fallback_used = "current_and_prior_defense_unavailable"
 
     multiplier = _clamp(1.0 - proxy, MULTIPLIER_MIN, MULTIPLIER_MAX)
+    if provenance_source == "prior_season_defense_baseline":
+        bip_count = snapshot.get("prior_bip_count")
+        xba_bip_count = snapshot.get("prior_xba_bip_count")
+        sample_size_status = "prior_baseline"
+    elif provenance_source == "current_defense_pit":
+        bip_count = snapshot.get("bip_count")
+        xba_bip_count = snapshot.get("xba_bip_count")
+        sample_size_status = snapshot.get("sample_size_status", "missing")
+    else:
+        bip_count = None
+        xba_bip_count = None
+        sample_size_status = "neutral"
     return {
         "found": provenance_source != "neutral_defense_adjustment",
         "team_id": snapshot.get("team_id"),
@@ -55,9 +67,9 @@ def adapt_defense_pit_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "fallback_used": fallback_used,
         "current_defense_found": bool(snapshot.get("current_defense_found")),
         "prior_baseline_found": bool(snapshot.get("prior_baseline_found")),
-        "bip_count": snapshot.get("bip_count"),
-        "xba_bip_count": snapshot.get("xba_bip_count"),
-        "sample_size_status": snapshot.get("sample_size_status", "missing"),
+        "bip_count": bip_count,
+        "xba_bip_count": xba_bip_count,
+        "sample_size_status": sample_size_status,
         "current_weight": round(current_weight, 6),
         "prior_weight": round(prior_weight, 6),
         "source_window_start_date": snapshot.get("source_window_start_date"),

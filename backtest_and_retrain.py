@@ -433,6 +433,7 @@ def build_game_data(
     pitcher_game_log_as_of_date: Optional[str] = None,
     use_pitcher_full_season_fallback: bool = True,
     use_team_full_season_offense_base: bool = True,
+    use_team_full_season_defense: bool = True,
 ) -> Tuple[Dict, float, float]:
     """
     Assemble game_data and (lh_base, la_base) from cached season-level stats.
@@ -595,11 +596,17 @@ def build_game_data(
         # OAA from Baseball Savant not available via free API; engine degrades to DER-only.
         "defense_home": (
             {"team_name": home_name, "der": home_pitch["der"], "bip": home_pitch["bip"], "oaa": None}
-            if home_pitch.get("der") and home_pitch.get("bip", 0) > 0 else {}
+            if use_team_full_season_defense
+            and home_pitch.get("der")
+            and home_pitch.get("bip", 0) > 0
+            else {}
         ),
         "defense_away": (
             {"team_name": away_name, "der": away_pitch["der"], "bip": away_pitch["bip"], "oaa": None}
-            if away_pitch.get("der") and away_pitch.get("bip", 0) > 0 else {}
+            if use_team_full_season_defense
+            and away_pitch.get("der")
+            and away_pitch.get("bip", 0) > 0
+            else {}
         ),
         # F2: geodesic travel distance and timezone crossings for away team
         "miles_traveled_away": (_ts := _travel_stats(away_name, home_name))[0],
@@ -656,6 +663,14 @@ def _experimental_pitcher_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) 
 
 def _team_tte_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
     """Return the Team/TTE PIT cutoff aligned to previous-day team snapshots."""
+    game_day = datetime.strptime(str(row["game_date"])[:10], "%Y-%m-%d").replace(
+        tzinfo=timezone.utc
+    )
+    return (game_day - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _defense_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
+    """Return the previous-day cutoff required by Defense PIT."""
     game_day = datetime.strptime(str(row["game_date"])[:10], "%Y-%m-%d").replace(
         tzinfo=timezone.utc
     )
@@ -849,6 +864,104 @@ def apply_experimental_team_tte_pit_mode(
     return metadata
 
 
+def apply_experimental_defense_pit_mode(
+    *,
+    game_data: Dict[str, Any],
+    season: int,
+    game_date: str,
+    snapshot_builder: Any,
+    adapter: Any,
+    requested_as_of_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Attach Defense PIT provenance and block legacy DER/BIP adjustment."""
+    requested = requested_as_of_date or _defense_pit_cutoff_for_row(
+        {"game_date": game_date}
+    )
+
+    # Defense PIT is authoritative in this opt-in mode. Full-season DER/BIP is
+    # removed even when build_game_data was called by an external test/caller.
+    game_data["defense_home"] = {}
+    game_data["defense_away"] = {}
+
+    def _apply(side: str, team_name: str, team_id: Optional[int]) -> Dict[str, Any]:
+        entity_id = TEAM_TTE_PIT_ENTITY_IDS.get(team_name)
+        mapping_failure = entity_id is None
+        if entity_id is None:
+            snapshot = {
+                "found": False,
+                "team_id": team_id,
+                "season": season,
+                "requested_as_of_date": requested,
+                "current_defense_found": False,
+                "prior_baseline_found": False,
+                "source_fingerprints": {},
+            }
+        else:
+            snapshot = snapshot_builder.build_snapshot(
+                team_id=entity_id,
+                season=season,
+                requested_as_of_date=requested,
+            )
+        adapted = adapter(snapshot)
+        provenance = adapted.get("provenance", {})
+        return {
+            "side": side,
+            "team_id": team_id,
+            "pit_entity_id": entity_id,
+            "team_name": team_name,
+            "mapping_failure": mapping_failure,
+            "requested_as_of_date": requested,
+            "provenance_source": adapted.get(
+                "provenance_source", "neutral_defense_adjustment"
+            ),
+            "neutral_fallback": (
+                adapted.get("provenance_source") == "neutral_defense_adjustment"
+            ),
+            "fallback_used": adapted.get("fallback_used"),
+            "current_defense_found": bool(adapted.get("current_defense_found")),
+            "prior_baseline_found": bool(adapted.get("prior_baseline_found")),
+            "current_as_of_date": provenance.get("current_as_of_date"),
+            "prior_baseline_as_of_date": provenance.get("prior_baseline_as_of_date"),
+            "source_window_start_date": adapted.get("source_window_start_date"),
+            "source_window_end_date": adapted.get("source_window_end_date"),
+            "prior_source_window_start_date": adapted.get(
+                "prior_source_window_start_date"
+            ),
+            "prior_source_window_end_date": adapted.get("prior_source_window_end_date"),
+            "bip_count": adapted.get("bip_count"),
+            "xba_bip_count": adapted.get("xba_bip_count"),
+            "sample_size_status": adapted.get("sample_size_status"),
+            "contact_adjusted_defense_proxy": adapted.get(
+                "contact_adjusted_defense_proxy", 0.0
+            ),
+            "applied_multiplier": adapted.get("defense_multiplier", 1.0),
+            "current_weight": adapted.get("current_weight"),
+            "prior_weight": adapted.get("prior_weight"),
+            "source_fingerprints": provenance.get("source_fingerprints", {}),
+        }
+
+    home = _apply(
+        "home",
+        game_data.get("home_team", {}).get("name", ""),
+        game_data.get("home_team_id"),
+    )
+    away = _apply(
+        "away",
+        game_data.get("away_team", {}).get("name", ""),
+        game_data.get("away_team_id"),
+    )
+    metadata = {
+        "requested_as_of_date": requested,
+        "home": home,
+        "away": away,
+        "legacy_full_season_der_bip_blocked": True,
+        "home_defense_applies_to": "away_lambda",
+        "away_defense_applies_to": "home_lambda",
+    }
+    game_data["experimental_defense_pit"] = metadata
+    return metadata
+
+
 def team_tte_pit_skip_reason(metadata: Dict[str, Any]) -> Optional[str]:
     """Return strict Team/TTE PIT skip reason, or None when both sides are covered."""
     home_missing = metadata.get("home", {}).get("lambda_offense") is None
@@ -930,6 +1043,165 @@ def _team_tte_pit_usage_summary(
     }
 
 
+def _update_defense_pit_usage(
+    usage: Dict[str, Any],
+    metadata: Dict[str, Any],
+    *,
+    game_date: str,
+) -> None:
+    usage["games_attempted"] += 1
+    if metadata.get("legacy_full_season_der_bip_blocked"):
+        usage["legacy_defense_calls_blocked"] += 1
+
+    requested = _parse_utc(metadata.get("requested_as_of_date"))
+    for side in ("home", "away"):
+        item = metadata.get(side, {})
+        source = item.get("provenance_source", "neutral_defense_adjustment")
+        if source == "current_defense_pit":
+            usage["current_defense_pit_used"] += 1
+        elif source == "prior_season_defense_baseline":
+            usage["prior_season_baseline_used"] += 1
+        else:
+            usage["neutral_defense_adjustment_used"] += 1
+
+        if item.get("mapping_failure"):
+            usage["mapping_failures"] += 1
+
+        current_as_of = _parse_utc(item.get("current_as_of_date"))
+        if current_as_of and requested and current_as_of > requested:
+            usage["future_snapshot_violations"] += 1
+        if current_as_of and current_as_of.date().isoformat() >= str(game_date)[:10]:
+            usage["same_day_violations"] += 1
+
+        fingerprints = item.get("source_fingerprints", {})
+        if source == "current_defense_pit" and not fingerprints.get("current_defense_pit"):
+            usage["missing_fingerprints"] += 1
+        if (
+            source == "prior_season_defense_baseline"
+            and not fingerprints.get("prior_season_defense_baseline")
+        ):
+            usage["missing_fingerprints"] += 1
+        if (
+            source == "current_defense_pit"
+            and float(item.get("prior_weight") or 0.0) > 0
+            and item.get("prior_baseline_found")
+            and not fingerprints.get("prior_season_defense_baseline")
+        ):
+            usage["missing_fingerprints"] += 1
+
+
+def _append_defense_pit_sample(
+    usage: Dict[str, Any],
+    *,
+    game_pk: int,
+    game_date: str,
+    home_team: str,
+    away_team: str,
+    metadata: Dict[str, Any],
+) -> None:
+    if len(usage["samples"]) >= 3:
+        return
+    usage["samples"].append(
+        {
+            "game_pk": game_pk,
+            "game_date": game_date,
+            "home_team": home_team,
+            "away_team": away_team,
+            "requested_as_of_date": metadata.get("requested_as_of_date"),
+            "home_defense_pit": metadata.get("home"),
+            "away_defense_pit": metadata.get("away"),
+            "legacy_full_season_der_bip_blocked": metadata.get(
+                "legacy_full_season_der_bip_blocked"
+            ),
+        }
+    )
+
+
+def _defense_pit_usage_summary(
+    usage: Dict[str, Any],
+    *,
+    games_processed: int,
+    failures: int,
+) -> Dict[str, Any]:
+    return {
+        "games_attempted": usage["games_attempted"],
+        "games_processed": games_processed,
+        "failures": failures,
+        "current_defense_pit_used": usage["current_defense_pit_used"],
+        "prior_season_baseline_used": usage["prior_season_baseline_used"],
+        "neutral_defense_adjustment_used": usage["neutral_defense_adjustment_used"],
+        "legacy_defense_calls_blocked": usage["legacy_defense_calls_blocked"],
+        "future_snapshot_violations": usage["future_snapshot_violations"],
+        "same_day_violations": usage["same_day_violations"],
+        "missing_fingerprints": usage["missing_fingerprints"],
+        "duplicate_pit_keys": usage["duplicate_pit_keys"],
+        "mapping_failures": usage["mapping_failures"],
+        "sample_games": usage["samples"],
+    }
+
+
+def _defense_pit_duplicate_key_count(cache_db: Path) -> int:
+    with sqlite3.connect(cache_db) as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT 1
+                FROM pit_metric_cache
+                GROUP BY namespace, entity_id, season, as_of_date, source
+                HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _parse_utc(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _apply_defense_stage(
+    lh: float,
+    la: float,
+    game_data: Dict[str, Any],
+    *,
+    use_defense_pit: bool,
+) -> Tuple[float, float, Dict[str, Any]]:
+    """Apply either experimental Defense PIT or the unchanged legacy stage."""
+    if use_defense_pit:
+        metadata = game_data.get("experimental_defense_pit")
+        if metadata is None:
+            raise ValueError("Defense PIT metadata is required in experimental mode")
+        home_multiplier = float(
+            metadata.get("home", {}).get("applied_multiplier", 1.0)
+        )
+        away_multiplier = float(
+            metadata.get("away", {}).get("applied_multiplier", 1.0)
+        )
+        # Away defense faces home batters; home defense faces away batters.
+        return (
+            lh * away_multiplier,
+            la * home_multiplier,
+            {
+                "mode": "experimental_defense_pit",
+                "legacy_defense_called": False,
+                "home_multiplier_on_away_lambda": home_multiplier,
+                "away_multiplier_on_home_lambda": away_multiplier,
+            },
+        )
+
+    if game_data.get("defense_home") or game_data.get("defense_away"):
+        lh_def, la_def, metadata = adjust_for_defense(lh, la, game_data)
+        metadata["mode"] = "legacy_der_bip"
+        metadata["legacy_defense_called"] = True
+        return lh_def, la_def, metadata
+    return lh, la, {"mode": "none", "legacy_defense_called": False}
+
+
 # ── pipeline runner ────────────────────────────────────────────────────────
 
 def run_pipeline(
@@ -942,6 +1214,9 @@ def run_pipeline(
     use_team_tte_pit: bool = False,
     team_tte_pit_snapshot_builder: Any = None,
     team_tte_pit_adapter: Any = None,
+    use_defense_pit: bool = False,
+    defense_pit_snapshot_builder: Any = None,
+    defense_pit_adapter: Any = None,
 ) -> Dict[str, Any]:
     """Run the full pipeline identical to run_module.py.
 
@@ -962,6 +1237,7 @@ def run_pipeline(
     atid = game_data.get("away_team_id")
     tte_active = False
     team_tte_pit_meta = None
+    defense_pit_meta = None
     if use_team_tte_pit:
         if team_tte_pit_snapshot_builder is None or team_tte_pit_adapter is None:
             raise ValueError("Team/TTE PIT mode requires snapshot builder and adapter")
@@ -990,6 +1266,20 @@ def run_pipeline(
             tte_active = True
         except Exception:
             pass  # TTE failed — lh/la remain from build_game_data
+
+    if use_defense_pit:
+        defense_pit_meta = game_data.get("experimental_defense_pit")
+        if defense_pit_meta is None:
+            if defense_pit_snapshot_builder is None or defense_pit_adapter is None:
+                raise ValueError("Defense PIT mode requires snapshot builder and adapter")
+            defense_pit_meta = apply_experimental_defense_pit_mode(
+                game_data=game_data,
+                season=season,
+                game_date=str(game_data.get("game_date", "")),
+                snapshot_builder=defense_pit_snapshot_builder,
+                adapter=defense_pit_adapter,
+                requested_as_of_date=game_data.get("defense_pit_requested_as_of_date"),
+            )
 
     # ── Kalman adjustment (walk-forward: only sees games prior to this one) ───
     lh = learning.get_kalman_lambda_adjustment(home_team, "offense_home", season, lh)
@@ -1035,15 +1325,20 @@ def run_pipeline(
     # ── PASO 4: Defensive Efficiency (DEE) ───────────────────────────────────────
     # Stage factor captures DEE-only ratio (DER fielding signal, orthogonal to Pitcher Engine).
     _lh_pre, _la_pre = lh, la
-    if game_data.get("defense_home") or game_data.get("defense_away"):
-        lh_def, la_def, _ = adjust_for_defense(lh, la, game_data)
+    if use_defense_pit or game_data.get("defense_home") or game_data.get("defense_away"):
+        lh_def, la_def, _defense_meta = _apply_defense_stage(
+            lh,
+            la,
+            game_data,
+            use_defense_pit=use_defense_pit,
+        )
         _raw_h = lh_def / _lh_pre if _lh_pre else 1.0
         _raw_a = la_def / _la_pre if _la_pre else 1.0
         _w_def = _w.get("defense", 1.0)
         lh = _lh_pre * (1.0 + _w_def * (_raw_h - 1.0))
         la = _la_pre * (1.0 + _w_def * (_raw_a - 1.0))
-        _sf["home_defense"] = _raw_h   # DEE ratio on lh (away defense → home runs)
-        _sf["away_defense"] = _raw_a   # DEE ratio on la (home defense → away runs)
+        _sf["home_defense"] = _raw_h   # away defense multiplier on home runs
+        _sf["away_defense"] = _raw_a   # home defense multiplier on away runs
 
     # ── PASO 5: Pitcher Engine ────────────────────────────────────────────────
     _lh_pre, _la_pre = lh, la
@@ -1120,6 +1415,7 @@ def run_pipeline(
         "p_away_raw":  round(p_away_mc, 5),
         "stage_factors": _sf,
         "team_tte_pit": team_tte_pit_meta,
+        "defense_pit": defense_pit_meta,
         "n_mc":        mc["n"],
     }
 
@@ -1180,17 +1476,21 @@ def generate_report(
     results: List[Dict],
     out_path: Path,
     team_tte_pit_summary: Optional[Dict[str, Any]] = None,
+    defense_pit_summary: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Compute and print a full backtest summary; save JSON sidecar."""
     n = len(results)
     if n == 0:
-        if team_tte_pit_summary is not None:
+        if team_tte_pit_summary is not None or defense_pit_summary is not None:
             report = {
                 "run_at": datetime.now(timezone.utc).isoformat(),
                 "total_games": 0,
                 "seasons": [],
-                "team_tte_pit": team_tte_pit_summary,
             }
+            if team_tte_pit_summary is not None:
+                report["team_tte_pit"] = team_tte_pit_summary
+            if defense_pit_summary is not None:
+                report["defense_pit"] = defense_pit_summary
             report_path = out_path / f"backtest_report_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
             report_path.write_text(json.dumps(report, indent=2))
             print(f"\nNo scored results. Report saved → {report_path}")
@@ -1441,6 +1741,8 @@ def generate_report(
                 for r in team_tte_rows[:3]
             ],
         }
+    if defense_pit_summary is not None:
+        report["defense_pit"] = defense_pit_summary
 
     # ── save JSON ────────────────────────────────────────────────────────────
     report_path = out_path / f"backtest_report_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
@@ -1545,12 +1847,24 @@ def main() -> None:
                         help="Use isolated Team/TTE PIT offensive lambdas when available")
     parser.add_argument("--team-tte-pit-cache-db", type=Path, default=None,
                         help="PIT cache DB for --use-team-tte-pit")
+    parser.add_argument("--use-defense-pit", action="store_true",
+                        help="Use isolated contact-adjusted Team Defense PIT snapshots")
+    parser.add_argument("--defense-pit-cache-db", type=Path, default=None,
+                        help="PIT cache DB for --use-defense-pit")
+    parser.add_argument("--technical-pit-coverage-only", action="store_true",
+                        help="Trace PIT coverage/provenance without scoring predictions")
     args = parser.parse_args()
 
     if args.experimental_pitcher_pit_mode and not args.pitcher_pit_cache_db:
         parser.error("--pitcher-pit-cache-db is required with --experimental-pitcher-pit-mode")
     if args.use_team_tte_pit and not args.team_tte_pit_cache_db:
         parser.error("--team-tte-pit-cache-db is required with --use-team-tte-pit")
+    if args.use_defense_pit and not args.defense_pit_cache_db:
+        parser.error("--defense-pit-cache-db is required with --use-defense-pit")
+    if args.technical_pit_coverage_only and not (
+        args.experimental_pitcher_pit_mode or args.use_team_tte_pit or args.use_defense_pit
+    ):
+        parser.error("--technical-pit-coverage-only requires at least one PIT mode")
 
     args.cache_dir.mkdir(parents=True, exist_ok=True)
     args.report_dir.mkdir(parents=True, exist_ok=True)
@@ -1611,6 +1925,23 @@ def main() -> None:
         log.info(
             "Team/TTE PIT mode ENABLED | pit_cache_db=%s",
             args.team_tte_pit_cache_db,
+        )
+
+    defense_pit_snapshot_builder = None
+    defense_pit_adapter = None
+    if args.use_defense_pit:
+        from modules.baseball_module.advanced_pit_enrichment import (
+            TeamDefenseDailySnapshotBuilder,
+            adapt_defense_pit_snapshot,
+        )
+
+        defense_pit_snapshot_builder = TeamDefenseDailySnapshotBuilder(
+            cache_db=args.defense_pit_cache_db
+        )
+        defense_pit_adapter = adapt_defense_pit_snapshot
+        log.info(
+            "Defense PIT mode ENABLED | pit_cache_db=%s",
+            args.defense_pit_cache_db,
         )
 
     # ── load Savant + FanGraphs data per season ──────────────────────────────
@@ -1778,6 +2109,23 @@ def main() -> None:
         "away_missing_only": 0,
         "samples": [],
     }
+    defense_pit_usage = {
+        "games_attempted": 0,
+        "current_defense_pit_used": 0,
+        "prior_season_baseline_used": 0,
+        "neutral_defense_adjustment_used": 0,
+        "legacy_defense_calls_blocked": 0,
+        "future_snapshot_violations": 0,
+        "same_day_violations": 0,
+        "missing_fingerprints": 0,
+        "duplicate_pit_keys": (
+            _defense_pit_duplicate_key_count(args.defense_pit_cache_db)
+            if args.use_defense_pit
+            else 0
+        ),
+        "mapping_failures": 0,
+        "samples": [],
+    }
     t0 = time.time()
 
     # F3: track last game date AND venue per team to detect meaningful B2B.
@@ -1841,6 +2189,7 @@ def main() -> None:
                 ),
                 use_pitcher_full_season_fallback=not args.experimental_pitcher_pit_mode,
                 use_team_full_season_offense_base=not args.use_team_tte_pit,
+                use_team_full_season_defense=not args.use_defense_pit,
             )
             if args.experimental_pitcher_pit_mode:
                 pit_meta = apply_experimental_pitcher_pit_mode(
@@ -1881,6 +2230,24 @@ def main() -> None:
                             "away_pitcher_pit": pit_meta["away"],
                         }
                     )
+            defense_meta = None
+            if args.use_defense_pit:
+                game_data["defense_pit_requested_as_of_date"] = (
+                    _defense_pit_cutoff_for_row(row)
+                )
+                defense_meta = apply_experimental_defense_pit_mode(
+                    game_data=game_data,
+                    season=season,
+                    game_date=game_date,
+                    requested_as_of_date=game_data["defense_pit_requested_as_of_date"],
+                    snapshot_builder=defense_pit_snapshot_builder,
+                    adapter=defense_pit_adapter,
+                )
+                _update_defense_pit_usage(
+                    defense_pit_usage,
+                    defense_meta,
+                    game_date=game_date,
+                )
             if args.use_team_tte_pit:
                 game_data["team_tte_pit_requested_as_of_date"] = _team_tte_pit_cutoff_for_row(row)
                 team_meta = apply_experimental_team_tte_pit_mode(
@@ -1916,6 +2283,24 @@ def main() -> None:
                         skip_reason,
                     )
                     continue
+            if args.technical_pit_coverage_only:
+                if args.use_defense_pit:
+                    _apply_defense_stage(
+                        1.0,
+                        1.0,
+                        game_data,
+                        use_defense_pit=True,
+                    )
+                    _append_defense_pit_sample(
+                        defense_pit_usage,
+                        game_pk=game_pk,
+                        game_date=game_date,
+                        home_team=home_name,
+                        away_team=away_name,
+                        metadata=defense_meta or {},
+                    )
+                n_ok += 1
+                continue
             # F3: inject B2B flags computed from schedule context above
             game_data["back_to_back_away"] = _b2b_away
             game_data["back_to_back_home"] = _b2b_home
@@ -1930,6 +2315,9 @@ def main() -> None:
                 use_team_tte_pit=args.use_team_tte_pit,
                 team_tte_pit_snapshot_builder=team_tte_pit_snapshot_builder,
                 team_tte_pit_adapter=team_tte_pit_adapter,
+                use_defense_pit=args.use_defense_pit,
+                defense_pit_snapshot_builder=defense_pit_snapshot_builder,
+                defense_pit_adapter=defense_pit_adapter,
             )
             # persist to DB
             update_game_outcomes(
@@ -1988,7 +2376,17 @@ def main() -> None:
                 "clv_home": (pred["p_home"] / pin_fh - 1.0) if (pin_fh and pin_fh > 0) else None,
                 "clv_away": (pred["p_away"] / pin_fa - 1.0) if (pin_fa and pin_fa > 0) else None,
                 "team_tte_pit":    pred.get("team_tte_pit"),
+                "defense_pit":     pred.get("defense_pit"),
             })
+            if args.use_defense_pit:
+                _append_defense_pit_sample(
+                    defense_pit_usage,
+                    game_pk=game_pk,
+                    game_date=game_date,
+                    home_team=home_name,
+                    away_team=away_name,
+                    metadata=pred.get("defense_pit") or {},
+                )
             n_ok += 1
 
         except Exception as exc:
@@ -2064,6 +2462,59 @@ def main() -> None:
         )
         print("\nTEAM/TTE PIT SUMMARY")
         print(json.dumps(team_tte_summary, indent=2, sort_keys=True))
+    defense_pit_summary = None
+    if args.use_defense_pit:
+        defense_pit_summary = _defense_pit_usage_summary(
+            defense_pit_usage,
+            games_processed=n_ok,
+            failures=n_err,
+        )
+        print("\nDEFENSE PIT SUMMARY")
+        print(json.dumps(defense_pit_summary, indent=2, sort_keys=True))
+
+    if args.technical_pit_coverage_only:
+        coverage_report = {
+            "run_at": datetime.now(timezone.utc).isoformat(),
+            "technical_pit_coverage_only": True,
+            "games_loaded": len(rows),
+            "games_processed": n_ok,
+            "failures": n_err,
+            "pitcher_pit": (
+                {
+                    "current_pit_snapshots_used": pit_usage[
+                        "current_pit_snapshots_used"
+                    ],
+                    "prior_season_baselines_used": pit_usage[
+                        "prior_season_baselines_used"
+                    ],
+                    "league_average_safe_fallbacks_used": pit_usage[
+                        "league_average_safe_fallbacks_used"
+                    ],
+                    "full_season_pitcher_fetches_avoided": pit_usage[
+                        "full_season_pitcher_fetches_avoided"
+                    ],
+                }
+                if args.experimental_pitcher_pit_mode
+                else None
+            ),
+            "team_tte_pit": (
+                _team_tte_pit_usage_summary(
+                    team_tte_pit_usage,
+                    games_processed=n_ok,
+                    failures=n_err,
+                )
+                if args.use_team_tte_pit
+                else None
+            ),
+            "defense_pit": defense_pit_summary,
+        }
+        report_path = args.report_dir / (
+            f"pit_coverage_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        )
+        report_path.write_text(json.dumps(coverage_report, indent=2, sort_keys=True) + "\n")
+        print(f"\nTechnical PIT coverage report saved → {report_path}")
+        conn.close()
+        return
 
     # ── step 4: recalibrate learning engine bias ───────────────────────────
     log.info("Recalibrating learning engine bias …")
@@ -2104,6 +2555,7 @@ def main() -> None:
             if args.use_team_tte_pit
             else None
         ),
+        defense_pit_summary=defense_pit_summary,
     )
     conn.close()
 

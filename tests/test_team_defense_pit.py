@@ -228,6 +228,9 @@ def test_prior_overrides_neutral_fallback(tmp_path):
     assert adapted["provenance_source"] == "prior_season_defense_baseline"
     assert adapted["contact_adjusted_defense_proxy"] == 0.025
     assert adapted["defense_multiplier"] == 0.975
+    assert adapted["bip_count"] == 4000
+    assert adapted["xba_bip_count"] == 3900
+    assert adapted["sample_size_status"] == "prior_baseline"
 
 
 def test_neutral_fallback_is_exactly_no_adjustment(tmp_path):
@@ -240,6 +243,7 @@ def test_neutral_fallback_is_exactly_no_adjustment(tmp_path):
     assert adapted["provenance_source"] == "neutral_defense_adjustment"
     assert adapted["contact_adjusted_defense_proxy"] == 0.0
     assert adapted["defense_multiplier"] == 1.0
+    assert adapted["sample_size_status"] == "neutral"
     assert adapted["provenance"]["full_season_der_fallback"] is False
 
 
@@ -265,12 +269,15 @@ def test_all_star_pseudo_teams_excluded(tmp_path):
 def test_no_full_season_der_call_and_default_backtest_untouched():
     builder_source = inspect.getsource(TeamDefensePITBuilder)
     adapter_source = inspect.getsource(adapt_defense_pit_snapshot)
-    default_source = inspect.getsource(backtest_and_retrain)
 
     assert "get_team_pitching_stats" not in builder_source
     assert "get_team_pitching_stats" not in adapter_source
-    assert "TeamDefensePITBuilder" not in default_source
-    assert "adapt_defense_pit_snapshot" not in default_source
+    assert inspect.signature(backtest_and_retrain.run_pipeline).parameters[
+        "use_defense_pit"
+    ].default is False
+    assert inspect.signature(backtest_and_retrain.build_game_data).parameters[
+        "use_team_full_season_defense"
+    ].default is True
 
 
 def test_persistence_is_idempotent_without_duplicate_pit_keys(tmp_path):
