@@ -146,6 +146,13 @@ def run_smoke(args: SmokeArgs) -> dict[str, Any]:
                 selected_fingerprint_key
             ):
                 missing_fingerprint_violations.append(row)
+            if adapted["provenance_source"] == "current_prior_bullpen_blend":
+                for key in (
+                    "current_bullpen_pit",
+                    "prior_season_bullpen_baseline",
+                ):
+                    if not adapted["source_fingerprints"].get(key):
+                        missing_fingerprint_violations.append(row)
 
     duplicates = _query_rows(
         args.pit_db,

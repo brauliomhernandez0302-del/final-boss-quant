@@ -300,8 +300,10 @@ def test_current_then_prior_then_neutral_hierarchy(tmp_path):
         team_id="NYY", season=2024, game_date="2024-04-09"
     )
     current = adapt_bullpen_pit_snapshot(current_snapshot)
-    assert current["provenance_source"] == "current_bullpen_pit"
+    assert current["provenance_source"] == "current_prior_bullpen_blend"
     assert current["sample_size_status"] == "thin"
+    assert current["current_weight"] == 0.05
+    assert current["prior_weight"] == 0.95
     assert current["applied_multiplier"] == 1.0
 
     neutral_snapshot = TeamBullpenDailySnapshotBuilder(
@@ -355,7 +357,12 @@ def test_isolated_from_live_legacy_and_default_backtest():
     assert "BullpenEngine" not in sources
     assert "core.run_module" not in sources
     assert "import app" not in sources
-    assert "use_bullpen_pit" not in inspect.getsource(backtest_and_retrain)
+    assert inspect.signature(backtest_and_retrain.run_pipeline).parameters[
+        "use_bullpen_pit"
+    ].default is False
+    assert inspect.signature(backtest_and_retrain.build_game_data).parameters[
+        "use_legacy_full_season_bullpen"
+    ].default is True
 
 
 def _projected_pitch(**overrides):

@@ -384,7 +384,12 @@ def _team_id(name: str) -> Optional[int]:
     return TEAM_IDS.get(name) or TEAM_IDS.get(name.strip())
 
 
-def prefetch_team_stats(api: MLBStatsAPI, seasons: List[int]) -> None:
+def prefetch_team_stats(
+    api: MLBStatsAPI,
+    seasons: List[int],
+    *,
+    include_legacy_bullpen: bool = True,
+) -> None:
     """Pre-warm the existing .cache/ team stat files for all 30 teams."""
     log.info("Pre-fetching team stats for all 30 teams × %s seasons …", seasons)
     for season in seasons:
@@ -394,7 +399,8 @@ def prefetch_team_stats(api: MLBStatsAPI, seasons: List[int]) -> None:
                     continue
             api.get_team_offensive_stats(tid, season)
             api.get_team_pitching_stats(tid, season)
-            api.get_bullpen_era(tid, season)
+            if include_legacy_bullpen:
+                api.get_bullpen_era(tid, season)
         log.info("  season %s team stats cached.", season)
 
 
@@ -434,6 +440,7 @@ def build_game_data(
     use_pitcher_full_season_fallback: bool = True,
     use_team_full_season_offense_base: bool = True,
     use_team_full_season_defense: bool = True,
+    use_legacy_full_season_bullpen: bool = True,
 ) -> Tuple[Dict, float, float]:
     """
     Assemble game_data and (lh_base, la_base) from cached season-level stats.
@@ -451,8 +458,16 @@ def build_game_data(
     away_pitch = (api.get_team_pitching_stats(atid, season) or {}) if atid else {}
 
     # ── bullpen ERA ─────────────────────────────────────────────────────────
-    home_bp = (api.get_bullpen_era(htid, season) or {}) if htid else {}
-    away_bp = (api.get_bullpen_era(atid, season) or {}) if atid else {}
+    home_bp = (
+        (api.get_bullpen_era(htid, season) or {})
+        if htid and use_legacy_full_season_bullpen
+        else {}
+    )
+    away_bp = (
+        (api.get_bullpen_era(atid, season) or {})
+        if atid and use_legacy_full_season_bullpen
+        else {}
+    )
 
     if use_team_full_season_offense_base:
         # ── RPG for base lambda ─────────────────────────────────────────────
@@ -671,6 +686,14 @@ def _team_tte_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
 
 def _defense_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
     """Return the previous-day cutoff required by Defense PIT."""
+    game_day = datetime.strptime(str(row["game_date"])[:10], "%Y-%m-%d").replace(
+        tzinfo=timezone.utc
+    )
+    return (game_day - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _bullpen_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
+    """Return the previous-day cutoff required by Bullpen PIT."""
     game_day = datetime.strptime(str(row["game_date"])[:10], "%Y-%m-%d").replace(
         tzinfo=timezone.utc
     )
@@ -962,6 +985,115 @@ def apply_experimental_defense_pit_mode(
     return metadata
 
 
+def calculate_pit_bullpen_adjustment(
+    adapted: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Return a fetch-free Bullpen PIT adjustment decision.
+
+    The legacy multiplier cannot be reused safely: it requires staff ERA,
+    projected starter innings and workload expressed as innings. Bullpen PIT
+    intentionally contains none of those inputs. Until a separately validated
+    PIT-native mapping exists, every source remains a neutral 1.0 adjustment.
+    """
+    return {
+        "applied_multiplier": 1.0,
+        "adjustment_formula": "neutral_only_no_compatible_legacy_mapping",
+        "mapping_status": "deferred",
+        "provenance_source": adapted.get(
+            "provenance_source", "neutral_bullpen_adjustment"
+        ),
+        "quality_metrics_used": adapted.get("quality_metrics", {}),
+        "workload_facts_used": adapted.get("workload_facts", {}),
+        "sample_size_status": adapted.get("sample_size_status"),
+        "source_fingerprints": adapted.get("source_fingerprints", {}),
+    }
+
+
+def apply_experimental_bullpen_pit_mode(
+    *,
+    game_data: Dict[str, Any],
+    season: int,
+    game_date: str,
+    snapshot_builder: Any,
+    adapter: Any,
+    requested_as_of_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Attach Bullpen PIT provenance and remove all legacy bullpen payloads."""
+    requested = requested_as_of_date or _bullpen_pit_cutoff_for_row(
+        {"game_date": game_date}
+    )
+    game_data["bullpen_home"] = {}
+    game_data["bullpen_away"] = {}
+
+    def _apply(side: str, team_name: str, team_id: Optional[int]) -> Dict[str, Any]:
+        entity_id = TEAM_TTE_PIT_ENTITY_IDS.get(team_name)
+        mapping_failure = entity_id is None
+        if entity_id is None:
+            snapshot = {
+                "team_id": team_id,
+                "season": season,
+                "requested_as_of_date": requested,
+                "current_bullpen_found": False,
+                "prior_baseline_found": False,
+                "current": {},
+                "prior": {},
+                "source_fingerprints": {},
+            }
+        else:
+            snapshot = snapshot_builder.build_snapshot(
+                team_id=entity_id,
+                season=season,
+                requested_as_of_date=requested,
+            )
+        adapted = adapter(snapshot)
+        adjustment = calculate_pit_bullpen_adjustment(adapted)
+        current = snapshot.get("current", {})
+        prior = snapshot.get("prior", {})
+        return {
+            **adapted,
+            **adjustment,
+            "side": side,
+            "team_id": team_id,
+            "pit_entity_id": entity_id,
+            "team_name": team_name,
+            "mapping_failure": mapping_failure,
+            "requested_as_of_date": requested,
+            "current_as_of_date": snapshot.get("current_as_of_date"),
+            "prior_baseline_as_of_date": snapshot.get(
+                "prior_baseline_as_of_date"
+            ),
+            "current_starter_pitches_included": int(
+                current.get("starter_pitches_included") or 0
+            ),
+            "prior_starter_pitches_included": int(
+                prior.get("starter_pitches_included") or 0
+            ),
+            "legacy_bullpen_blocked": True,
+        }
+
+    home = _apply(
+        "home",
+        game_data.get("home_team", {}).get("name", ""),
+        game_data.get("home_team_id"),
+    )
+    away = _apply(
+        "away",
+        game_data.get("away_team", {}).get("name", ""),
+        game_data.get("away_team_id"),
+    )
+    metadata = {
+        "requested_as_of_date": requested,
+        "home": home,
+        "away": away,
+        "legacy_bullpen_blocked": True,
+        "home_bullpen_applies_to": "away_lambda",
+        "away_bullpen_applies_to": "home_lambda",
+        "adjustment_policy": "neutral_only_no_compatible_legacy_mapping",
+    }
+    game_data["experimental_bullpen_pit"] = metadata
+    return metadata
+
+
 def team_tte_pit_skip_reason(metadata: Dict[str, Any]) -> Optional[str]:
     """Return strict Team/TTE PIT skip reason, or None when both sides are covered."""
     home_missing = metadata.get("home", {}).get("lambda_offense") is None
@@ -1155,6 +1287,141 @@ def _defense_pit_duplicate_key_count(cache_db: Path) -> int:
     return int(row[0]) if row else 0
 
 
+def _update_bullpen_pit_usage(
+    usage: Dict[str, Any],
+    metadata: Dict[str, Any],
+    *,
+    game_date: str,
+) -> None:
+    usage["games_attempted"] += 1
+    if metadata.get("legacy_bullpen_blocked"):
+        usage["legacy_bullpen_calls_blocked"] += 1
+    requested = _parse_utc(metadata.get("requested_as_of_date"))
+    for side in ("home", "away"):
+        item = metadata.get(side, {})
+        source = item.get("provenance_source", "neutral_bullpen_adjustment")
+        if source == "current_bullpen_pit":
+            usage["current_only_bullpen_pit_uses"] += 1
+        elif source == "current_prior_bullpen_blend":
+            usage["current_prior_blended_uses"] += 1
+        elif source == "prior_season_bullpen_baseline":
+            usage["prior_only_baseline_uses"] += 1
+        else:
+            usage["neutral_bullpen_uses"] += 1
+
+        if not item.get("current_bullpen_found"):
+            usage["missing_current_bullpen"] += 1
+        if (
+            item.get("current_bullpen_found")
+            and int(item.get("current_bf") or 0) < 200
+        ):
+            usage["current_thin_bullpen"] += 1
+
+        current_as_of = _parse_utc(item.get("current_as_of_date"))
+        if current_as_of and requested and current_as_of > requested:
+            usage["future_snapshot_violations"] += 1
+        if current_as_of and current_as_of.date().isoformat() >= str(game_date)[:10]:
+            usage["same_day_violations"] += 1
+
+        fingerprints = item.get("source_fingerprints", {})
+        required_fingerprints = {
+            "current_bullpen_pit": ("current_bullpen_pit",),
+            "current_prior_bullpen_blend": (
+                "current_bullpen_pit",
+                "prior_season_bullpen_baseline",
+            ),
+            "prior_season_bullpen_baseline": (
+                "prior_season_bullpen_baseline",
+            ),
+        }.get(source, ())
+        usage["missing_fingerprints"] += sum(
+            not fingerprints.get(key) for key in required_fingerprints
+        )
+        if (
+            int(item.get("current_starter_pitches_included") or 0) > 0
+            or int(item.get("prior_starter_pitches_included") or 0) > 0
+        ):
+            usage["starter_contamination_violations"] += 1
+
+
+def _append_bullpen_pit_sample(
+    usage: Dict[str, Any],
+    *,
+    game_pk: int,
+    game_date: str,
+    home_team: str,
+    away_team: str,
+    metadata: Dict[str, Any],
+) -> None:
+    if len(usage["samples"]) >= 3:
+        return
+    usage["samples"].append(
+        {
+            "game_pk": game_pk,
+            "game_date": game_date,
+            "home_team": home_team,
+            "away_team": away_team,
+            "requested_as_of_date": metadata.get("requested_as_of_date"),
+            "home_bullpen_pit": metadata.get("home"),
+            "away_bullpen_pit": metadata.get("away"),
+            "legacy_bullpen_blocked": metadata.get("legacy_bullpen_blocked"),
+        }
+    )
+
+
+def _bullpen_pit_usage_summary(
+    usage: Dict[str, Any],
+    *,
+    games_processed: int,
+    failures: int,
+) -> Dict[str, Any]:
+    return {
+        "games_attempted": usage["games_attempted"],
+        "games_processed": games_processed,
+        "failures": failures,
+        "current_only_bullpen_pit_uses": usage[
+            "current_only_bullpen_pit_uses"
+        ],
+        "current_prior_blended_uses": usage["current_prior_blended_uses"],
+        "prior_only_baseline_uses": usage["prior_only_baseline_uses"],
+        "neutral_bullpen_uses": usage["neutral_bullpen_uses"],
+        "missing_current_bullpen": usage["missing_current_bullpen"],
+        "current_thin_bullpen": usage["current_thin_bullpen"],
+        "legacy_bullpen_calls_blocked": usage[
+            "legacy_bullpen_calls_blocked"
+        ],
+        "future_snapshot_violations": usage["future_snapshot_violations"],
+        "same_day_violations": usage["same_day_violations"],
+        "missing_fingerprints": usage["missing_fingerprints"],
+        "duplicate_pit_keys": usage["duplicate_pit_keys"],
+        "starter_contamination_violations": usage[
+            "starter_contamination_violations"
+        ],
+        "adjustment_policy": "neutral_only_no_compatible_legacy_mapping",
+        "sample_games": usage["samples"],
+    }
+
+
+def _bullpen_pit_duplicate_key_count(cache_db: Path) -> int:
+    with sqlite3.connect(cache_db) as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT 1
+                FROM pit_metric_cache
+                WHERE namespace IN (
+                    'savant.bullpen.relief_appearance.daily',
+                    'savant.team_bullpen.rolling',
+                    'savant.team_bullpen.prior_baseline'
+                )
+                GROUP BY namespace, entity_id, season, as_of_date, source
+                HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def _parse_utc(value: Any) -> Optional[datetime]:
     if not value:
         return None
@@ -1202,6 +1469,43 @@ def _apply_defense_stage(
     return lh, la, {"mode": "none", "legacy_defense_called": False}
 
 
+def _apply_bullpen_stage(
+    lh: float,
+    la: float,
+    game_data: Dict[str, Any],
+    *,
+    use_bullpen_pit: bool,
+) -> Tuple[float, float, Dict[str, Any]]:
+    """Apply either fetch-free Bullpen PIT metadata or the legacy engine."""
+    if use_bullpen_pit:
+        metadata = game_data.get("experimental_bullpen_pit")
+        if metadata is None:
+            raise ValueError("Bullpen PIT metadata is required in experimental mode")
+        home_multiplier = float(
+            metadata.get("home", {}).get("applied_multiplier", 1.0)
+        )
+        away_multiplier = float(
+            metadata.get("away", {}).get("applied_multiplier", 1.0)
+        )
+        return (
+            lh * away_multiplier,
+            la * home_multiplier,
+            {
+                "mode": "experimental_bullpen_pit",
+                "legacy_bullpen_called": False,
+                "home_multiplier_on_away_lambda": home_multiplier,
+                "away_multiplier_on_home_lambda": away_multiplier,
+            },
+        )
+
+    if game_data.get("bullpen_home") or game_data.get("bullpen_away"):
+        lh_bp, la_bp, metadata = adjust_for_bullpen(lh, la, game_data)
+        metadata["mode"] = "legacy_bullpen"
+        metadata["legacy_bullpen_called"] = True
+        return lh_bp, la_bp, metadata
+    return lh, la, {"mode": "none", "legacy_bullpen_called": False}
+
+
 # ── pipeline runner ────────────────────────────────────────────────────────
 
 def run_pipeline(
@@ -1217,6 +1521,9 @@ def run_pipeline(
     use_defense_pit: bool = False,
     defense_pit_snapshot_builder: Any = None,
     defense_pit_adapter: Any = None,
+    use_bullpen_pit: bool = False,
+    bullpen_pit_snapshot_builder: Any = None,
+    bullpen_pit_adapter: Any = None,
 ) -> Dict[str, Any]:
     """Run the full pipeline identical to run_module.py.
 
@@ -1238,6 +1545,7 @@ def run_pipeline(
     tte_active = False
     team_tte_pit_meta = None
     defense_pit_meta = None
+    bullpen_pit_meta = None
     if use_team_tte_pit:
         if team_tte_pit_snapshot_builder is None or team_tte_pit_adapter is None:
             raise ValueError("Team/TTE PIT mode requires snapshot builder and adapter")
@@ -1279,6 +1587,20 @@ def run_pipeline(
                 snapshot_builder=defense_pit_snapshot_builder,
                 adapter=defense_pit_adapter,
                 requested_as_of_date=game_data.get("defense_pit_requested_as_of_date"),
+            )
+
+    if use_bullpen_pit:
+        bullpen_pit_meta = game_data.get("experimental_bullpen_pit")
+        if bullpen_pit_meta is None:
+            if bullpen_pit_snapshot_builder is None or bullpen_pit_adapter is None:
+                raise ValueError("Bullpen PIT mode requires snapshot builder and adapter")
+            bullpen_pit_meta = apply_experimental_bullpen_pit_mode(
+                game_data=game_data,
+                season=season,
+                game_date=str(game_data.get("game_date", "")),
+                snapshot_builder=bullpen_pit_snapshot_builder,
+                adapter=bullpen_pit_adapter,
+                requested_as_of_date=game_data.get("bullpen_pit_requested_as_of_date"),
             )
 
     # ── Kalman adjustment (walk-forward: only sees games prior to this one) ───
@@ -1357,8 +1679,13 @@ def run_pipeline(
 
     # ── PASO 6: Bullpen Engine ────────────────────────────────────────────────
     _lh_pre, _la_pre = lh, la
-    if game_data.get("bullpen_home") or game_data.get("bullpen_away"):
-        lh_bp, la_bp, _ = adjust_for_bullpen(lh, la, game_data)
+    if use_bullpen_pit or game_data.get("bullpen_home") or game_data.get("bullpen_away"):
+        lh_bp, la_bp, _bullpen_meta = _apply_bullpen_stage(
+            lh,
+            la,
+            game_data,
+            use_bullpen_pit=use_bullpen_pit,
+        )
         _raw_h = lh_bp / _lh_pre if _lh_pre else 1.0
         _raw_a = la_bp / _la_pre if _la_pre else 1.0
     else:
@@ -1416,6 +1743,7 @@ def run_pipeline(
         "stage_factors": _sf,
         "team_tte_pit": team_tte_pit_meta,
         "defense_pit": defense_pit_meta,
+        "bullpen_pit": bullpen_pit_meta,
         "n_mc":        mc["n"],
     }
 
@@ -1477,11 +1805,16 @@ def generate_report(
     out_path: Path,
     team_tte_pit_summary: Optional[Dict[str, Any]] = None,
     defense_pit_summary: Optional[Dict[str, Any]] = None,
+    bullpen_pit_summary: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Compute and print a full backtest summary; save JSON sidecar."""
     n = len(results)
     if n == 0:
-        if team_tte_pit_summary is not None or defense_pit_summary is not None:
+        if (
+            team_tte_pit_summary is not None
+            or defense_pit_summary is not None
+            or bullpen_pit_summary is not None
+        ):
             report = {
                 "run_at": datetime.now(timezone.utc).isoformat(),
                 "total_games": 0,
@@ -1491,6 +1824,8 @@ def generate_report(
                 report["team_tte_pit"] = team_tte_pit_summary
             if defense_pit_summary is not None:
                 report["defense_pit"] = defense_pit_summary
+            if bullpen_pit_summary is not None:
+                report["bullpen_pit"] = bullpen_pit_summary
             report_path = out_path / f"backtest_report_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
             report_path.write_text(json.dumps(report, indent=2))
             print(f"\nNo scored results. Report saved → {report_path}")
@@ -1743,6 +2078,8 @@ def generate_report(
         }
     if defense_pit_summary is not None:
         report["defense_pit"] = defense_pit_summary
+    if bullpen_pit_summary is not None:
+        report["bullpen_pit"] = bullpen_pit_summary
 
     # ── save JSON ────────────────────────────────────────────────────────────
     report_path = out_path / f"backtest_report_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
@@ -1851,6 +2188,10 @@ def main() -> None:
                         help="Use isolated contact-adjusted Team Defense PIT snapshots")
     parser.add_argument("--defense-pit-cache-db", type=Path, default=None,
                         help="PIT cache DB for --use-defense-pit")
+    parser.add_argument("--use-bullpen-pit", action="store_true",
+                        help="Use isolated relief-only Team Bullpen PIT snapshots")
+    parser.add_argument("--bullpen-pit-cache-db", type=Path, default=None,
+                        help="PIT cache DB for --use-bullpen-pit")
     parser.add_argument("--technical-pit-coverage-only", action="store_true",
                         help="Trace PIT coverage/provenance without scoring predictions")
     args = parser.parse_args()
@@ -1861,8 +2202,13 @@ def main() -> None:
         parser.error("--team-tte-pit-cache-db is required with --use-team-tte-pit")
     if args.use_defense_pit and not args.defense_pit_cache_db:
         parser.error("--defense-pit-cache-db is required with --use-defense-pit")
+    if args.use_bullpen_pit and not args.bullpen_pit_cache_db:
+        parser.error("--bullpen-pit-cache-db is required with --use-bullpen-pit")
     if args.technical_pit_coverage_only and not (
-        args.experimental_pitcher_pit_mode or args.use_team_tte_pit or args.use_defense_pit
+        args.experimental_pitcher_pit_mode
+        or args.use_team_tte_pit
+        or args.use_defense_pit
+        or args.use_bullpen_pit
     ):
         parser.error("--technical-pit-coverage-only requires at least one PIT mode")
 
@@ -1944,6 +2290,23 @@ def main() -> None:
             args.defense_pit_cache_db,
         )
 
+    bullpen_pit_snapshot_builder = None
+    bullpen_pit_adapter = None
+    if args.use_bullpen_pit:
+        from modules.baseball_module.advanced_pit_enrichment import (
+            TeamBullpenDailySnapshotBuilder,
+            adapt_bullpen_pit_snapshot,
+        )
+
+        bullpen_pit_snapshot_builder = TeamBullpenDailySnapshotBuilder(
+            cache_db=args.bullpen_pit_cache_db
+        )
+        bullpen_pit_adapter = adapt_bullpen_pit_snapshot
+        log.info(
+            "Bullpen PIT mode ENABLED | pit_cache_db=%s",
+            args.bullpen_pit_cache_db,
+        )
+
     # ── load Savant + FanGraphs data per season ──────────────────────────────
     _enrich_cache_dir = ROOT / ".cache"
     savant_by_season: Dict[int, Dict[int, Dict]] = {}
@@ -1973,7 +2336,11 @@ def main() -> None:
 
     # ── prefetch mode ───────────────────────────────────────────────────────
     if args.prefetch:
-        prefetch_team_stats(api, seasons)
+        prefetch_team_stats(
+            api,
+            seasons,
+            include_legacy_bullpen=not args.use_bullpen_pit,
+        )
         log.info("Pre-fetching starters for %d games …", len(rows))
         for i, row in enumerate(rows, 1):
             fetch_starters(row["game_pk"], session, cache)
@@ -2025,7 +2392,11 @@ def main() -> None:
         return
 
     # ── pre-warm team stats ─────────────────────────────────────────────────
-    prefetch_team_stats(api, seasons)
+    prefetch_team_stats(
+        api,
+        seasons,
+        include_legacy_bullpen=not args.use_bullpen_pit,
+    )
 
     # ── walk-forward learning state reset ──────────────────────────────────
     # Three adaptive structures must be reset before the walk-forward loop:
@@ -2126,6 +2497,26 @@ def main() -> None:
         "mapping_failures": 0,
         "samples": [],
     }
+    bullpen_pit_usage = {
+        "games_attempted": 0,
+        "current_only_bullpen_pit_uses": 0,
+        "current_prior_blended_uses": 0,
+        "prior_only_baseline_uses": 0,
+        "neutral_bullpen_uses": 0,
+        "missing_current_bullpen": 0,
+        "current_thin_bullpen": 0,
+        "legacy_bullpen_calls_blocked": 0,
+        "future_snapshot_violations": 0,
+        "same_day_violations": 0,
+        "missing_fingerprints": 0,
+        "duplicate_pit_keys": (
+            _bullpen_pit_duplicate_key_count(args.bullpen_pit_cache_db)
+            if args.use_bullpen_pit
+            else 0
+        ),
+        "starter_contamination_violations": 0,
+        "samples": [],
+    }
     t0 = time.time()
 
     # F3: track last game date AND venue per team to detect meaningful B2B.
@@ -2190,6 +2581,7 @@ def main() -> None:
                 use_pitcher_full_season_fallback=not args.experimental_pitcher_pit_mode,
                 use_team_full_season_offense_base=not args.use_team_tte_pit,
                 use_team_full_season_defense=not args.use_defense_pit,
+                use_legacy_full_season_bullpen=not args.use_bullpen_pit,
             )
             if args.experimental_pitcher_pit_mode:
                 pit_meta = apply_experimental_pitcher_pit_mode(
@@ -2248,6 +2640,26 @@ def main() -> None:
                     defense_meta,
                     game_date=game_date,
                 )
+            bullpen_meta = None
+            if args.use_bullpen_pit:
+                game_data["bullpen_pit_requested_as_of_date"] = (
+                    _bullpen_pit_cutoff_for_row(row)
+                )
+                bullpen_meta = apply_experimental_bullpen_pit_mode(
+                    game_data=game_data,
+                    season=season,
+                    game_date=game_date,
+                    requested_as_of_date=game_data[
+                        "bullpen_pit_requested_as_of_date"
+                    ],
+                    snapshot_builder=bullpen_pit_snapshot_builder,
+                    adapter=bullpen_pit_adapter,
+                )
+                _update_bullpen_pit_usage(
+                    bullpen_pit_usage,
+                    bullpen_meta,
+                    game_date=game_date,
+                )
             if args.use_team_tte_pit:
                 game_data["team_tte_pit_requested_as_of_date"] = _team_tte_pit_cutoff_for_row(row)
                 team_meta = apply_experimental_team_tte_pit_mode(
@@ -2299,6 +2711,21 @@ def main() -> None:
                         away_team=away_name,
                         metadata=defense_meta or {},
                     )
+                if args.use_bullpen_pit:
+                    _apply_bullpen_stage(
+                        1.0,
+                        1.0,
+                        game_data,
+                        use_bullpen_pit=True,
+                    )
+                    _append_bullpen_pit_sample(
+                        bullpen_pit_usage,
+                        game_pk=game_pk,
+                        game_date=game_date,
+                        home_team=home_name,
+                        away_team=away_name,
+                        metadata=bullpen_meta or {},
+                    )
                 n_ok += 1
                 continue
             # F3: inject B2B flags computed from schedule context above
@@ -2318,6 +2745,9 @@ def main() -> None:
                 use_defense_pit=args.use_defense_pit,
                 defense_pit_snapshot_builder=defense_pit_snapshot_builder,
                 defense_pit_adapter=defense_pit_adapter,
+                use_bullpen_pit=args.use_bullpen_pit,
+                bullpen_pit_snapshot_builder=bullpen_pit_snapshot_builder,
+                bullpen_pit_adapter=bullpen_pit_adapter,
             )
             # persist to DB
             update_game_outcomes(
@@ -2377,6 +2807,7 @@ def main() -> None:
                 "clv_away": (pred["p_away"] / pin_fa - 1.0) if (pin_fa and pin_fa > 0) else None,
                 "team_tte_pit":    pred.get("team_tte_pit"),
                 "defense_pit":     pred.get("defense_pit"),
+                "bullpen_pit":     pred.get("bullpen_pit"),
             })
             if args.use_defense_pit:
                 _append_defense_pit_sample(
@@ -2386,6 +2817,15 @@ def main() -> None:
                     home_team=home_name,
                     away_team=away_name,
                     metadata=pred.get("defense_pit") or {},
+                )
+            if args.use_bullpen_pit:
+                _append_bullpen_pit_sample(
+                    bullpen_pit_usage,
+                    game_pk=game_pk,
+                    game_date=game_date,
+                    home_team=home_name,
+                    away_team=away_name,
+                    metadata=pred.get("bullpen_pit") or {},
                 )
             n_ok += 1
 
@@ -2471,6 +2911,15 @@ def main() -> None:
         )
         print("\nDEFENSE PIT SUMMARY")
         print(json.dumps(defense_pit_summary, indent=2, sort_keys=True))
+    bullpen_pit_summary = None
+    if args.use_bullpen_pit:
+        bullpen_pit_summary = _bullpen_pit_usage_summary(
+            bullpen_pit_usage,
+            games_processed=n_ok,
+            failures=n_err,
+        )
+        print("\nBULLPEN PIT SUMMARY")
+        print(json.dumps(bullpen_pit_summary, indent=2, sort_keys=True))
 
     if args.technical_pit_coverage_only:
         coverage_report = {
@@ -2507,6 +2956,7 @@ def main() -> None:
                 else None
             ),
             "defense_pit": defense_pit_summary,
+            "bullpen_pit": bullpen_pit_summary,
         }
         report_path = args.report_dir / (
             f"pit_coverage_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -2556,6 +3006,7 @@ def main() -> None:
             else None
         ),
         defense_pit_summary=defense_pit_summary,
+        bullpen_pit_summary=bullpen_pit_summary,
     )
     conn.close()
 
