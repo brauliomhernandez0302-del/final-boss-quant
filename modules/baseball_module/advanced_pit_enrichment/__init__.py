@@ -12,10 +12,32 @@ from .pit_cache import PITCache, PITCacheRecord
 from .pitcher_prior_baseline import PitcherPriorBaselinePersistence
 from .pitcher_engine_snapshot_adapter import adapt_unified_pitcher_snapshot
 from .raw_savant_events_cache import (
+    RawSavantBullpenPitch,
     RawSavantEvent,
     RawSavantEventsCache,
     RawSavantTeamDefenseEvent,
 )
+from .bullpen_relief_appearance_builder import (
+    BullpenPITNamespaces,
+    BullpenPITSources,
+    BullpenReliefAppearanceBuilder,
+    ReliefAppearanceBuildResult,
+    ReliefAppearanceFact,
+    RejectedBullpenTeamGame,
+    fielding_team_for_bullpen_pitch,
+)
+from .bullpen_pit_builder import (
+    TeamBullpenDailySnapshotBuilder,
+    TeamBullpenMetrics,
+    TeamBullpenPITBuilder,
+    aggregate_team_bullpen_metrics,
+    workload_facts,
+)
+from .bullpen_prior_baseline import (
+    BullpenPriorBaselineBuildResult,
+    BullpenPriorBaselineBuilder,
+)
+from .bullpen_pit_adapter import adapt_bullpen_pit_snapshot
 from .savant_daily_aggregator import SavantDailyAggregator, SavantDailyPitcherMetrics
 from .savant_raw_ingestor import SavantRawIngestionSummary, SavantRawIngestor
 from .savant_offense_daily_aggregator import (
@@ -63,9 +85,25 @@ __all__ = [
     "PITCacheRecord",
     "PitcherPriorBaselinePersistence",
     "adapt_unified_pitcher_snapshot",
+    "RawSavantBullpenPitch",
     "RawSavantEvent",
     "RawSavantEventsCache",
     "RawSavantTeamDefenseEvent",
+    "BullpenPITNamespaces",
+    "BullpenPITSources",
+    "BullpenReliefAppearanceBuilder",
+    "ReliefAppearanceBuildResult",
+    "ReliefAppearanceFact",
+    "RejectedBullpenTeamGame",
+    "fielding_team_for_bullpen_pitch",
+    "TeamBullpenDailySnapshotBuilder",
+    "TeamBullpenMetrics",
+    "TeamBullpenPITBuilder",
+    "aggregate_team_bullpen_metrics",
+    "workload_facts",
+    "BullpenPriorBaselineBuildResult",
+    "BullpenPriorBaselineBuilder",
+    "adapt_bullpen_pit_snapshot",
     "SavantDailyAggregator",
     "SavantDailyPitcherMetrics",
     "SavantRawIngestionSummary",

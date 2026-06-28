@@ -93,6 +93,27 @@ class RawSavantTeamDefenseEvent:
     bb_type: str | None
 
 
+@dataclass(frozen=True)
+class RawSavantBullpenPitch:
+    """Projected pitch row used by the isolated Bullpen PIT builders."""
+
+    game_date: str
+    game_pk: int
+    at_bat_number: int
+    pitch_number: int
+    pitcher: int | None
+    events: str | None
+    launch_speed: float | None
+    estimated_woba_using_speedangle: float | None
+    woba_value: float | None
+    woba_denom: float | None
+    launch_speed_angle: int | None
+    home_team: str | None
+    away_team: str | None
+    inning_topbot: str | None
+    source_fingerprint: str
+
+
 class RawSavantEventsCache:
     """Persistent raw event cache keyed by Statcast pitch identity."""
 
@@ -354,6 +375,73 @@ class RawSavantEventsCache:
                         row["estimated_ba_using_speedangle"]
                     ),
                     bb_type=_optional_str(row["bb_type"]),
+                )
+
+    def iter_bullpen_pitches_by_date_range(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> Iterable[RawSavantBullpenPitch]:
+        """Stream chronological pitch facts needed for role-safe bullpen PIT.
+
+        Team context is projected from ``raw_json`` inside SQLite. The query is
+        ordered by game and pitch identity so the consumer can identify the
+        first pitcher for each fielding team without materializing a season.
+        """
+        _validate_date(start_date, field_name="start_date")
+        _validate_date(end_date, field_name="end_date")
+        if end_date < start_date:
+            raise ValueError("end_date must be on or after start_date")
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    game_date,
+                    game_pk,
+                    at_bat_number,
+                    pitch_number,
+                    pitcher,
+                    events,
+                    launch_speed,
+                    estimated_woba_using_speedangle,
+                    woba_value,
+                    woba_denom,
+                    launch_speed_angle,
+                    json_extract(raw_json, '$.home_team') AS home_team,
+                    json_extract(raw_json, '$.away_team') AS away_team,
+                    COALESCE(
+                        json_extract(raw_json, '$.inning_topbot'),
+                        json_extract(raw_json, '$.inning_half')
+                    ) AS inning_topbot,
+                    source_fingerprint
+                FROM raw_savant_events
+                WHERE game_date >= ?
+                  AND game_date <= ?
+                ORDER BY game_pk, at_bat_number, pitch_number
+                """,
+                (start_date, end_date),
+            )
+            for row in rows:
+                yield RawSavantBullpenPitch(
+                    game_date=str(row["game_date"]),
+                    game_pk=int(row["game_pk"]),
+                    at_bat_number=int(row["at_bat_number"]),
+                    pitch_number=int(row["pitch_number"]),
+                    pitcher=_nullable_int(row["pitcher"]),
+                    events=_optional_str(row["events"]),
+                    launch_speed=_optional_float(row["launch_speed"]),
+                    estimated_woba_using_speedangle=_optional_float(
+                        row["estimated_woba_using_speedangle"]
+                    ),
+                    woba_value=_optional_float(row["woba_value"]),
+                    woba_denom=_optional_float(row["woba_denom"]),
+                    launch_speed_angle=_nullable_int(row["launch_speed_angle"]),
+                    home_team=_optional_str(row["home_team"]),
+                    away_team=_optional_str(row["away_team"]),
+                    inning_topbot=_optional_str(row["inning_topbot"]),
+                    source_fingerprint=str(row["source_fingerprint"]),
                 )
 
     def count_events_by_date_range(self, *, start_date: str, end_date: str) -> int:
