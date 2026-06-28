@@ -62,7 +62,11 @@ from modules.baseball_module.hfa.park_weather_engine import adjust_for_park_and_
 from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
 from modules.baseball_module.context_engine.defensive_efficiency_engine import adjust_for_defense
 from modules.baseball_module.context_engine.pitcher_engine import adjust_for_pitchers
-from modules.baseball_module.context_engine.bullpen_engine import adjust_for_bullpen
+from modules.baseball_module.context_engine.bullpen_engine import (
+    adjust_for_bullpen,
+    BULLPEN_CLAMP_LOW,
+    BULLPEN_CLAMP_HIGH,
+)
 from modules.baseball_module.context_engine.contextual_engine import adjust_for_context
 from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced, F5_SCALE
 
@@ -985,27 +989,143 @@ def apply_experimental_defense_pit_mode(
     return metadata
 
 
+# ── Bullpen PIT: PIT-native league averages (Savant, reliever-only) ──────────
+_PIT_LG_XWOBA_AG    = 0.312   # xwOBA against, pitcher side
+_PIT_LG_K_BB        = 0.162   # K% − BB% for team relievers
+_PIT_LG_BARREL_PC   = 0.085   # barrel per contact for relievers
+_K_PIT_XWOBA        = 200     # Bayesian stabilisation constant (BF)
+_K_PIT_K_BB         = 180
+_PIT_INNINGS_WEIGHT = 0.40    # fixed (no starter avg_ips; ≈ 5.4 avg IPS)
+_PIT_PITCHES_PER_IN = 15.0    # pitch-to-inning conversion for workload
+_PIT_NORMAL_IP_3D   = 9.0     # expected bullpen load over 3 days (same as legacy)
+
+
+def _regress_bp(observed: float, mean: float, n: float, k: float) -> float:
+    """Bayesian regression toward mean. At n=0 → mean; at n=k → 50/50."""
+    if n <= 0:
+        return mean
+    return (observed * n + mean * k) / (n + k)
+
+
 def calculate_pit_bullpen_adjustment(
     adapted: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Return a fetch-free Bullpen PIT adjustment decision.
+    """Compute a PIT-native Bullpen lambda multiplier from xwOBA, K-BB%, and barrel rate.
 
-    The legacy multiplier cannot be reused safely: it requires staff ERA,
-    projected starter innings and workload expressed as innings. Bullpen PIT
-    intentionally contains none of those inputs. Until a separately validated
-    PIT-native mapping exists, every source remains a neutral 1.0 adjustment.
+    Signals (no ERA available in PIT data):
+      xwOBA against  0.50 — removes BABIP luck, most predictive
+      K% − BB%       0.35 — command/whiff stability for relievers
+      barrel/contact 0.15 — hard-contact indicator
+
+    All metrics are Bayesian-regressed toward league averages using
+    relief_batters_faced as the sample-size anchor.
+    Workload converts pitches_last_3_days to approximate innings.
     """
+    if adapted.get("neutral_fallback"):
+        return {
+            "applied_multiplier": 1.0,
+            "adjustment_formula": "neutral_only_no_data",
+            "mapping_status": "neutral",
+            "provenance_source": adapted.get(
+                "provenance_source", "neutral_bullpen_adjustment"
+            ),
+            "quality_metrics_used": adapted.get("quality_metrics", {}),
+            "workload_facts_used": adapted.get("workload_facts", {}),
+            "sample_size_status": adapted.get("sample_size_status"),
+            "source_fingerprints": adapted.get("source_fingerprints", {}),
+        }
+
+    quality  = adapted.get("quality_metrics") or {}
+    workload = adapted.get("workload_facts") or {}
+    tbf      = float(quality.get("relief_batters_faced") or 0.0)
+
+    def _to_f(v: Any) -> Optional[float]:
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    # xwOBA factor (higher xwOBA against → more runs → factor > 1)
+    xwoba_raw = _to_f(quality.get("xwoba_against"))
+    if xwoba_raw is not None:
+        xwoba_reg    = _regress_bp(xwoba_raw, _PIT_LG_XWOBA_AG, tbf, _K_PIT_XWOBA)
+        xwoba_factor = xwoba_reg / _PIT_LG_XWOBA_AG
+    else:
+        xwoba_factor = 1.0
+        xwoba_reg    = _PIT_LG_XWOBA_AG
+
+    # K%-BB% factor (higher K-BB → better command → fewer runs → factor < 1)
+    k_bb_raw = _to_f(quality.get("k_minus_bb_pct"))
+    if k_bb_raw is not None:
+        k_bb_reg    = _regress_bp(k_bb_raw, _PIT_LG_K_BB, tbf, _K_PIT_K_BB)
+        delta_k_bb  = k_bb_reg - _PIT_LG_K_BB
+        k_bb_factor = max(0.85, min(1.15, 1.0 - delta_k_bb * 1.5))
+    else:
+        k_bb_factor = 1.0
+        k_bb_reg    = _PIT_LG_K_BB
+
+    # Barrel-per-contact factor (higher → more hard contact → factor > 1)
+    barrel_raw = _to_f(quality.get("barrel_per_contact"))
+    if barrel_raw is not None:
+        barrel_reg    = _regress_bp(barrel_raw, _PIT_LG_BARREL_PC, tbf, _K_PIT_XWOBA)
+        barrel_factor = barrel_reg / _PIT_LG_BARREL_PC
+    else:
+        barrel_factor = 1.0
+        barrel_reg    = _PIT_LG_BARREL_PC
+
+    # 3-signal composite (no ERA in PIT data)
+    quality_raw  = (
+        xwoba_factor  * 0.50
+        + k_bb_factor   * 0.35
+        + barrel_factor * 0.15
+    )
+    quality_mult = max(BULLPEN_CLAMP_LOW, min(BULLPEN_CLAMP_HIGH, quality_raw))
+
+    # Workload: convert pitches → approx innings, same fatigue curve as legacy
+    pitches_3d   = float(workload.get("pitches_last_3_days") or 0.0)
+    ip_3d_approx = pitches_3d / _PIT_PITCHES_PER_IN if pitches_3d > 0 else _PIT_NORMAL_IP_3D
+    delta_ip     = ip_3d_approx - _PIT_NORMAL_IP_3D
+    if delta_ip > 0:
+        workload_mult = min(1.0 + delta_ip * 0.012, 1.10)
+    else:
+        workload_mult = max(1.0 + delta_ip * 0.005, 0.97)
+
+    # Extra fatigue for bullpens used on 3+ consecutive days
+    consecutive = float(workload.get("consecutive_days") or 0.0)
+    if consecutive > 2:
+        workload_mult = min(workload_mult * (1.0 + (consecutive - 2) * 0.01), 1.10)
+
+    raw_mult   = quality_mult * workload_mult
+
+    # Fixed innings weighting (no starter avg_ips available in PIT mode)
+    total_mult = 1.0 + _PIT_INNINGS_WEIGHT * (raw_mult - 1.0)
+    total_mult = max(BULLPEN_CLAMP_LOW, min(BULLPEN_CLAMP_HIGH, total_mult))
+
     return {
-        "applied_multiplier": 1.0,
-        "adjustment_formula": "neutral_only_no_compatible_legacy_mapping",
-        "mapping_status": "deferred",
-        "provenance_source": adapted.get(
-            "provenance_source", "neutral_bullpen_adjustment"
-        ),
+        "applied_multiplier":   round(total_mult, 4),
+        "adjustment_formula":   "pit_native_xwoba_kbb_barrel",
+        "mapping_status":       "active",
+        "xwoba_raw":            xwoba_raw,
+        "xwoba_reg":            round(xwoba_reg, 4),
+        "xwoba_factor":         round(xwoba_factor, 4),
+        "k_bb_raw":             k_bb_raw,
+        "k_bb_reg":             round(k_bb_reg, 4),
+        "k_bb_factor":          round(k_bb_factor, 4),
+        "barrel_raw":           barrel_raw,
+        "barrel_reg":           round(barrel_reg, 4),
+        "barrel_factor":        round(barrel_factor, 4),
+        "quality_mult":         round(quality_mult, 4),
+        "workload_mult":        round(workload_mult, 4),
+        "ip_3d_approx":         round(ip_3d_approx, 2),
+        "consecutive_days":     consecutive,
+        "raw_mult":             round(raw_mult, 4),
+        "innings_weight":       _PIT_INNINGS_WEIGHT,
+        "tbf":                  tbf,
+        "provenance_source":    adapted.get("provenance_source"),
         "quality_metrics_used": adapted.get("quality_metrics", {}),
-        "workload_facts_used": adapted.get("workload_facts", {}),
-        "sample_size_status": adapted.get("sample_size_status"),
-        "source_fingerprints": adapted.get("source_fingerprints", {}),
+        "workload_facts_used":  adapted.get("workload_facts", {}),
+        "sample_size_status":   adapted.get("sample_size_status"),
+        "source_fingerprints":  adapted.get("source_fingerprints", {}),
     }
 
 
@@ -1088,7 +1208,7 @@ def apply_experimental_bullpen_pit_mode(
         "legacy_bullpen_blocked": True,
         "home_bullpen_applies_to": "away_lambda",
         "away_bullpen_applies_to": "home_lambda",
-        "adjustment_policy": "neutral_only_no_compatible_legacy_mapping",
+        "adjustment_policy": "pit_native_xwoba_kbb_barrel",
     }
     game_data["experimental_bullpen_pit"] = metadata
     return metadata
@@ -1397,7 +1517,7 @@ def _bullpen_pit_usage_summary(
         "starter_contamination_violations": usage[
             "starter_contamination_violations"
         ],
-        "adjustment_policy": "neutral_only_no_compatible_legacy_mapping",
+        "adjustment_policy": "pit_native_xwoba_kbb_barrel",
         "sample_games": usage["samples"],
     }
 

@@ -175,21 +175,42 @@ def test_neutral_fallback_is_exactly_one(tmp_path):
     assert adapted["applied_multiplier"] == 1.0
 
 
-def test_pit_adjustment_mapping_is_explicitly_neutral_only():
+def test_pit_adjustment_formula_is_active():
+    # tbf=0 → Bayesian regression pulls xwOBA to league mean (0.312) so
+    # xwoba_factor ≈ 1.0; heavy workload (250 pitches) drives multiplier > 1.
     decision = backtest.calculate_pit_bullpen_adjustment(
         {
             "provenance_source": "current_bullpen_pit",
-            "quality_metrics": {"xwoba_against": 0.20},
+            "neutral_fallback": False,
+            "quality_metrics": {
+                "xwoba_against": 0.20,
+                "relief_batters_faced": 0,
+            },
             "workload_facts": {"pitches_last_3_days": 250},
             "sample_size_status": "sufficient",
             "source_fingerprints": {"current_bullpen_pit": "fp"},
         }
     )
 
-    assert decision["applied_multiplier"] == 1.0
-    assert decision["adjustment_formula"] == (
-        "neutral_only_no_compatible_legacy_mapping"
+    assert decision["adjustment_formula"] == "pit_native_xwoba_kbb_barrel"
+    assert decision["mapping_status"] == "active"
+    assert decision["applied_multiplier"] > 1.0  # heavy workload increases scoring
+
+
+def test_pit_adjustment_neutral_fallback_is_exactly_one():
+    decision = backtest.calculate_pit_bullpen_adjustment(
+        {
+            "provenance_source": "neutral_bullpen_adjustment",
+            "neutral_fallback": True,
+            "quality_metrics": {},
+            "workload_facts": {},
+            "sample_size_status": "neutral",
+            "source_fingerprints": {},
+        }
     )
+
+    assert decision["applied_multiplier"] == 1.0
+    assert decision["adjustment_formula"] == "neutral_only_no_data"
 
 
 def test_apply_mode_enforces_d_minus_one_and_clears_legacy_payload(tmp_path):
