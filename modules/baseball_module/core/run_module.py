@@ -217,47 +217,22 @@ def run_module(
             'pitcher_away': pitcher_away
         }
         # Normalizar game_data para los engines
-        _home_off   = game_data.get('home_offensive_stats') or {}
-        _away_off   = game_data.get('away_offensive_stats') or {}
         _home_pitch = game_data.get('home_pitching_stats') or {}
         _away_pitch = game_data.get('away_pitching_stats') or {}
+        # home_team/away_team only carry what ContextualEngine actually reads
+        # (rest_days, via _rest_days()) — team-level woba/ops/wrc_plus/wins/
+        # losses/streak/era/whip/runs_per_game were all traced to zero real
+        # consumers (2026-07-06 data_fetchers.py review) and removed; TTE
+        # already supplies the real offensive signal, and DefensiveEfficiency-
+        # Engine/pitcher fallback read _home_pitch/_away_pitch directly, not
+        # through this dict.
         game_data['home_team'] = {
             'name': home_team,
-            'runs_per_game': game_data.get('home_team_runs', {}).get('runs_scored_avg', LEAGUE_AVG_RUNS) if isinstance(game_data.get('home_team_runs'), dict) else LEAGUE_AVG_RUNS,
-            'wins': game_data.get('home_team_form', {}).get('wins', 5) if isinstance(game_data.get('home_team_form'), dict) else 5,
-            'losses': game_data.get('home_team_form', {}).get('losses', 5) if isinstance(game_data.get('home_team_form'), dict) else 5,
-            'last_10': game_data.get('home_team_form', {}).get('last_10', '5-5') if isinstance(game_data.get('home_team_form'), dict) else '5-5',
-            'streak': game_data.get('home_team_form', {}).get('streak', '') if isinstance(game_data.get('home_team_form'), dict) else '',
-            # Offense
-            'woba': _home_off.get('woba', 0.320),
-            'ops': _home_off.get('ops', 0.735),
-            'wrc_plus': _home_off.get('wrc_plus', 100.0),
-            # Defense — used by DefensiveEfficiencyEngine (PASO 4)
-            'runs_allowed_per_game': _home_pitch.get('runs_allowed_per_game', LEAGUE_AVG_RUNS),
-            'team_era': _home_pitch.get('team_era', 4.15),
-            'team_whip': _home_pitch.get('team_whip', 1.30),
-            # Rest
             'rest_days': game_data.get('home_days_rest', 1),
         }
         game_data['away_team'] = {
             'name': away_team,
-            'runs_per_game': game_data.get('away_team_runs', {}).get('runs_scored_avg', LEAGUE_AVG_RUNS) if isinstance(game_data.get('away_team_runs'), dict) else LEAGUE_AVG_RUNS,
-            'wins': game_data.get('away_team_form', {}).get('wins', 5) if isinstance(game_data.get('away_team_form'), dict) else 5,
-            'losses': game_data.get('away_team_form', {}).get('losses', 5) if isinstance(game_data.get('away_team_form'), dict) else 5,
-            'last_10': game_data.get('away_team_form', {}).get('last_10', '5-5') if isinstance(game_data.get('away_team_form'), dict) else '5-5',
-            'streak': game_data.get('away_team_form', {}).get('streak', '') if isinstance(game_data.get('away_team_form'), dict) else '',
-            # Offense
-            'woba': _away_off.get('woba', 0.320),
-            'ops': _away_off.get('ops', 0.735),
-            'wrc_plus': _away_off.get('wrc_plus', 100.0),
-            # Defense
-            'runs_allowed_per_game': _away_pitch.get('runs_allowed_per_game', LEAGUE_AVG_RUNS),
-            'team_era': _away_pitch.get('team_era', 4.15),
-            'team_whip': _away_pitch.get('team_whip', 1.30),
-            # Rest + travel
             'rest_days': game_data.get('away_days_rest', 1),
-            'miles_traveled': game_data.get('miles_traveled_away', 0),
-            'time_zones_crossed': game_data.get('time_zones_crossed_away', 0),
         }
         # Top-level travel keys used by HFA engine and pitcher engine
         game_data.setdefault('miles_traveled_away', 0)
@@ -292,6 +267,13 @@ def run_module(
             'era_vs_opp':            home_ps.get('era_vs_opp'),
             'whip_vs_opp':           home_ps.get('whip_vs_opp'),
             'ip_vs_opp':             home_ps.get('ip_vs_opp'),
+            # Season-to-date IP for the Pitcher Engine's Bayesian shrinkage
+            # (quality_mult weight = 32% — the largest sub-factor). Only the
+            # Savant/FanGraphs enrichment step below overwrote this before;
+            # when enrichment doesn't find the pitcher (rookies, call-ups,
+            # AAA-stat fallback pitchers), it silently stayed absent and
+            # collapsed quality_mult to exactly 1.0 regardless of real ERA.
+            'innings_pitched':       home_ps.get('innings_pitched', 0),
             # Platoon splits + opposing lineup handedness
             'platoon_splits':        home_ps.get('platoon_splits'),
         }
@@ -312,6 +294,9 @@ def run_module(
             'era_vs_opp':            away_ps.get('era_vs_opp'),
             'whip_vs_opp':           away_ps.get('whip_vs_opp'),
             'ip_vs_opp':             away_ps.get('ip_vs_opp'),
+            # See home_pitcher comment: fallback so quality_mult's Bayesian
+            # shrinkage isn't silently starved when enrichment misses this pitcher.
+            'innings_pitched':       away_ps.get('innings_pitched', 0),
             # Platoon splits + opposing lineup handedness
             'platoon_splits':        away_ps.get('platoon_splits'),
         }
@@ -400,6 +385,8 @@ def run_module(
                 logger.debug(f"   Lineup fetch skipped: {_le}")
 
         # ── True Talent Offense Engine — park-neutral λ_base ─────────────
+        _tte_home_meta: Dict[str, Any] = {}
+        _tte_away_meta: Dict[str, Any] = {}
         _tte_active = False
         if _TTE_AVAILABLE and home_team_id and away_team_id:
             try:
@@ -462,8 +449,15 @@ def run_module(
         # ── Team bias (LearningEngine) — corrects systematic model error per team ──
         # Applied after Kalman, before any engine modifies λ. The bias is
         # Kalman-dampened to avoid double-counting the 35% Kalman share.
-        _home_bias = _learning.compute_team_bias_kalman_adjusted(home_team, _season, "offense_home")
-        _away_bias = _learning.compute_team_bias_kalman_adjusted(away_team, _season, "offense_away")
+        # Pass this game's month so compute_multidim_bias can use the
+        # team × home_away × month tier when enough samples exist for it,
+        # instead of silently degrading to the home_away-only tier.
+        try:
+            _game_month = int(str(game_data.get('game_date', ''))[5:7])
+        except (ValueError, TypeError):
+            _game_month = None
+        _home_bias = _learning.compute_team_bias_kalman_adjusted(home_team, _season, "offense_home", month=_game_month)
+        _away_bias = _learning.compute_team_bias_kalman_adjusted(away_team, _season, "offense_away", month=_game_month)
         lh *= _home_bias
         la *= _away_bias
         if _home_bias != 1.0 or _away_bias != 1.0:
@@ -513,12 +507,14 @@ def run_module(
             logger.info(f"   ✅ Pitcher adjusted: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_pit:.3f})")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 3: CONTEXTUAL ENGINE (B2B + rest + umpire)
+        # PASO 3: CONTEXTUAL ENGINE (B2B + rest)
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # Posición intencional: ANTES del Bullpen Engine.
-        # El F5 snapshot se toma aquí: incluye pitcher + rest/umpire
+        # El F5 snapshot se toma aquí: incluye pitcher + rest
         # (ambos aplican al F5) y excluye bullpen (starters lanzan F5).
-        logger.info("\n🎯 PASO 3: Contextual Engine (rest + umpire)...")
+        # Umpire factor removido (E2 cleanup, docs/AUDIT_FINDINGS.md) — nunca
+        # activaba en producción (umpire_stats no se poblaba).
+        logger.info("\n🎯 PASO 3: Contextual Engine (rest)...")
         _lh_pre = lh; _la_pre = la
         lh_ctx, la_ctx, ctx_meta = adjust_for_context(lh, la, game_data)
         _raw_h_ctx = lh_ctx / _lh_pre if _lh_pre else 1.0
@@ -530,11 +526,9 @@ def run_module(
         results['metadata']['contextual'] = ctx_meta
         _stage_factors['home_context'] = _raw_h_ctx
         _stage_factors['away_context'] = _raw_a_ctx
-        _ump = ctx_meta['umpire']
         logger.info(
             f"   ✅ home_rest={ctx_meta['home_rest_reason']}(×{ctx_meta['home_rest_mult']:.3f})"
             f"  away_rest={ctx_meta['away_rest_reason']}(×{ctx_meta['away_rest_mult']:.3f})"
-            f"  ump={_ump['name']}(×{_ump['factor']:.3f})"
             f"  w={_w_ctx:.3f} → λ_h={lh:.3f}  λ_a={la:.3f}"
         )
 
@@ -587,6 +581,14 @@ def run_module(
         lh = _lh_pre * (1.0 + _w_bp * (_raw_h_bp - 1.0))
         la = _la_pre * (1.0 + _w_bp * (_raw_a_bp - 1.0))
         results['lambdas_history']['bullpen'] = {'lh': lh, 'la': la}
+        # TODO(stage_factors_naming): same inversion as pitcher (line 522) and
+        # defense (line ~647). "home_bullpen" stores the AWAY bullpen's
+        # multiplier on λ_home; "away_bullpen" stores the HOME bullpen's
+        # multiplier on λ_away — adjust_for_bullpen()'s own docstring says
+        # "Away bullpen → adjusts λ_home. Home bullpen → adjusts λ_away."
+        # Regression screen 2026-07-05 found no significant residual signal on
+        # either bullpen key (p=0.58/0.56), so lower urgency than defense, but
+        # rename together with pitcher/defense for correctness.
         _stage_factors['home_bullpen'] = _raw_h_bp
         _stage_factors['away_bullpen'] = _raw_a_bp
 
@@ -630,7 +632,14 @@ def run_module(
             _w_def = _weights.get("defense", 1.0)
             lh = _lh_pre * (1.0 + _w_def * (_raw_h_def - 1.0))
             la = _la_pre * (1.0 + _w_def * (_raw_a_def - 1.0))
-            _stage_factors['home_defense'] = _raw_h_def   # DEE ratio on lh
+            # TODO(stage_factors_naming): same inversion as pitcher (line 522).
+            # "home_defense" stores the AWAY team's fielding multiplier on λ_home.
+            # "away_defense" stores the HOME team's fielding multiplier on λ_away
+            # (confirmed real signal here — regression screen 2026-07-05 found
+            # p=0.0006 on this exact key, i.e. home-team defense's effect on away
+            # scoring). Rename together with pitcher/bullpen — same three-file
+            # coordination note applies.
+            _stage_factors['home_defense'] = _raw_h_def   # DEE ratio on lh (away_mult)
             _stage_factors['away_defense'] = _raw_a_def   # DEE ratio on la (home_mult)
             results['metadata']['defense'] = def_meta
             logger.info(
@@ -705,6 +714,14 @@ def run_module(
         # Coors + weak bullpen → λ≈9). Use [1.5, 12] as a sanity guard only.
         lh = max(1.5, min(lh, 12.0))
         la = max(1.5, min(la, 12.0))
+
+        # Explicit final-stage marker — the exact (lh, la) fed to Monte Carlo,
+        # so downstream consumers (ui/mlb.py) never have to guess "last
+        # pipeline stage present" via a hardcoded reverse-stage-name chain,
+        # which silently drifts stale every time the pipeline gets reordered
+        # or a stage is added/skipped (found 2026-07-06: ui/mlb.py's chain
+        # checked 'contextual', PASO 3, before 'hfa', the real last stage).
+        results['lambdas_history']['final'] = {'lh': lh, 'la': la}
 
         _has_real_pitcher = bool(
             game_data.get('pitcher_home', {}).get('fip') or
@@ -807,6 +824,19 @@ def run_module(
                 f5_total_over=_fetched_odds.get('f5_total_over'),
                 f5_total_under=_fetched_odds.get('f5_total_under'),
             )
+            # Real epistemic-confidence inputs (Fable v1: starter IP, TTE
+            # prior_weight, Kalman n_obs — see docs/AUDIT_FINDINGS.md "confidence
+            # ≈0.99 always" finding). Missing TTE data (fallback path) defaults
+            # prior_weight to 1.0 (worst case: no current-season signal at all),
+            # not silently high confidence.
+            game_meta = {
+                "home_prior_weight": _tte_home_meta.get("prior_weight", 1.0),
+                "away_prior_weight": _tte_away_meta.get("prior_weight", 1.0),
+                "home_sp_ip": game_data.get("pitcher_home", {}).get("innings_pitched", 0) or 0,
+                "away_sp_ip": game_data.get("pitcher_away", {}).get("innings_pitched", 0) or 0,
+                "home_kalman_n_obs": _learning.get_kalman_n_obs(home_team, "offense_home", _season),
+                "away_kalman_n_obs": _learning.get_kalman_n_obs(away_team, "offense_away", _season),
+            }
             value_results = evaluate_value_ultra(
                 mc_result=mc_results,
                 odds=game_odds,
@@ -816,6 +846,10 @@ def run_module(
                 away_samples=mc_results.get('away_samples'),
                 total_samples=mc_results.get('total_samples'),
                 analyze_f5=lh_f5 is not None,
+                game_meta=game_meta,
+                p_home_corrector=lambda p_home, market_prob: _learning.apply_platt_2d(
+                    p_home, market_prob, _season
+                ),
             )
             results['best_bets'] = value_results.get('global_recommendation', {}).get('all_opportunities', [])
             results['metadata']['value'] = value_results

@@ -32,7 +32,7 @@ from modules.baseball_module.context_engine.defensive_efficiency_engine import (
 )
 from modules.baseball_module.context_engine.pitcher_engine import _LG_XWOBA_ALLOWED
 from modules.baseball_module.offense.true_talent_engine import LG_XWOBA
-from config import LEAGUE_AVG_RUNS
+from config import LEAGUE_AVG_RUNS, LEAGUE_AVG_XWOBA
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -125,16 +125,19 @@ class TestB2BHomeFix:
 # ═══════════════════════════════════════════════════════════════════
 class TestXWOBAConsistency:
     """D1: three engines used different xwOBA league averages (0.312 vs 0.320).
-    All now use 0.312 (Statcast expected wOBA, distinct from traditional wOBA)."""
+    All now import LEAGUE_AVG_XWOBA from config.py — single source of truth,
+    so they can't drift apart again (previously each had its own local copy of
+    the same float, which is exactly how they drifted the first time and how
+    one of them went stale — see config.py's LEAGUE_AVG_XWOBA comment)."""
 
     def test_pitcher_engine_xwoba(self):
-        assert _LG_XWOBA_ALLOWED == pytest.approx(0.312)
+        assert _LG_XWOBA_ALLOWED == pytest.approx(LEAGUE_AVG_XWOBA)
 
     def test_bullpen_engine_xwoba(self):
-        assert _LG_XWOBA_AG == pytest.approx(0.312)
+        assert _LG_XWOBA_AG == pytest.approx(LEAGUE_AVG_XWOBA)
 
     def test_tte_xwoba(self):
-        assert LG_XWOBA == pytest.approx(0.312)
+        assert LG_XWOBA == pytest.approx(LEAGUE_AVG_XWOBA)
 
     def test_all_three_match(self):
         assert _LG_XWOBA_ALLOWED == _LG_XWOBA_AG == LG_XWOBA

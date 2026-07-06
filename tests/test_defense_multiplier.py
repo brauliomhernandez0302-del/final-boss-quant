@@ -2,9 +2,9 @@
 Tests for defense-related adjustments after the architecture split.
 
 Post-refactor ownership:
-  • Fielding (DER/OAA)         → DefensiveEfficiencyEngine  (PASO 4)
-  • Starting pitcher (ERA/FIP) → PitcherEngine              (PASO 5)
-  • Bullpen                    → BullpenEngine              (PASO 6)
+  • Starting pitcher (ERA/FIP) → PitcherEngine              (PASO 2)
+  • Bullpen                    → BullpenEngine              (PASO 4)
+  • Fielding (DER/OAA)         → DefensiveEfficiencyEngine  (PASO 6)
   • AutoCalibrator             → recent form + season context only
                                  (defense_mult removed to eliminate triple-counting)
 
@@ -14,6 +14,7 @@ Critical invariant preserved across all engines:
 """
 import pytest
 from config import LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP, LEAGUE_AVG_RUNS
+from modules.baseball_module.context_engine.defensive_efficiency_engine import _LG_DER
 
 
 # ── Defensive Efficiency Engine ────────────────────────────────────────────────
@@ -53,8 +54,8 @@ class TestDefensiveEfficiencyEngine:
     def test_league_average_der_neutral(self):
         engine = self._engine()
         game_data = {
-            "defense_home": {"der": 0.715, "bip": 2000, "oaa": None},
-            "defense_away": {"der": 0.715, "bip": 2000, "oaa": None},
+            "defense_home": {"der": _LG_DER, "bip": 2000, "oaa": None},
+            "defense_away": {"der": _LG_DER, "bip": 2000, "oaa": None},
         }
         lh, la, _ = engine.adjust_for_defense(4.5, 4.5, game_data)
         assert lh == pytest.approx(4.5, abs=0.01)

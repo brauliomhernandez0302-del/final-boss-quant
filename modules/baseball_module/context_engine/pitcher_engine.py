@@ -16,15 +16,16 @@ Responsibilities:
 
 Does NOT handle:
   Home field advantage           — HFA Engine
-  Ballpark / park factor         — HFA Engine (or future Park Engine)
-  Team offense / defense         — True Talent Engine + AutoCalibrator
+  Ballpark / park factor         — ParkWeatherEngine
+  Team offense                   — True Talent Engine
+  Team defense                   — Defensive Efficiency Engine
   Bullpen quality / workload     — Bullpen Engine (separate)
   Travel fatigue of position players — HFA Engine
 """
 
 from typing import Dict, Any, Tuple
 import logging
-from config import PITCHER_ENGINE_WEIGHTS, LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP
+from config import PITCHER_ENGINE_WEIGHTS, LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP, LEAGUE_AVG_XWOBA
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +35,23 @@ _LG_WHIP           = LEAGUE_AVG_WHIP    # 1.30
 _LG_K_PCT          = 0.220              # starter league-avg K%
 _LG_BB_PCT         = 0.080              # starter league-avg BB%
 _LG_K_BB           = _LG_K_PCT - _LG_BB_PCT   # 0.140
-_LG_XWOBA_ALLOWED  = 0.312              # Statcast xwOBA allowed, starter avg (aligned with Bullpen/TTE)
+_LG_XWOBA_ALLOWED  = LEAGUE_AVG_XWOBA   # single source of truth: config.py (aligned with Bullpen/TTE)
 _LG_BRL_PCT        = 8.0               # barrel% allowed, starter avg
 
-# Bayesian stabilisation constant for ERA estimators (TBF at 50% reliability).
-# Research-based: FIP/xFIP stabilise around 300-400 TBF; SIERA around 250.
-# Using 350 as a reasonable average across the fallback chain.
-_K_TBF_ERA   = 350
+# Bayesian stabilisation constants for ERA estimators (TBF at 50% reliability),
+# branched by which estimator actually won the fallback chain below. A single
+# uniform k=350 previously applied to all of them regardless of which one was
+# selected — since SIERA is picked FIRST when available (fastest-stabilizing
+# per its own cited research, k~250) but was assigned the SLOWEST group's
+# constant, SIERA-based estimates were systematically under-trusted (at
+# TBF=250, shrink_w came out ~58% instead of the correct 50%). Plain ERA
+# (least-preferred fallback, most BABIP/defense/luck-contaminated) gets a
+# larger k than FIP/xFIP — it deserves MORE shrinkage, not the same amount.
+_K_TBF_SIERA = 250
+_K_TBF_XFIP  = 350
+_K_TBF_XERA  = 350
+_K_TBF_FIP   = 350
+_K_TBF_ERA_RAW = 450
 
 # Away pitchers allow ~0.15 more ERA when pitching away from home.
 # Source: documented across multiple baseball research papers (e.g., Baseball Prospectus, FG).
@@ -144,17 +155,24 @@ class PitcherEngine:
 
         1. ERA estimator (SIERA → xFIP → xERA → FIP → ERA)
            Bayesian-regressed toward league average based on IP (TBF proxy),
-           so small samples early in the season don't overfit.
+           so small samples early in the season don't overfit. Stabilization
+           constant is branched by which estimator won (SIERA k=250,
+           xFIP/xERA/FIP k=350, raw ERA k=450) rather than one uniform value.
 
         2. Statcast xwOBA allowed — expected batting value vs this pitcher
            per PA (removes BABIP luck from batted-ball outcomes).
 
         3. Statcast barrel% allowed — predicts HR/XBH better than HR/9.
 
-        4. K%-BB% differential — most reliably stabilises and predicts
-           future ERA; reflects true command and swing-and-miss ability.
+        4. K%-BB% differential — only applied when the primary estimator
+           is raw ERA (which doesn't encode K%/BB% itself). When SIERA/xFIP/
+           xERA/FIP wins the fallback chain, this is skipped (set to 1.0):
+           those estimators' own published formulas already substantially
+           price in K%/BB%, confirmed empirically (corr(K%-BB%, SIERA)=-0.947
+           on real 2025 data) — applying it on top double-counted command skill.
 
-        Output clamped to [0.70, 1.35].
+        Output clamped to [0.60, 1.45] (widened 2026-07-05 from [0.70,1.35],
+        which was binding on ~11.5% of real qualified starters).
         """
         _era  = pitcher.get("era")
         era   = float(_era if _era is not None else _LG_ERA)
@@ -163,20 +181,29 @@ class PitcherEngine:
         xera  = pitcher.get("xera")
         siera = pitcher.get("siera")
 
-        # Best available ERA estimator (most predictive → least)
-        primary = float(
-            siera if siera is not None else
-            xfip  if xfip  is not None else
-            xera  if xera  is not None else
-            fip   if fip   is not None else
-            era
-        )
+        # Best available ERA estimator (most predictive → least), paired with
+        # its own stabilization constant so the shrinkage matches the metric
+        # actually selected instead of one uniform value for all of them.
+        # `encodes_k_bb` tracks whether the selected estimator's own published
+        # formula already prices in K%/BB% (SIERA, xFIP, xERA, and FIP are all
+        # substantially built from exactly those inputs) — used below to gate
+        # kbb_mult so it isn't re-pricing the same signal a second time.
+        if siera is not None:
+            primary, k_tbf, encodes_k_bb = float(siera), _K_TBF_SIERA, True
+        elif xfip is not None:
+            primary, k_tbf, encodes_k_bb = float(xfip), _K_TBF_XFIP, True
+        elif xera is not None:
+            primary, k_tbf, encodes_k_bb = float(xera), _K_TBF_XERA, True
+        elif fip is not None:
+            primary, k_tbf, encodes_k_bb = float(fip), _K_TBF_FIP, True
+        else:
+            primary, k_tbf, encodes_k_bb = era, _K_TBF_ERA_RAW, False
 
         # Bayesian regression: regress primary toward league avg based on IP sample.
-        # At IP=0 → 100% league avg. At IP≈81 (350 TBF) → 50/50. At IP=∞ → raw value.
+        # At IP=0 → 100% league avg. At IP=k_tbf → 50/50. At IP=∞ → raw value.
         ip_cur   = float(pitcher.get("innings_pitched") or 0)
         tbf_est  = max(0.0, ip_cur * 4.3)   # ~4.3 TBF per IP for starters
-        shrink_w = _K_TBF_ERA / (_K_TBF_ERA + tbf_est)
+        shrink_w = k_tbf / (k_tbf + tbf_est)
         primary_reg = primary * (1.0 - shrink_w) + _LG_ERA * shrink_w
         if not is_home:
             primary_reg += _AWAY_ERA_PENALTY
@@ -196,17 +223,37 @@ class PitcherEngine:
             if brl_pct is not None else 1.0
         )
 
-        # K%-BB% overlay — elite command (high K, low BB) means fewer runs
-        # Each 1% above league avg K-BB (14%) → ~1.5% fewer runs allowed
+        # K%-BB% overlay — elite command (high K, low BB) means fewer runs.
+        # Only applied when the primary estimator did NOT already encode K%/BB%
+        # (i.e. only for the raw-ERA fallback): empirically confirmed 2026-07-05
+        # via real 2025 qualified-starter data that corr(K%-BB%, SIERA)=-0.947 and
+        # corr(K%-BB%, FIP)=-0.808 — applying this on top of a SIERA/xFIP/xERA/FIP
+        # skill_mult re-prices command skill that's already priced in, compounding
+        # credit for one real signal. Raw ERA doesn't encode K/BB directly, so for
+        # that thin-data fallback population this remains the only command signal
+        # in the whole quality factor — kept at full strength there.
+        # Each 1% above league avg K-BB (14%) → ~1.5% fewer runs allowed.
         k_pct  = pitcher.get("k_pct")
         bb_pct = pitcher.get("bb_pct")
-        if k_pct is not None and bb_pct is not None:
+        if not encodes_k_bb and k_pct is not None and bb_pct is not None:
             k_bb_diff = (float(k_pct) - float(bb_pct)) - _LG_K_BB
             kbb_mult  = max(0.88, min(1.12, 1.0 - k_bb_diff * 1.5))
         else:
             kbb_mult = 1.0
 
-        multiplier = max(0.70, min(1.35, skill_mult * woba_mult * brl_mult * kbb_mult))
+        # Bounds widened 2026-07-05 from [0.70,1.35]: that range was catching
+        # real Cy Young-tier and back-of-rotation arms, not just garbage/missing
+        # data — 11.5% of 52 real 2025 qualified starters (with full Savant
+        # xwOBA/barrel overlays active) hit one boundary or the other. The
+        # "hedge against single-game variance" argument for a tight clamp is a
+        # category error: game-to-game outcome noise is already modeled by the
+        # Monte Carlo's own dispersion parameter — compressing the MEAN quality
+        # estimate here double-counts that uncertainty while destroying real
+        # signal. New bounds set from the true unclamped distribution across
+        # those 52 pitchers (range 0.6065-1.4067) with a small outward margin,
+        # since a single season's qualified-starter sample likely doesn't
+        # capture the true population's extremes.
+        multiplier = max(0.60, min(1.45, skill_mult * woba_mult * brl_mult * kbb_mult))
         logger.debug(
             "   quality: prim=%.2f→%.2f(reg)  xwOBA=%.3f  brl=%.1f  kbb_mult=%.3f  → %.3f",
             primary, primary_reg,

@@ -74,6 +74,25 @@ def _fetch_mlb_final_v2(game_pk: int) -> Optional[Tuple[int, int]]:
         return None
 
 
+def _fetch_f5_score(game_pk: int) -> Optional[Tuple[int, int]]:
+    """Return (home_f5_runs, away_f5_runs) from innings 1-5, or None if incomplete."""
+    try:
+        import requests
+        url = f"https://statsapi.mlb.com/api/v1/game/{game_pk}/linescore"
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        innings = resp.json().get("innings", [])
+        completed = [inn for inn in innings if 1 <= inn.get("num", 0) <= 5]
+        if len(completed) < 5:
+            return None
+        home_f5 = sum(int(inn.get("home", {}).get("runs", 0) or 0) for inn in completed)
+        away_f5 = sum(int(inn.get("away", {}).get("runs", 0) or 0) for inn in completed)
+        return home_f5, away_f5
+    except Exception as e:
+        log.debug(f"F5 linescore error for pk={game_pk}: {e}")
+        return None
+
+
 def _get_final_score(sport: str, game_pk: int) -> Optional[Tuple[int, int]]:
     if sport == "MLB":
         result = _fetch_mlb_final(game_pk)
@@ -90,6 +109,8 @@ def _resolve_market(
     away_score: int,
     total_line: Optional[float] = None,
     runline: float = 1.5,
+    f5_home: Optional[int] = None,
+    f5_away: Optional[int] = None,
 ) -> str:
     """Determine WIN / LOSS / PUSH for a given market and final score."""
     diff = home_score - away_score  # positive = home wins
@@ -144,10 +165,20 @@ def _resolve_market(
         return "PUSH"
 
     if market == "F5_HOME":
-        return "VOID"  # needs F5 scores; mark VOID for manual resolution
+        if f5_home is None or f5_away is None:
+            return "VOID"
+        diff_f5 = f5_home - f5_away
+        if diff_f5 > 0: return "WIN"
+        if diff_f5 < 0: return "LOSS"
+        return "PUSH"
 
     if market == "F5_AWAY":
-        return "VOID"
+        if f5_home is None or f5_away is None:
+            return "VOID"
+        diff_f5 = f5_home - f5_away
+        if diff_f5 < 0: return "WIN"
+        if diff_f5 > 0: return "LOSS"
+        return "PUSH"
 
     return "VOID"
 
@@ -203,7 +234,16 @@ def reconcile_pending(
 
         home_score, away_score = score
         market = pick["market"]
-        result = _resolve_market(market, home_score, away_score)
+        total_line = pick["total_line"] if "total_line" in pick.keys() else None
+        f5_score = None
+        if market in ("F5_HOME", "F5_AWAY", "F5_OVER", "F5_UNDER"):
+            f5_score = _fetch_f5_score(int(game_pk))
+        result = _resolve_market(
+            market, home_score, away_score,
+            total_line=total_line,
+            f5_home=f5_score[0] if f5_score else None,
+            f5_away=f5_score[1] if f5_score else None,
+        )
         stake = pick["stake_units"] or 1.0
         pnl = _calc_pnl(result, stake, pick["odds_decimal"])
 

@@ -34,7 +34,7 @@ Factors:
 Data source for weather: game_data['weather'] from OpenWeather API
     (optional — engine falls back to park factor only when absent).
 
-Pipeline position: PASO 2 — after AutoCalibrator, before HFA Engine.
+Pipeline position: PASO 5 — after Bullpen Engine, before Defensive Efficiency Engine.
 """
 
 from __future__ import annotations
@@ -61,6 +61,14 @@ _HANDEDNESS_WIND_SCALE = 0.040
 _HANDEDNESS_WIND_MIN_MPH = 10.0
 # Average MLB LHB fraction (switch hitters count 0.5)
 _AVG_LHB_PCT = 0.45
+
+
+def _first_present(*values: Optional[float]) -> float:
+    """Return the first value that is not None (0.0 is a valid, kept value)."""
+    for v in values:
+        if v is not None:
+            return float(v)
+    return 0.0
 
 
 def _signed_crosswind(wind_from: float, cf_direction: int) -> float:
@@ -152,7 +160,17 @@ STADIUM_DATABASE: Dict[str, StadiumFactors] = {
         StadiumFactors(runs_factor=1.01, hr_factor=0.99, hits_factor=1.01,
                        altitude=253, cf_direction=290),
     # ── American League West ──────────────────────────────────────────────────
+    # Astros' park renamed Minute Maid Park -> Daikin Park (sponsorship change).
+    # Same building/factors — kept both keys: live MLB API now reports "Daikin
+    # Park" (confirmed 2026-07-05, e.g. game_pk 824172), but historical
+    # game_data (2024/2025 backtest) still reports the old name. Without the
+    # new key, every live Astros home game fell back to STADIUM_DATABASE.get()
+    # returning None -> neutral park_mult=1.00 and lost cf_direction, silently
+    # discarding this park's real (0.99 runs, 1.02 HR, has_roof) factors.
     "Minute Maid Park":
+        StadiumFactors(runs_factor=0.99, hr_factor=1.02, hits_factor=0.99,
+                       altitude=13,  cf_direction=340, has_roof=True),
+    "Daikin Park":
         StadiumFactors(runs_factor=0.99, hr_factor=1.02, hits_factor=0.99,
                        altitude=13,  cf_direction=340, has_roof=True),
     "Globe Life Field":
@@ -204,7 +222,14 @@ STADIUM_DATABASE: Dict[str, StadiumFactors] = {
         StadiumFactors(runs_factor=0.98, hr_factor=0.94, hits_factor=0.98,
                        altitude=142, cf_direction=5),
     # ── National League West ──────────────────────────────────────────────────
+    # Same sponsorship-rename situation as Daikin Park above: live MLB API now
+    # reports "UNIQLO Field at Dodger Stadium" (confirmed 2026-07-05), while
+    # historical game_data (2024/2025) still reports "Dodger Stadium". Kept
+    # both keys pointing at the same real factors for the same reason.
     "Dodger Stadium":
+        StadiumFactors(runs_factor=0.99, hr_factor=1.10, hits_factor=0.99,
+                       altitude=155, cf_direction=340),
+    "UNIQLO Field at Dodger Stadium":
         StadiumFactors(runs_factor=0.99, hr_factor=1.10, hits_factor=0.99,
                        altitude=155, cf_direction=340),
     "Chase Field":
@@ -266,8 +291,15 @@ class ParkWeatherEngine:
         ):
             wind_mph = float(weather.get("wind_speed_mph", 0))
             wind_dir = float(weather.get("wind_direction", 0))
-            home_lhb = float(game_data.get("home_lhb_pct") or _AVG_LHB_PCT)
-            away_lhb = float(game_data.get("away_lhb_pct") or _AVG_LHB_PCT)
+            # Prefer today's confirmed-lineup handedness (same field pitcher_engine
+            # uses for platoon) over the team-season average — falls back cleanly
+            # when called without it (e.g. from the backtest, which doesn't set it).
+            home_lhb = _first_present(
+                game_data.get("home_lineup_lhb_pct"), game_data.get("home_lhb_pct"), _AVG_LHB_PCT,
+            )
+            away_lhb = _first_present(
+                game_data.get("away_lineup_lhb_pct"), game_data.get("away_lhb_pct"), _AVG_LHB_PCT,
+            )
 
             speed_factor  = (wind_mph - _HANDEDNESS_WIND_MIN_MPH) / 10.0
             signed_cross  = _signed_crosswind(wind_dir, stadium.cf_direction)

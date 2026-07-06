@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from config import LEAGUE_AVG_RUNS, LEAGUE_AVG_WOBA
+from config import LEAGUE_AVG_RUNS, LEAGUE_AVG_WOBA, LEAGUE_AVG_XWOBA
 
 
 FORMULA_VERSION = "tte_pit_adapter_v1"
 
 LG_RPG = LEAGUE_AVG_RUNS
-LG_XWOBA = 0.312
+LG_XWOBA = LEAGUE_AVG_XWOBA  # single source of truth: config.py
 LG_WOBA = LEAGUE_AVG_WOBA
 LG_BARREL_PA = 0.088
 LG_BB_PCT = 0.086

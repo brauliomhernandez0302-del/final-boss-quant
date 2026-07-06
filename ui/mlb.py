@@ -28,7 +28,6 @@ from ui.components import (
     UIComponents,
     calculate_ev,
     calculate_kelly,
-    calculate_rating,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,6 +160,15 @@ class MLBAnalyzer(BaseAnalyzer):
                     "total_under":  game_data.get("total_under"),
                     "runline_home": game_data.get("runline_home"),
                     "runline_away": game_data.get("runline_away"),
+                    # F5 — added 2026-07-06 alongside GameData; previously
+                    # missing entirely, so the UI-selector-driven analysis
+                    # path could never surface F5 markets regardless of the
+                    # separate get_best_odds_for_teams() naming fix.
+                    "f5_ml_home":    game_data.get("f5_ml_home"),
+                    "f5_ml_away":    game_data.get("f5_ml_away"),
+                    "f5_total_line": game_data.get("f5_total_line"),
+                    "f5_total_over": game_data.get("f5_total_over"),
+                    "f5_total_under": game_data.get("f5_total_under"),
                 }
 
             with st.spinner("⚡ Ejecutando análisis MLB G10 Ultra Pro..."):
@@ -243,13 +251,20 @@ def render_mlb_results(
 
     st.markdown(f"### 🏟️ {away} @ {home}")
 
-    # Final λ — last pipeline stage present (most recent first)
+    # Final λ — run_module.py now stamps the exact (lh, la) fed to Monte
+    # Carlo under 'final'. Fallback chain (real reverse-pipeline order:
+    # HFA PASO7 -> Defense PASO6 -> Park+Weather PASO5 -> Bullpen PASO4 ->
+    # Contextual PASO3 -> Pitcher PASO2 -> base) only matters for results
+    # computed before 'final' existed, or a run with some stages disabled.
+    # Previously checked 'contextual' (PASO 3) FIRST, so it always won the
+    # or-chain and every past "λ Final" display was really the PASO-3
+    # value, ~1-3% off from the true final — found + fixed 2026-07-06.
     _hist   = result.get("lambdas_history", {})
     lambdas = (
-        _hist.get("contextual") or _hist.get("bullpen") or
-        _hist.get("pitcher")    or _hist.get("defense") or
-        _hist.get("hfa")        or _hist.get("park_weather") or
-        _hist.get("calibration") or _hist.get("base") or {}
+        _hist.get("final")        or _hist.get("hfa") or
+        _hist.get("defense")      or _hist.get("park_weather") or
+        _hist.get("bullpen")      or _hist.get("contextual") or
+        _hist.get("pitcher")      or _hist.get("base") or {}
     )
     lh = float(lambdas.get("lh", 0.0))
     la = float(lambdas.get("la", 0.0))

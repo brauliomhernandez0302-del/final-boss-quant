@@ -15,7 +15,7 @@
 import numpy as np
 import math
 import logging
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
 from scipy.stats import norm, skellam, poisson
@@ -29,10 +29,22 @@ logger = logging.getLogger(__name__)
 # ==========================================================
 
 class ValueTier(Enum):
-    ULTRA = ("🔥 ULTRA VALUE", 15.0, "S")
-    HIGH = ("🟢 HIGH VALUE", 8.0, "A")
-    MEDIUM = ("🟡 MEDIUM VALUE", 4.0, "B")
-    SLIGHT = ("⚪ SLIGHT VALUE", 1.0, "C")
+    # EV thresholds reset 2026-07-05, RE-refit 2026-07-06 against the first
+    # batched backtest re-run that folds in all of that day's engine fixes
+    # (LG_DER, LEAGUE_AVG_XWOBA, TTE barrel%, pitcher/bullpen/defense/
+    # park-weather fixes) plus a forced Platt-2D refit (a=0.0170, b=0.3847,
+    # c=0.7416 -- model weight b went up, market weight c down slightly vs.
+    # the prior fit, consistent with the engine fixes making the model more
+    # trustworthy). Percentiles of the corrected-EV distribution from this
+    # fresh backtest (4,627 games, moneyline, post-Platt-2D) shifted up
+    # 5-15% from the 07-05 fit, confirming this re-refit was worth doing,
+    # not just measurement noise. New cutoffs ≈ top 5% / 20% / 50% /
+    # any-positive of the 2,739 positive-EV sides observed:
+    # p95=7.25%, p80=4.26%, p50=2.04%.
+    ULTRA = ("🔥 ULTRA VALUE", 7.25, "S")
+    HIGH = ("🟢 HIGH VALUE", 4.25, "A")
+    MEDIUM = ("🟡 MEDIUM VALUE", 2.0, "B")
+    SLIGHT = ("⚪ SLIGHT VALUE", 0.5, "C")
     NEUTRAL = ("⚫ NEUTRAL", 0.0, "D")
     NEGATIVE = ("🔴 NEGATIVE EV", -999, "F")
 
@@ -220,6 +232,54 @@ def sharpe_ratio(ev: float, ev_std: float) -> float:
         return 0.0
     return round(ev / ev_std, 3)
 
+# Internal 0-100 scaling anchors for calculate_composite_score's components,
+# recalibrated 2026-07-05 against the real post-Platt-2D corrected EV
+# distribution (same 2,643 positive-EV moneyline sides as the ValueTier
+# reset above). The old constants (ev*3, kelly*200, sharpe*20) were never
+# revisited after Platt-2D shrank real edges toward the market — three
+# independent, uncited scaling bugs found via the same empirical check
+# (Fable review 2026-07-05):
+#   ev_score: ev*3 needs ev=33.3 to reach 100, but real p99 ev is only
+#     10.96 (p99 backed by ~26 obs, too thin/volatile to anchor on) — even
+#     the best real bets used ~1/3 of the component's range. Rescaled to
+#     the more stable p97 (~79 backing obs): ev=7.92 -> ev_score=100.
+#     RE-refit 2026-07-06 against the first batched engine-fix backtest
+#     (2,739 positive-EV sides, forced Platt-2D refit) -- p97 moved
+#     7.92->8.86, a real ~12% shift (not noise), confirming this anchor
+#     needs to move again each time the batched backtest is re-run, same
+#     as the ValueTier EV thresholds above.
+_EV_SCORE_ANCHOR = 8.86
+#   kelly_score: kelly*200 assumes kelly can approach 0.5, but
+#     kelly_criterion() hard-clips to CONFIG.MAX_KELLY=0.15 (quarter-Kelly,
+#     15%-of-bankroll cap) — kelly_score's real achievable ceiling was 30,
+#     not 100, permanently shorting kelly_component by 7 of its 10 nominal
+#     points and making ValueTier.ULTRA's gate (composite>=67) mathematically
+#     unreachable regardless of confidence, since the true ceiling of the
+#     whole formula was ~65.1 (verified: calculate_composite_score(ev=100,
+#     confidence=1.0, edge=100, kelly=MAX_KELLY, sharpe=100,
+#     market_efficiency=1.0) == 65.1). Rescaled against the real hard cap.
+#   sharpe_score: sharpe*20 needs sharpe=5 to reach 100, but real p80
+#     sharpe is already 6.42 -- the opposite failure mode (saturating too
+#     early, not too late): roughly the top 20% of real bets all received
+#     the identical maxed-out sharpe_component, collapsing differentiation
+#     exactly at the ULTRA/HIGH boundary. Note: sharpe is derived from EV
+#     divided by a roughly-constant Monte Carlo sampling-precision target
+#     (early-stopping SE<0.003), so sharpe correlates strongly with ev
+#     itself (r=0.82 on the same population, measured) -- sharpe_score is
+#     substantially redundant with ev_score. At only 0.10 composite weight
+#     this is bounded double-counting, not a load-bearing distortion (unlike
+#     e.g. Pitcher Engine's kbb_mult/SIERA collinearity), so it's rescaled
+#     for consistency rather than redesigned. Anchored more conservatively
+#     at p90 (not p97 like ev_score) because its input, ev_std, isn't a
+#     directly observed backtest quantity like ev/edge -- it's a physics-
+#     derived proxy (ev_std ~= 0.98*SE*odds*100, since d(ev)/dp=odds and MC
+#     early-stopping targets SE(p)<0.003), stacking estimation uncertainty
+#     on top of the usual thin-tail percentile noise.
+#     RE-refit 2026-07-06 alongside _EV_SCORE_ANCHOR (8.83->9.47, ~7% shift,
+#     same batched-backtest population); ev/sharpe correlation confirmed
+#     stable (r=0.818, was 0.816) -- the redundancy finding still holds.
+_SHARPE_SCORE_ANCHOR = 9.47
+
 def calculate_composite_score(
     ev: float,
     confidence: float,
@@ -229,12 +289,12 @@ def calculate_composite_score(
     market_efficiency: float = 0.5
 ) -> Dict[str, float]:
     """Score compuesto multi-dimensional."""
-    ev_score = np.clip(ev * 3, 0, 100)
+    ev_score = np.clip(ev / _EV_SCORE_ANCHOR * 100, 0, 100)
     conf_score = confidence * 100
     edge_score = np.clip(edge * 10, 0, 100)
-    kelly_score = np.clip(kelly * 200, 0, 100)
-    sharpe_score = np.clip(sharpe * 20, 0, 100)
-    
+    kelly_score = np.clip(kelly / CONFIG.MAX_KELLY * 100, 0, 100)
+    sharpe_score = np.clip(sharpe / _SHARPE_SCORE_ANCHOR * 100, 0, 100)
+
     market_penalty = 1 - (market_efficiency * 0.3)
     
     composite = (
@@ -255,6 +315,35 @@ def calculate_composite_score(
         'market_penalty': round(market_penalty, 3)
     }
 
+    # composite_score gates reset 2026-07-05, same population/methodology as
+    # the ValueTier EV thresholds above (top 5%/20%/50%/any-positive of the
+    # real post-Platt-2D positive-EV sides) -- computed AFTER the three
+    # scaling fixes above (kelly/ev/sharpe), since the pre-fix distribution
+    # was contaminated by all three bugs simultaneously, not just at the
+    # tiers where it happened to produce visibly-impossible numbers (old
+    # ULTRA gate=67 was unreachable, ceiling ~65.1). The old gates' apparent
+    # non-degenerate pass-rates at MEDIUM/SLIGHT weren't a deliberately
+    # chosen selectivity target either -- same contaminated distribution,
+    # they just landed somewhere nonzero by coincidence of gate placement.
+    # RE-refit 2026-07-06 against the first batched engine-fix backtest
+    # (2,739 positive-EV sides, forced Platt-2D refit) -- gates barely moved
+    # (p95=49.60, p80=37.73, p50=26.95, p5=16.51 vs. the 07-05 fit's
+    # 50.33/37.52/26.33/15.59) because ev_score's anchor moved proportionally
+    # with the EV distribution itself (a ratio component self-stabilizes),
+    # unlike the ValueTier EV thresholds above which moved a real 5-15%.
+    # Gates: ULTRA=p95=50, HIGH=p80=38, MEDIUM=p50=27, SLIGHT=p5=17 (a low
+    # floor, not a selectivity target, matching SLIGHT's EV floor being "any
+    # real positive edge" rather than a percentile cut). Verified the
+    # realized joint population under this function's actual if/elif
+    # AND-logic (EV floor x composite floor together, not each marginal
+    # alone): of the 2,739-bet population, ULTRA=3.87%, HIGH=12.71%,
+    # MEDIUM=27.24%, SLIGHT=32.24%, NEUTRAL=12.38% (positive EV, below
+    # SLIGHT's composite floor), NEGATIVE=11.57% (confidence/edge floor
+    # rejects) -- close to the intended top-5%/15%/50% shape despite
+    # EV-rank and composite-rank not being perfectly correlated; not a
+    # second unreachable-tier surprise. Provisional again: re-run this whole
+    # refit (EV thresholds + scaling anchors + composite gates, same single
+    # pass) the next time the batched backtest re-runs.
 def classify_value_tier(
     ev: float,
     confidence: float,
@@ -264,14 +353,14 @@ def classify_value_tier(
     """Clasifica tier de valor."""
     if ev < 0 or confidence < CONFIG.MIN_CONFIDENCE or edge < CONFIG.MIN_EDGE:
         return ValueTier.NEGATIVE
-    
-    if composite_score >= 75 and ev >= ValueTier.ULTRA.value[1]:
+
+    if composite_score >= 50 and ev >= ValueTier.ULTRA.value[1]:
         return ValueTier.ULTRA
-    elif composite_score >= 60 and ev >= ValueTier.HIGH.value[1]:
+    elif composite_score >= 38 and ev >= ValueTier.HIGH.value[1]:
         return ValueTier.HIGH
-    elif composite_score >= 45 and ev >= ValueTier.MEDIUM.value[1]:
+    elif composite_score >= 27 and ev >= ValueTier.MEDIUM.value[1]:
         return ValueTier.MEDIUM
-    elif composite_score >= 30 and ev >= ValueTier.SLIGHT.value[1]:
+    elif composite_score >= 17 and ev >= ValueTier.SLIGHT.value[1]:
         return ValueTier.SLIGHT
     else:
         return ValueTier.NEUTRAL
@@ -280,6 +369,57 @@ def classify_value_tier(
 # ANÁLISIS DE MERCADOS ESPECÍFICOS
 # ==========================================================
 
+def compute_data_quality_confidence(game_meta: Optional[Dict[str, Any]]) -> float:
+    """
+    Real epistemic-confidence score: how much genuine current-season data
+    backs this game's inputs, vs. the old MC-sampling-based "confidence"
+    that collapsed to ~0.99 for nearly every bet regardless of real
+    uncertainty (docs/AUDIT_FINDINGS.md — Value Detector BUG #1).
+
+    Combines three signals (v1 scope, per Fable review 2026-07-04), each
+    taking the WORSE of the two teams/pitchers — a game's real input
+    quality is bounded by its weakest leg, not the average:
+
+      qB_SP  (40%) — starting-pitcher innings pitched this season / 30.
+        quality_mult (32% of Pitcher Engine's weight, the single largest
+        sub-factor pipeline-wide) is still mostly shrunk toward league
+        average below this, i.e. genuinely less differentiated.
+      qA_TTE (35%) — 1 − prior_weight. Whether the offensive λ is real
+        current-season signal or mostly a prior-season fallback blend.
+      qC_Kalman (25%) — Kalman observations / 10. Whether the learned
+        run-rate correction is actually active for this team/context.
+
+    Missing individual fields default to the WORST value for that signal
+    (prior_weight=1.0, ip=0, n_obs=0) rather than silently assuming good
+    data — absence of information must never produce high confidence.
+
+    Scope note: this answers "does the model have real information for
+    this game," not the separate, still-open edge-overconfidence/
+    calibration problem (audit's high-edge bucket: predicted 60.3% vs
+    actual 51.7%). Do not treat this as having fixed that; it hasn't.
+    """
+    gm = game_meta or {}
+    prior_weight = max(
+        float(gm.get("home_prior_weight", 1.0) or 1.0),
+        float(gm.get("away_prior_weight", 1.0) or 1.0),
+    )
+    sp_ip = min(
+        float(gm.get("home_sp_ip", 0) or 0),
+        float(gm.get("away_sp_ip", 0) or 0),
+    )
+    kalman_n = min(
+        float(gm.get("home_kalman_n_obs", 0) or 0),
+        float(gm.get("away_kalman_n_obs", 0) or 0),
+    )
+
+    q_tte    = 1.0 - min(1.0, max(0.0, prior_weight))
+    q_sp     = min(1.0, sp_ip / 30.0)
+    q_kalman = min(1.0, kalman_n / 10.0)
+
+    score = 0.40 * q_sp + 0.35 * q_tte + 0.25 * q_kalman
+    return round(max(0.0, min(1.0, score)), 4)
+
+
 def analyze_market_generic(
     model_prob: float,
     odds: float,
@@ -287,18 +427,21 @@ def analyze_market_generic(
     overround: float,
     true_implied: float,
     fractional_kelly: float,
-    market_name: str
+    market_name: str,
+    confidence: float,
 ) -> Dict[str, Any]:
-    """Análisis genérico para cualquier mercado."""
-    
+    """Análisis genérico para cualquier mercado.
+
+    confidence — real epistemic-confidence score for this GAME (not this
+    market), from compute_data_quality_confidence(). Same value across
+    every market of the same game; computed once by the caller.
+    """
+
     ev_stats = calculate_ev_stats(model_prob, odds, prob_ci)
     edge = (model_prob - true_implied) * 100
     kelly = kelly_criterion(model_prob, odds, fractional_kelly)
     sharpe = sharpe_ratio(ev_stats['ev'], ev_stats['ev_std'])
-    
-    confidence = 1 / (1 + abs(ev_stats['ev_std'] / max(abs(ev_stats['ev']), 0.1)))
-    confidence = np.clip(confidence, 0, 1)
-    
+
     score = calculate_composite_score(
         ev_stats['ev'], confidence, edge, kelly, sharpe,
         market_efficiency=(1 - overround / 100)
@@ -337,7 +480,8 @@ def analyze_runline(
     n_sims: int,
     fractional_kelly: float,
     vig_method: str,
-    bootstrap_ci: bool
+    bootstrap_ci: bool,
+    confidence: float,
 ) -> Dict[str, Any]:
     """
     Analiza Run Line (±1.5).
@@ -401,12 +545,12 @@ def analyze_runline(
     # Análisis
     home_analysis = analyze_market_generic(
         p_home_cover, runline_home, home_ci, overround,
-        true_implied['home'], fractional_kelly, f"RUNLINE HOME -{runline_line}"
+        true_implied['home'], fractional_kelly, f"RUNLINE HOME -{runline_line}", confidence
     )
-    
+
     away_analysis = analyze_market_generic(
         p_away_cover, runline_away, away_ci, overround,
-        true_implied['away'], fractional_kelly, f"RUNLINE AWAY +{runline_line}"
+        true_implied['away'], fractional_kelly, f"RUNLINE AWAY +{runline_line}", confidence
     )
     
     # Mejor pick
@@ -447,6 +591,7 @@ def analyze_first5(
     n_max: int,
     fractional_kelly: float,
     vig_method: str,
+    confidence: float,
     rng_seed: Optional[int] = None
 ) -> Dict[str, Any]:
     """
@@ -496,12 +641,12 @@ def analyze_first5(
         
         home_ml = analyze_market_generic(
             p_home, f5_odds.f5_ml_home, home_ci, overround,
-            true_implied['home'], fractional_kelly, "F5 ML HOME"
+            true_implied['home'], fractional_kelly, "F5 ML HOME", confidence
         )
-        
+
         away_ml = analyze_market_generic(
             p_away, f5_odds.f5_ml_away, away_ci, overround,
-            true_implied['away'], fractional_kelly, "F5 ML AWAY"
+            true_implied['away'], fractional_kelly, "F5 ML AWAY", confidence
         )
         
         result['moneyline'] = {
@@ -539,12 +684,12 @@ def analyze_first5(
         
         over_total = analyze_market_generic(
             p_over, f5_odds.f5_total_over, over_ci, overround,
-            true_implied['over'], fractional_kelly, f"F5 OVER {f5_odds.f5_total_line}"
+            true_implied['over'], fractional_kelly, f"F5 OVER {f5_odds.f5_total_line}", confidence
         )
-        
+
         under_total = analyze_market_generic(
             p_under, f5_odds.f5_total_under, under_ci, overround,
-            true_implied['under'], fractional_kelly, f"F5 UNDER {f5_odds.f5_total_line}"
+            true_implied['under'], fractional_kelly, f"F5 UNDER {f5_odds.f5_total_line}", confidence
         )
         
         result['total'] = {
@@ -571,18 +716,37 @@ def evaluate_value_ultra(
     away_samples: Optional[np.ndarray] = None,
     total_samples: Optional[np.ndarray] = None,
     analyze_f5: bool = True,
-    rng_seed: Optional[int] = None
+    rng_seed: Optional[int] = None,
+    game_meta: Optional[Dict[str, Any]] = None,
+    p_home_corrector: Optional[Callable[[float, float], float]] = None,
 ) -> Dict[str, Any]:
     """
     EVALUADOR ULTRA - TODOS LOS MERCADOS.
-    
+
     Analiza:
     - Moneyline Full Game
     - Totals O/U (dinámico)
     - Run Line ±1.5
     - First 5 Innings (ML + Totals)
+
+    game_meta — real epistemic-confidence inputs for this game (starting
+    pitcher IP, TTE prior_weight, Kalman n_obs per team). See
+    compute_data_quality_confidence() for the formula. Missing/None means
+    every field defaults to its worst-case value — confidence will be low,
+    not silently high.
+
+    p_home_corrector — optional Platt-2D correction, signature
+    (raw_p_home, market_prob_home) -> corrected_p_home. Kept as a plain
+    callable (not a LearningEngine import) so this sport-agnostic module
+    doesn't depend on MLB-specific calibration internals; the MLB caller
+    binds its own fitted (a,b,c) and season via a closure/partial. Applied
+    ONLY to moneyline (and F5 moneyline) against a Pinnacle fair line —
+    it was fit on that specific relationship and has no evidence it
+    generalizes to runline/totals or non-Pinnacle devigged lines.
     """
-    
+
+    confidence = compute_data_quality_confidence(game_meta)
+
     logger.info("=" * 80)
     logger.info("🚀 VALUE DETECTOR G10 QUANTUM ULTRA - ALL MARKETS")
     logger.info("=" * 80)
@@ -602,14 +766,6 @@ def evaluate_value_ultra(
 
         p_home = mc_result['p_home']
         p_away = mc_result['p_away']
-
-        se_home = math.sqrt(p_home * (1 - p_home) / n_sims)
-        se_away = math.sqrt(p_away * (1 - p_away) / n_sims)
-        margin_home = 1.96 * se_home
-        margin_away = 1.96 * se_away
-
-        home_ci = (max(0, p_home - margin_home), min(1, p_home + margin_home))
-        away_ci = (max(0, p_away - margin_away), min(1, p_away + margin_away))
 
         # Overround from the bet odds we're actually taking
         overround = (1/odds.ml_home + 1/odds.ml_away - 1) * 100
@@ -631,14 +787,34 @@ def evaluate_value_ultra(
             pin_vig_pct = None
             fair_source = vig_method
 
+        # Platt-2D: shrink model_prob toward the market's fair line before
+        # computing edge/EV/Kelly. Only valid against a Pinnacle fair line —
+        # it was fit on that specific (p_home, pinnacle_fair, outcome) triple.
+        if p_home_corrector is not None and fair_source == "pinnacle":
+            p_home_raw_local = p_home
+            p_home = p_home_corrector(p_home_raw_local, fair_home)
+            p_away = 1.0 - p_home
+            logger.info(
+                f"   🎯 Platt-2D: p_home {p_home_raw_local:.4f} → {p_home:.4f} "
+                f"(market fair={fair_home:.4f})"
+            )
+
+        se_home = math.sqrt(p_home * (1 - p_home) / n_sims)
+        se_away = math.sqrt(p_away * (1 - p_away) / n_sims)
+        margin_home = 1.96 * se_home
+        margin_away = 1.96 * se_away
+
+        home_ci = (max(0, p_home - margin_home), min(1, p_home + margin_home))
+        away_ci = (max(0, p_away - margin_away), min(1, p_away + margin_away))
+
         home_ml = analyze_market_generic(
             p_home, odds.ml_home, home_ci, overround,
-            fair_home, fractional_kelly, "MONEYLINE HOME"
+            fair_home, fractional_kelly, "MONEYLINE HOME", confidence
         )
 
         away_ml = analyze_market_generic(
             p_away, odds.ml_away, away_ci, overround,
-            fair_away, fractional_kelly, "MONEYLINE AWAY"
+            fair_away, fractional_kelly, "MONEYLINE AWAY", confidence
         )
 
         all_markets['moneyline'] = {
@@ -709,20 +885,20 @@ def evaluate_value_ultra(
         
         over_total = analyze_market_generic(
             p_over, odds.total_over, over_ci, overround,
-            true_implied['over'], fractional_kelly, f"OVER {odds.total_line}"
+            true_implied['over'], fractional_kelly, f"OVER {odds.total_line}", confidence
         )
-        
+
         under_total = analyze_market_generic(
             p_under, odds.total_under, under_ci, overround,
-            true_implied['under'], fractional_kelly, f"UNDER {odds.total_line}"
+            true_implied['under'], fractional_kelly, f"UNDER {odds.total_line}", confidence
         )
         
         all_markets['total'] = {'over': over_total, 'under': under_total, 'line': odds.total_line}
         
         if over_total['tier_enum'] != ValueTier.NEGATIVE:
-            all_bets.append({**over_total, 'side': f"OVER {odds.total_line}", 'weighted': over_total['ev'] * over_total['confidence'] * over_total['kelly'] * 100})
+            all_bets.append({**over_total, 'side': f"OVER {odds.total_line}", 'line': odds.total_line, 'weighted': over_total['ev'] * over_total['confidence'] * over_total['kelly'] * 100})
         if under_total['tier_enum'] != ValueTier.NEGATIVE:
-            all_bets.append({**under_total, 'side': f"UNDER {odds.total_line}", 'weighted': under_total['ev'] * under_total['confidence'] * under_total['kelly'] * 100})
+            all_bets.append({**under_total, 'side': f"UNDER {odds.total_line}", 'line': odds.total_line, 'weighted': under_total['ev'] * under_total['confidence'] * under_total['kelly'] * 100})
     
     # ==========================================================
     # 3. RUN LINE ±1.5
@@ -731,7 +907,8 @@ def evaluate_value_ultra(
     if odds.runline_home and odds.runline_away:
         runline_result = analyze_runline(
             mc_result, odds.runline_home, odds.runline_away, odds.runline_line,
-            home_samples, away_samples, n_sims, fractional_kelly, vig_method, bootstrap_ci
+            home_samples, away_samples, n_sims, fractional_kelly, vig_method, bootstrap_ci,
+            confidence,
         )
         
         all_markets['runline'] = runline_result
@@ -749,7 +926,7 @@ def evaluate_value_ultra(
     
     if analyze_f5 and (odds.f5_ml_home or odds.f5_total_line):
         f5_result = analyze_first5(
-            lh, la, odds, mc_result['n'], fractional_kelly, vig_method, rng_seed
+            lh, la, odds, mc_result['n'], fractional_kelly, vig_method, confidence, rng_seed
         )
         
         all_markets['first5'] = f5_result
@@ -767,9 +944,11 @@ def evaluate_value_ultra(
         if 'total' in f5_result:
             if f5_result['total']['over']['tier_enum'] != ValueTier.NEGATIVE:
                 all_bets.append({**f5_result['total']['over'], 'side': f"F5 OVER {f5_result['total']['line']}",
+                               'line': f5_result['total']['line'],
                                'weighted': f5_result['total']['over']['ev'] * f5_result['total']['over']['confidence'] * f5_result['total']['over']['kelly'] * 100})
             if f5_result['total']['under']['tier_enum'] != ValueTier.NEGATIVE:
                 all_bets.append({**f5_result['total']['under'], 'side': f"F5 UNDER {f5_result['total']['line']}",
+                               'line': f5_result['total']['line'],
                                'weighted': f5_result['total']['under']['ev'] * f5_result['total']['under']['confidence'] * f5_result['total']['under']['kelly'] * 100})
     
     # ==========================================================
@@ -789,15 +968,23 @@ def evaluate_value_ultra(
             'best_score': best['composite_score'],
             'suggested_kelly': best['kelly'],
             'all_opportunities': [
+                # Spread the full underlying bet dict rather than hand-picking
+                # fields: this was a minimal top-10 display projection, but
+                # two independent downstream consumers (track_record/
+                # publisher.py needed odds/model_prob/line; ui/mlb.py's
+                # save_value_picks needed confidence) both turned out to
+                # silently fall back to wrong defaults because this dict
+                # didn't carry a field they assumed was there — found
+                # 2026-07-06, twice in one session. Rather than keep
+                # patching field-by-field, expose everything; 'tier_enum'
+                # is the one deliberate exclusion (a raw ValueTier Enum,
+                # not JSON-serializable — 'tier'/'tier_grade' already carry
+                # its string/grade for external consumption).
                 {
+                    **{k: v for k, v in bet.items() if k != 'tier_enum'},
                     'rank': i+1,
-                    'market': bet['market'],
-                    'side': bet['side'],
-                    'ev': bet['ev'],
                     'score': bet['composite_score'],
-                    'tier': bet['tier'],
-                    'kelly': bet['kelly'],
-                    'weighted_score': bet['weighted']
+                    'weighted_score': bet['weighted'],
                 }
                 for i, bet in enumerate(all_bets[:10])  # Top 10
             ]

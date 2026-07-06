@@ -38,6 +38,17 @@ class GameData(TypedDict, total=False):
     # Run line / spreads (±1.5 for MLB)
     runline_home: float
     runline_away: float
+    # First 5 innings — added 2026-07-06. Previously GameData had no F5
+    # fields at all, so the Streamlit-selector-driven analysis path (pick a
+    # game from the dropdown -> MLBAnalyzer.analyze()) could never surface
+    # F5 odds even after get_best_odds_for_teams()'s F5 naming fix, since
+    # that fix only repaired the separate auto-fetch path. Field names match
+    # GameOdds' established convention (core/value_detector.py).
+    f5_ml_home: float
+    f5_ml_away: float
+    f5_total_line: float
+    f5_total_over: float
+    f5_total_under: float
     commence_time: str
     raw_row: Any  # pd.Series — kept as Any to avoid pandas coupling
 

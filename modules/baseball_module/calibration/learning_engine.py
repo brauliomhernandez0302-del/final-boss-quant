@@ -1,12 +1,14 @@
 """
 Learning engine — records model predictions and actual outcomes,
-drives adaptive calibration through five mechanisms:
+drives adaptive calibration through six mechanisms:
 
   1. Team bias            — mean(actual / predicted_λ) per team, per season
-  2. Multi-dim bias       — same metric sliced by home/away, month, and stadium
+  2. Multi-dim bias       — same metric sliced by home/away, optionally also by month
   3. Kalman filter        — tracks each team's true run rate as a hidden state
   4. Platt recalibration  — weekly logistic-regression fit on p_home → home_won
-  5. Pipeline weights     — gradient-descent scaling on each engine's λ adjustment
+  5. Platt-2D             — expanding-window fit on p_home + market_prob → home_won,
+                             shrinks edge toward the market to fix high-edge overconfidence
+  6. Pipeline weights     — gradient-descent scaling on each engine's λ adjustment
 
 Tables (all in predictions_history.db):
   game_outcomes   — one row per prediction; actual runs filled in post-game
@@ -27,7 +29,9 @@ logger = logging.getLogger(__name__)
 _MLB_API_BASE   = "https://statsapi.mlb.com/api/v1"
 _MIN_SAMPLES    = 10
 _BIAS_CLAMP     = 0.30
-_BIAS_CACHE_HRS = 6
+# A team plays at most one game/day, so a bias cache shorter than 24h buys
+# nothing — there's no new data to pick up until that day's game is scored.
+_BIAS_CACHE_HRS = 24
 
 # Kalman filter hyper-parameters
 _KF_Q = 0.025   # process noise variance (team quality changes ~0.16 R/G per game)
@@ -38,6 +42,13 @@ _PLATT_MIN_SAMPLES  = 50
 _PLATT_RECAL_DAYS   = 7
 _PLATT_A_DEFAULT    = 1.0
 _PLATT_B_DEFAULT    = 0.0
+
+# Platt-2D (edge-vs-outcome) recalibration — see AUDIT_FINDINGS.md Value
+# Detector BUG #2. Fit on an EXPANDING multi-season window (not per-season
+# like the 1D fit above) because the >10%-edge bucket this exists to fix has
+# only ~150-160 games per season, too thin to refit reliably in isolation.
+_PLATT2D_MIN_SAMPLES = 400
+_PLATT2D_RECAL_DAYS  = 7
 
 # Kalman blend fraction — must be identical in both get_kalman_lambda_adjustment
 # and compute_team_bias_kalman_adjusted so the bias dampening formula matches
@@ -277,7 +288,19 @@ class LearningEngine:
         actual_home_runs: int,
         actual_away_runs: int,
     ) -> bool:
-        """Fill in actual runs, trigger Kalman updates. Returns True if row existed."""
+        """Fill in actual runs, trigger Kalman + gradient-descent updates.
+
+        Idempotent: the UPDATE only matches rows that haven't been scored yet
+        (`actual_home_runs IS NULL`), so a second call for an already-scored
+        game_pk is a no-op — it returns False rather than silently re-running
+        4 Kalman updates and a gradient-descent step for the same game.
+        `fetch_pending_outcomes` already avoids this via its own pending-only
+        query, but this guard protects any future caller (e.g. a track-record
+        reconciler) that doesn't know to check first.
+
+        Returns True only if this call actually scored the game (row existed
+        and was previously unscored).
+        """
         home_won = 1 if actual_home_runs > actual_away_runs else 0
 
         with self._get_conn() as conn:
@@ -287,7 +310,7 @@ class LearningEngine:
                 SET actual_home_runs = ?,
                     actual_away_runs = ?,
                     home_won         = ?
-                WHERE game_pk = ?
+                WHERE game_pk = ? AND actual_home_runs IS NULL
                 """,
                 (actual_home_runs, actual_away_runs, home_won, game_pk),
             )
@@ -378,6 +401,7 @@ class LearningEngine:
         team: str,
         season: int,
         context: str,
+        month: Optional[int] = None,
     ) -> float:
         """Team bias dampened by Kalman's fractional coverage to prevent double-correction.
 
@@ -385,13 +409,26 @@ class LearningEngine:
         When Kalman is active it already corrects `blend` (35%) of the model error;
         applying the raw bias on top overcorrects that share of the signal.
 
-        Dampening formula: adjusted = 1 + (1 − blend) × (raw_bias − 1)
+        Exact dampening formula (not a linear approximation — see below):
+          adjusted = raw_bias / (1 − blend + blend × raw_bias)
+
+        Derivation: if L0 is the pre-bias model λ and O is the team's true
+        observed rate (raw_bias = O/L0), and Kalman's own state has already
+        converged toward O, the post-Kalman λ is L_k = (1−blend)×L0 + blend×O.
+        The exact multiplier that maps L_k back to O is O/L_k, which in terms
+        of raw_bias is the rational expression above.
 
         Example — team scores 3.5 R/G, model says 4.5 (raw_bias = 0.778):
           Kalman (blend=0.35): 0.65×4.5 + 0.35×3.5 = 4.15  (−7.8%)
           Old bias on 4.15:    4.15 × 0.778 = 3.23          (−22% extra → total −28%)
-          Dampened bias:       1 + 0.65×(0.778−1) = 0.856
-          New bias on 4.15:    4.15 × 0.856 = 3.55          (−14% → total −21% ≈ correct)
+          Exact dampened bias: 0.778 / (0.65 + 0.35×0.778) = 0.8434
+          New bias on 4.15:    4.15 × 0.8434 = 3.50          (−15.7% → total ≈ exact)
+
+        (An earlier version used the linear approximation
+        `1 + (1−blend)×(raw_bias−1)` = 0.8556 here — the tangent line of the
+        rational function at raw_bias=1. It under-corrects, more so the
+        further raw_bias sits from 1.0 and worse near the ±30% clamp bounds;
+        the exact form costs nothing extra to compute.)
 
         FIX C1: compute_team_bias mezclaba home+away juegos en una sola media,
         contaminando la señal del Kalman para equipos con asimetría HFA real.
@@ -403,7 +440,7 @@ class LearningEngine:
         """
         # FIX C1: use context-specific bias instead of aggregate home+away mix.
         home_away = "home" if context == "offense_home" else "away"
-        raw_bias = self.compute_multidim_bias(team, season, home_away)
+        raw_bias = self.compute_multidim_bias(team, season, home_away, month=month)
         if raw_bias == 1.0:
             return 1.0
 
@@ -411,7 +448,8 @@ class LearningEngine:
         if not state or state["n_obs"] < 10:
             return raw_bias  # Kalman cold-start: no overlap to remove
 
-        dampened = 1.0 + (1.0 - _KALMAN_BLEND) * (raw_bias - 1.0)
+        denom = (1.0 - _KALMAN_BLEND) + _KALMAN_BLEND * raw_bias
+        dampened = raw_bias / denom if abs(denom) > 1e-9 else raw_bias
         logger.debug(
             "[learning] %s/%s bias Kalman-adjusted: raw=%.4f → dampened=%.4f (n_obs=%d)",
             team, home_away, raw_bias, dampened, state["n_obs"],
@@ -427,22 +465,25 @@ class LearningEngine:
         team: str,
         season: int,
         home_away: str = "home",       # "home" or "away"
-        month: Optional[int] = None,   # 3-10; None = season average
-        venue: Optional[str] = None,
+        month: Optional[int] = None,   # 3-10; None = skip this tier, use home_away only
         min_samples: int = 8,
     ) -> float:
         """
-        Bias correction refined along up to three dimensions simultaneously.
+        Bias correction refined along up to two dimensions.
 
         Priority:
-          1. team × home_away × month (most specific)
+          1. team × home_away × month (most specific — only tried when a real
+             month is given; previously this tier was always queried with
+             month=None, making it an exact duplicate of tier 2 and leaving
+             the month-specific cache key ("...:mNone") permanently unused)
           2. team × home_away
           3. simple team bias (fallback)
         """
-        dims = [
-            (f"bias:{team}:{home_away}:m{month}", home_away, month),
-            (f"bias:{team}:{home_away}",           home_away, None),
-        ]
+        dims = []
+        if month is not None:
+            dims.append((f"bias:{team}:{home_away}:m{month}", home_away, month))
+        dims.append((f"bias:{team}:{home_away}", home_away, None))
+
         for scope_key, ha, mo in dims:
             cached = self.load_state(scope_key, "multidim_bias", season)
             if cached and cached.get("sample_count", 0) >= min_samples:
@@ -574,6 +615,14 @@ class LearningEngine:
         )
         return len(seasons)
 
+    def get_kalman_n_obs(self, team: str, context: str, season: int) -> int:
+        """Return the number of observations backing this team/context's Kalman
+        state (0 if cold-start / no state yet). Used to gauge confidence in
+        whether the Kalman correction is actually active for this game.
+        """
+        state = self._get_kalman_state(team, context, season)
+        return state["n_obs"] if state else 0
+
     def get_kalman_estimate(
         self,
         team: str,
@@ -684,12 +733,22 @@ class LearningEngine:
             age_days = self._hours_since(last_recal) / 24.0
             if age_days < _PLATT_RECAL_DAYS:
                 return float(cached.get("a", _PLATT_A_DEFAULT)), float(cached.get("b", _PLATT_B_DEFAULT))
-        # Try to refit
+        # Try to refit — recalibrate_platt returns identity (1.0, 0.0) when n < MIN_SAMPLES.
         try:
-            return self.recalibrate_platt(season)
+            a, b = self.recalibrate_platt(season)
         except Exception as exc:
             logger.warning(f"[learning] Platt recalibration failed: {exc}")
-            return _PLATT_A_DEFAULT, _PLATT_B_DEFAULT
+            a, b = _PLATT_A_DEFAULT, _PLATT_B_DEFAULT
+        if (a, b) != (_PLATT_A_DEFAULT, _PLATT_B_DEFAULT):
+            return a, b
+        # recalibrate_platt returned identity — not enough current-season data yet.
+        # Warm-start: carry forward previous season's fitted params.
+        prev = self.load_state("platt_params", "calibration", season - 1)
+        if prev and prev.get("n", 0) >= _PLATT_MIN_SAMPLES:
+            logger.info("[learning] Platt warm-start from season %d (a=%.4f b=%.4f)",
+                        season - 1, prev.get("a", _PLATT_A_DEFAULT), prev.get("b", _PLATT_B_DEFAULT))
+            return float(prev.get("a", _PLATT_A_DEFAULT)), float(prev.get("b", _PLATT_B_DEFAULT))
+        return _PLATT_A_DEFAULT, _PLATT_B_DEFAULT
 
     def recalibrate_platt(self, season: int) -> Tuple[float, float]:
         """
@@ -760,6 +819,123 @@ class LearningEngine:
         return a, float(b)
 
     # ------------------------------------------------------------------
+    # Platt-2D recalibration (edge-vs-outcome)
+    # ------------------------------------------------------------------
+
+    def get_platt_2d_params(self, season: int) -> Optional[Tuple[float, float, float]]:
+        """Return (a, b, c) Platt-2D coefficients for `season`, or None if
+        there isn't enough historical data yet to fit one.
+
+            logit(p_corrected_home) = a + b*logit(p_home) + c*logit(market_prob_home)
+
+        Callers MUST treat None as "leave p_home unchanged" — never fall back
+        to identity coefficients silently, since (a=0,b=1,c=0) is a real,
+        meaningful fit outcome, not a safe default.
+        """
+        cached = self.load_state("platt2d_params", "calibration", season)
+        if cached:
+            age_days = self._hours_since(cached.get("updated_at", "")) / 24.0
+            if age_days < _PLATT2D_RECAL_DAYS:
+                return float(cached["a"]), float(cached["b"]), float(cached["c"])
+        try:
+            result = self.recalibrate_platt_2d(season)
+        except Exception as exc:
+            logger.warning(f"[learning] Platt-2D recalibration failed: {exc}")
+            result = None
+        if result is not None:
+            return result
+        # Not enough current data — warm-start from the most recent prior
+        # season that had a successful fit.
+        for prior_season in range(season - 1, season - 5, -1):
+            prev = self.load_state("platt2d_params", "calibration", prior_season)
+            if prev and prev.get("n", 0) >= _PLATT2D_MIN_SAMPLES:
+                logger.info(f"[learning] Platt-2D warm-start from season {prior_season}")
+                return float(prev["a"]), float(prev["b"]), float(prev["c"])
+        return None
+
+    def recalibrate_platt_2d(self, season: int) -> Optional[Tuple[float, float, float]]:
+        """Refit logit(home_won) ~ a + b*logit(p_home) + c*logit(market_prob_home)
+        on all seasons strictly before `season` (expanding window). Returns
+        None — not identity — when there isn't enough data; the caller must
+        not apply an unfit model.
+        """
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT p_home, home_won, ml_home_pin, ml_away_pin
+                FROM game_outcomes
+                WHERE season < ? AND home_won IS NOT NULL AND p_home IS NOT NULL
+                  AND ml_home_pin IS NOT NULL AND ml_away_pin IS NOT NULL
+                  AND ml_home_pin > 1 AND ml_away_pin > 1
+                """,
+                (season,),
+            ).fetchall()
+
+        n = len(rows)
+        if n < _PLATT2D_MIN_SAMPLES:
+            logger.info(
+                f"[learning] Platt-2D: only {n} samples before season {season} "
+                f"(need {_PLATT2D_MIN_SAMPLES}), skipping fit"
+            )
+            return None
+
+        try:
+            from sklearn.linear_model import LogisticRegression
+            import numpy as np
+        except ImportError:
+            logger.warning("[learning] Platt-2D requires sklearn — skipping fit")
+            return None
+
+        p_home_vals: List[float] = []
+        market_prob_vals: List[float] = []
+        outcomes: List[int] = []
+        for r in rows:
+            ph_imp = 1.0 / r["ml_home_pin"]
+            pa_imp = 1.0 / r["ml_away_pin"]
+            fair_home = ph_imp / (ph_imp + pa_imp)
+            p_home_vals.append(min(0.99, max(0.01, r["p_home"])))
+            market_prob_vals.append(min(0.99, max(0.01, fair_home)))
+            outcomes.append(int(r["home_won"]))
+
+        p_home_arr = np.array(p_home_vals)
+        market_arr = np.array(market_prob_vals)
+        X = np.column_stack([
+            np.log(p_home_arr / (1 - p_home_arr)),
+            np.log(market_arr / (1 - market_arr)),
+        ])
+        y = np.array(outcomes, dtype=int)
+
+        lr = LogisticRegression(fit_intercept=True, penalty="l2", C=1.0)
+        lr.fit(X, y)
+        a = float(lr.intercept_[0])
+        b, c = (float(v) for v in lr.coef_[0])
+
+        self.save_state(
+            "platt2d_params", "calibration",
+            {"a": a, "b": b, "c": c, "n": n}, n, season,
+        )
+        logger.info(
+            f"[learning] Platt-2D recalibrated for season {season}: "
+            f"a={a:.4f} b={b:.4f} c={c:.4f} (n={n}, seasons<{season})"
+        )
+        return a, b, c
+
+    def apply_platt_2d(self, p_home: float, market_prob_home: float, season: int) -> float:
+        """Return the Platt-2D-corrected p_home for `season`, or p_home
+        unchanged if no fit is available yet (never apply untrained coefficients).
+        """
+        params = self.get_platt_2d_params(season)
+        if params is None:
+            return p_home
+        a, b, c = params
+        ph = min(0.999, max(0.001, p_home))
+        mp = min(0.999, max(0.001, market_prob_home))
+        logit_p = math.log(ph / (1 - ph))
+        logit_m = math.log(mp / (1 - mp))
+        z = a + b * logit_p + c * logit_m
+        return 1.0 / (1.0 + math.exp(-z))
+
+    # ------------------------------------------------------------------
     # Pipeline weights (gradient descent)
     # ------------------------------------------------------------------
 
@@ -768,6 +944,12 @@ class LearningEngine:
         cached = self.load_state("pipeline_weights", "weights", season)
         if cached:
             return {k: float(cached.get(k, 1.0)) for k in _STAGE_KEYS}
+        # Warm-start: carry forward previous season's learned weights.
+        # GD takes months to converge from 1.0; prior season is a strong prior.
+        prev = self.load_state("pipeline_weights", "weights", season - 1)
+        if prev:
+            logger.info("[learning] weights warm-start from season %d", season - 1)
+            return {k: float(prev.get(k, 1.0)) for k in _STAGE_KEYS}
         return {k: 1.0 for k in _STAGE_KEYS}
 
     def _gradient_step(

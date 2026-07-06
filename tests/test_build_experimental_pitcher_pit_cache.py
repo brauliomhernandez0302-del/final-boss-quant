@@ -27,12 +27,14 @@ class _FakeSavantRawIngestor:
     def __init__(self, raw_savant_db):
         self.raw_savant_db = raw_savant_db
 
-    def ingest_date_range(self, *, start_date, end_date):
+    def ingest_historical_date_range(self, *, season, start_date, end_date, manifest_path):
         self.calls.append(
             {
                 "raw_savant_db": self.raw_savant_db,
+                "season": season,
                 "start_date": start_date,
                 "end_date": end_date,
+                "manifest_path": manifest_path,
             }
         )
         return object()
@@ -150,8 +152,10 @@ def test_builder_calls_canonical_providers_for_previous_day_cutoffs(tmp_path, mo
     assert _FakeSavantRawIngestor.calls == [
         {
             "raw_savant_db": tmp_path / "raw_savant.db",
+            "season": 2024,
             "start_date": "2024-03-20",
             "end_date": "2024-04-02",
+            "manifest_path": tmp_path / "raw_savant.manifest.json",
         }
     ]
     assert [c["as_of_date"] for c in _FakeFanGraphsDailyPITPersistence.calls] == [

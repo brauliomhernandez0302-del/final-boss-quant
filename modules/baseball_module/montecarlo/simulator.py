@@ -13,14 +13,19 @@ logger = logging.getLogger(__name__)
 
 # Negative Binomial dispersion parameter r.
 # Empirical MLB 2024-2026 (5,422 games): var/mean = 2.263, mean = 4.427.
-# r = mean² / (var - mean) = 19.60 / 5.59 ≈ 3.51 (marginal).
-# Conditional-on-λ OLS regression gives r ≈ 3.80; decomposed (−cross-game
-# λ variance) gives r ≈ 3.67. r=3.0 chosen because it best matches the
-# empirical tail probabilities that drive calibration:
-#   P(0 runs): 6.63% model vs 6.69% real (Poisson: 1.26%)
-#   P(8+ runs): 16.13% model vs 16.06% real (Poisson: 7.63%)
-# The slight var/mean overshoot (2.48 vs 2.26) corrects the underdog
-# underprediction bias (+3.1pp in <40% bucket under Poisson).
+# Theoretical estimates from this data: marginal r ≈ 3.51, conditional-on-λ
+# OLS r ≈ 3.80, decomposed (−cross-game λ variance) r ≈ 3.67.
+#
+# r=3.0 was tried first (best raw distribution-tail match: P(0 runs) 6.63%
+# model vs 6.69% real, P(8+ runs) 16.13% vs 16.06%) but was REJECTED after
+# backtesting: it over-compressed probabilities (Platt a=1.34), collapsing
+# the >70% confidence bucket from 190→17 games and costing −5.70pp on
+# ROI edge≥10%. r=6.0 has a *worse* raw tail-probability fit (var/mean=1.75,
+# P(0 runs)=3.67%, both further from the 2.263/6.69% empirical targets than
+# r=3.0) but was ACCEPTED because it produces better betting-relevant
+# metrics: ROI edge≥10% +7.39% (new high at the time) and improved
+# calibration in the 40-45%/60-70% buckets. See docs/AUDIT_FINDINGS.md
+# "PASO 4 — NEGATIVE BINOMIAL" for the full r=3.0 vs r=6.0 backtest comparison.
 NB_DISPERSION: float = 6.0
 
 @dataclass
@@ -103,6 +108,12 @@ def monte_carlo_advanced(
     p_over/p_under/p_push/total_line/f5_home/f5_away/f5_draw.
     """
 
+    # Clamp block to n_max before validation: the default block (200,000)
+    # is larger than MIN_SIMS (10,000), so any caller passing a smaller
+    # n_max without also overriding block would otherwise hit
+    # "block inválido" — a crash for a perfectly reasonable request
+    # (run_module.py doesn't override block; only backtest_and_retrain.py did).
+    block = min(block, n_max)
     validate_inputs(lh, la, n_max, block, lambda_noise, early_stop_se, total_line)
     if not (-1.0 < rho_game < 1.0):
         raise ValueError(f"rho_game={rho_game} must be in (-1, 1)")

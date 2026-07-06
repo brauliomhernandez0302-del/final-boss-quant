@@ -35,15 +35,20 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import os
+
 import requests
+from dotenv import load_dotenv
 
 # ── Project imports ────────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
 from config import DATA_DIR
 
+load_dotenv()
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_ODDS_KEY  = "b6823bc4d3c308218f71835ab183e6a2"
+_ODDS_KEY  = os.getenv("ODDS_API_KEY", "").strip()
 _ODDS_BASE = "https://api.the-odds-api.com/v4"
 _MLB_BASE  = "https://statsapi.mlb.com/api/v1"
 
@@ -55,9 +60,10 @@ REQUEST_DELAY = 0.25           # seconds between Odds API calls
 
 SEASON_WINDOWS: Dict[int, Tuple[str, str]] = {
     2024: ("2024-03-20", "2024-11-01"),
-    2025: ("2025-03-18", date.today().strftime("%Y-%m-%d")),
+    2025: ("2025-03-18", "2025-11-01"),
+    2026: ("2026-03-25", date.today().strftime("%Y-%m-%d")),
 }
-DEFAULT_SEASONS = [2024, 2025]
+DEFAULT_SEASONS = [2024, 2025, 2026]
 
 # Bookmaker keys that represent Pinnacle
 _PINNACLE_KEYS = {"pinnacle"}
@@ -392,6 +398,10 @@ def main() -> None:
     parser.add_argument("--enrich-only", action="store_true",
                         help="Skip fetch, only run enrich_game_outcomes()")
     args = parser.parse_args()
+
+    if not _ODDS_KEY:
+        print("❌ ODDS_API_KEY not set in .env — aborting.")
+        sys.exit(1)
 
     db_path = DATA_DIR / "predictions_history.db"
     DATA_DIR.mkdir(parents=True, exist_ok=True)

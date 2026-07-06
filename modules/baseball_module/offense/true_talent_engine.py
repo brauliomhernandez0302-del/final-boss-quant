@@ -24,17 +24,19 @@ Method
   3.  Apply Bayesian regression to mean for each metric based on sample
       size (PA).  This handles early-season noise correctly without any
       hardcoded season_context fudge factor.
-  4.  Compute composite True Talent score from four orthogonal signals:
-        xwOBA factor   (0.45) — removes BABIP luck from contact outcomes
-        wRC+ factor    (0.30) — park-adjusted comprehensive run creation
-        Contact factor (0.15) — barrel% predicts future power output
-        Plate disc     (0.10) — BB%-K% differential, most stable metric
+  4.  Compute composite True Talent score from three orthogonal signals:
+        xwOBA factor   (0.50) — removes BABIP luck from contact outcomes
+        Barrel factor  (0.30) — exit-velocity/power; predicts future HR
+        Plate disc     (0.20) — BB%-K% differential, most stable metric
+      (wRC+ was removed: collinear with xwOBA, same contact-quality signal
+      but reintroducing BABIP noise xwOBA is designed to strip out. Its
+      weight was redistributed to barrel [+0.15] and plate [+0.10]. wRC+
+      is still computed for UI display only — see `wrc_plus_approx`.)
   5.  λ_talent = composite × league_avg_rpg
 
 Regression constants (half-reliability PA from FanGraphs / BIS research):
     xwOBA  → k=150 PA   BB%  → k=120 PA
-    wRC+   → k=400 PA   K%   → k=60  PA
-    barrel → k=120 BIP
+    barrel → k=120 BIP  K%   → k=60  PA
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ from typing import Dict, Optional, Tuple
 
 import requests
 
-from config import CACHE_DIR, LEAGUE_AVG_RUNS, LEAGUE_AVG_WOBA
+from config import CACHE_DIR, LEAGUE_AVG_RUNS, LEAGUE_AVG_WOBA, LEAGUE_AVG_XWOBA
 
 log = logging.getLogger(__name__)
 
@@ -59,7 +61,7 @@ SAVANT_BASE = "https://baseballsavant.mlb.com"
 
 # ── League averages (2024/2025 — updated annually) ────────────────────────────
 LG_RPG       = LEAGUE_AVG_RUNS   # single source of truth: config.py
-LG_XWOBA     = 0.312             # Statcast expected wOBA (≠ traditional wOBA)
+LG_XWOBA     = LEAGUE_AVG_XWOBA  # single source of truth: config.py
 LG_WOBA      = LEAGUE_AVG_WOBA   # single source of truth: config.py
 LG_WOBA_SCALE = 1.157            # FanGraphs wOBAscale 2024
 LG_BB_PCT    = 0.086
@@ -75,16 +77,24 @@ _K_K      = 60
 
 # Bayesian prior-season equivalent PA (crossover point where prior = current = 50%)
 # At PA=0 → 100% prior. At PA=1000 → 50/50. At PA=∞ → 0% prior.
+# NOTE: this PA is TEAM-season PA (sum across all 9 lineup spots, ~38-39/game),
+# not one batter's PA — a full team-season is ~6,150-6,300 PA, not ~600-700.
+# So PA=1000 is reached ~26 team-games in, and a full season lands current-
+# season weight at ~86%, not stuck near 50/50 as the raw "1000" might suggest
+# at a glance. Verified 2026-07-05: this crossover point is well-placed (early
+# enough to avoid being buried by a slow start, late enough to not be noisy) —
+# not a bug, just easy to misread without this note.
 _PRIOR_PA_EQUIVALENT = 1000
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 
-def _get_json(url: str, params: dict = None, timeout: tuple = (5, 20)) -> Optional[dict]:
+def _get_json(url: str, params: dict = None, timeout: tuple = (5, 20),
+              headers: Optional[dict] = None) -> Optional[dict]:
     try:
         r = requests.get(url, params=params, timeout=timeout,
-                         headers={"User-Agent": "Mozilla/5.0"})
+                         headers=headers or {"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -207,6 +217,62 @@ def _fetch_savant_exitvelo(season: int) -> dict:
 
     cache.write_text(json.dumps(result))
     log.info("Savant exit velo %d: %d players cached", season, len(result))
+    return result
+
+
+# ── FanGraphs plate-discipline fetcher ─────────────────────────────────────────
+
+_FG_URL = "https://www.fangraphs.com/api/leaders/major-league/data"
+# FanGraphs' Cloudflare bot-protection rejects a bare "Mozilla/5.0" UA (used
+# elsewhere in this file for MLB Stats API / Savant) with a 403 challenge page.
+# Must match modules/baseball_module/data_enrichment/fangraphs_fetcher.py.
+_FG_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; FinalBossQuant/1.0)"}
+
+
+def _fetch_fg_batters(season: int) -> dict:
+    """
+    Returns {player_id: {pa, bb_pct, k_pct}} for the given season, from the
+    FanGraphs batting leaderboard (same free public API the pitcher engine
+    enrichment uses). Player-level BB%/K% — MLB Stats API only exposes these
+    at the team-aggregate level, which can't be filtered to a confirmed lineup.
+    Cached for 6 hours.
+    """
+    cache = _cache_path(f"tte_fg_batters_{season}.json")
+    if _cache_valid(cache):
+        return json.loads(cache.read_text())
+
+    data = _get_json(
+        _FG_URL,
+        params={
+            "pos": "all", "stats": "bat", "lg": "all", "qual": "0",
+            "season": str(season), "season1": str(season),
+            "ind": "0", "team": "0", "pageitems": "1200", "pagenum": "1",
+            "type": "8",
+        },
+        headers=_FG_HEADERS,
+    )
+    if not data:
+        log.warning("FanGraphs batter stats unavailable for %d", season)
+        return {}
+
+    result: dict = {}
+    for row in data.get("data", []):
+        pid = row.get("xMLBAMID")
+        if not pid:
+            continue
+        try:
+            pid = int(pid)
+            pa  = row.get("PA")
+            bb  = row.get("BB%")
+            k   = row.get("K%")
+            if pa is None or bb is None or k is None:
+                continue
+            result[pid] = {"pa": float(pa), "bb_pct": float(bb), "k_pct": float(k)}
+        except (TypeError, ValueError):
+            continue
+
+    cache.write_text(json.dumps(result))
+    log.info("FanGraphs batter stats %d: %d players cached", season, len(result))
     return result
 
 
@@ -398,13 +464,68 @@ def _aggregate_statcast_for_team(
             "barrel_pa":  LG_BARREL_PA,
             "avg_ev":     87.0,
             "total_pa":   0.0,
+            "total_attempts": 0.0,
             "n_players":  0,
         }
 
     return {
         "xwoba":     round(xwoba_sum  / total_pa,     4),
-        "barrel_pa": round(barrels_sum / total_pa,     4),
+        # Barrels per batted-ball-event (attempts), NOT per PA — LG_BARREL_PA=0.088
+        # is the publicly-cited Statcast league average, which is itself a per-BBE
+        # rate (~8%), not per-PA (~5.4% league-wide, confirmed empirically). Dividing
+        # by total_pa here compared every team's rate against the wrong baseline,
+        # making every team look systematically ~40% below-average on power
+        # regardless of real performance. bullpen_engine.py's equivalent
+        # aggregation already divides by attempts — this aligns the two.
+        "barrel_pa": round(barrels_sum / attempts_sum, 4) if attempts_sum > 0 else LG_BARREL_PA,
         "avg_ev":    round(ev_sum / attempts_sum,      2) if attempts_sum > 0 else 87.0,
+        "total_pa":  total_pa,
+        # Surfaced so the caller's Bayesian regression can shrink barrel_pa
+        # using its own true sample size (BBE count), not PA — PA always
+        # exceeds BBE (walks/Ks/HBP are plate appearances but not batted-ball
+        # events), so using PA there under-shrinks barrel% relative to how
+        # much data actually backs it.
+        "total_attempts": attempts_sum,
+        "n_players": n_found,
+    }
+
+
+def _aggregate_plate_discipline_for_team(
+    roster: Dict[int, str],
+    fg_batters: dict,
+    player_ids: Optional[list] = None,
+) -> dict:
+    """
+    PA-weighted aggregation of player-level plate discipline (FanGraphs BB%/K%).
+    Returns {bb_pct, k_pct, total_pa, n_players}. Falls back to league averages
+    when no candidate has FanGraphs data.
+
+    player_ids — if provided (confirmed lineup), restrict aggregation to those
+                 players only; otherwise aggregates the full roster. Mirrors
+                 _aggregate_statcast_for_team so plate discipline is computed
+                 over the exact same set of batters as xwOBA/barrel%.
+    """
+    total_pa = 0.0
+    bb_sum   = 0.0
+    k_sum    = 0.0
+    n_found  = 0
+
+    candidates = player_ids if player_ids else list(roster)
+    for pid in candidates:
+        fg = fg_batters.get(pid) or fg_batters.get(str(pid))
+        if fg and fg.get("pa", 0) > 0:
+            pa = float(fg["pa"])
+            bb_sum   += float(fg["bb_pct"]) * pa
+            k_sum    += float(fg["k_pct"]) * pa
+            total_pa += pa
+            n_found  += 1
+
+    if total_pa <= 0:
+        return {"bb_pct": LG_BB_PCT, "k_pct": LG_K_PCT, "total_pa": 0.0, "n_players": 0}
+
+    return {
+        "bb_pct":    round(bb_sum / total_pa, 4),
+        "k_pct":     round(k_sum  / total_pa, 4),
         "total_pa":  total_pa,
         "n_players": n_found,
     }
@@ -443,8 +564,9 @@ def _composite_score(
 class TrueTalentOffenseEngine:
     """
     Computes park-neutral expected runs per game for a team using
-    Statcast xwOBA, barrel%, plate discipline, and wRC+ derived from
-    MLB Stats API.  Applies Bayesian regression to mean based on PA.
+    Statcast xwOBA/barrel% and FanGraphs plate discipline (BB%/K%),
+    both filterable to a confirmed day-of lineup at the player level.
+    Applies Bayesian regression to mean based on PA.
     """
 
     def __init__(self) -> None:
@@ -452,6 +574,8 @@ class TrueTalentOffenseEngine:
         self._savant_ev:      Dict[int, dict] = {}
         self._savant_exp_pri: Dict[int, dict] = {}  # prior season — shared across calls
         self._savant_ev_pri:  Dict[int, dict] = {}
+        self._fg_batters:     Dict[int, dict] = {}
+        self._fg_batters_pri: Dict[int, dict] = {}
         self._season_loaded:  Optional[int] = None
         self._prior_loaded:   Optional[int] = None
 
@@ -464,10 +588,13 @@ class TrueTalentOffenseEngine:
             self._savant_ev = {
                 int(k): v for k, v in _fetch_savant_exitvelo(season).items()
             }
+            self._fg_batters = {
+                int(k): v for k, v in _fetch_fg_batters(season).items()
+            }
             self._season_loaded = season
             log.info(
-                "Savant season %d loaded: %d expected, %d exitvelo players",
-                season, len(self._savant_exp), len(self._savant_ev),
+                "Savant season %d loaded: %d expected, %d exitvelo, %d FG batters",
+                season, len(self._savant_exp), len(self._savant_ev), len(self._fg_batters),
             )
         if self._prior_loaded != prior_season:
             self._savant_exp_pri = {
@@ -476,10 +603,14 @@ class TrueTalentOffenseEngine:
             self._savant_ev_pri = {
                 int(k): v for k, v in _fetch_savant_exitvelo(prior_season).items()
             }
+            self._fg_batters_pri = {
+                int(k): v for k, v in _fetch_fg_batters(prior_season).items()
+            }
             self._prior_loaded = prior_season
             log.info(
-                "Savant prior season %d loaded: %d expected, %d exitvelo players",
+                "Savant prior season %d loaded: %d expected, %d exitvelo, %d FG batters",
                 prior_season, len(self._savant_exp_pri), len(self._savant_ev_pri),
+                len(self._fg_batters_pri),
             )
 
     def get_lambda(
@@ -512,33 +643,58 @@ class TrueTalentOffenseEngine:
             roster_cur, self._savant_exp, self._savant_ev,
             player_ids=lineup_ids if lineup_ids else None,
         )
+        # Player-level BB%/K% (FanGraphs) over the same candidate set as sc_cur —
+        # MLB Stats API only exposes plate discipline at the team-aggregate
+        # level, which can't be filtered to a confirmed lineup.
+        pd_cur      = _aggregate_plate_discipline_for_team(
+            roster_cur, self._fg_batters,
+            player_ids=lineup_ids if lineup_ids else None,
+        )
 
         # ── Prior season data (for blending) ──────────────────────────────
         hitting_pri = _fetch_team_hitting_stats(team_id, prior_season)
         roster_pri  = _fetch_team_roster(team_id, prior_season)
         # Prior-season Savant is cached in the instance by _ensure_savant_loaded.
+        # Filter to today's confirmed lineup (same player_ids as sc_cur) when
+        # available: Savant is keyed by player_id league-wide, so this pulls
+        # each confirmed starter's own prior-year numbers wherever they played
+        # — correctly following a traded-in player and dropping a departed one,
+        # instead of blending toward last year's roster as an undifferentiated
+        # team blob.
         sc_pri      = _aggregate_statcast_for_team(
-            roster_pri, self._savant_exp_pri, self._savant_ev_pri
+            roster_pri, self._savant_exp_pri, self._savant_ev_pri,
+            player_ids=lineup_ids if lineup_ids else None,
+        )
+        pd_pri      = _aggregate_plate_discipline_for_team(
+            roster_pri, self._fg_batters_pri,
+            player_ids=lineup_ids if lineup_ids else None,
         )
 
         # ── Extract raw metrics ────────────────────────────────────────────
-        pa_cur     = hitting_cur.get("pa",     0.0)
+        pa_cur       = hitting_cur.get("pa",     0.0)
+        attempts_cur = sc_cur.get("total_attempts", 0.0)
         xwoba_cur  = sc_cur.get("xwoba",       LG_XWOBA)
         barrel_cur = sc_cur.get("barrel_pa",   LG_BARREL_PA)
-        bb_cur     = hitting_cur.get("bb_pct", LG_BB_PCT)
-        k_cur      = hitting_cur.get("k_pct",  LG_K_PCT)
+        bb_cur     = pd_cur.get("bb_pct",      LG_BB_PCT)
+        k_cur      = pd_cur.get("k_pct",       LG_K_PCT)
         woba_cur   = hitting_cur.get("woba",   LG_WOBA)
 
         xwoba_pri  = sc_pri.get("xwoba",       LG_XWOBA)
         barrel_pri = sc_pri.get("barrel_pa",   LG_BARREL_PA)
-        bb_pri     = hitting_pri.get("bb_pct", LG_BB_PCT)
-        k_pri      = hitting_pri.get("k_pct",  LG_K_PCT)
+        bb_pri     = pd_pri.get("bb_pct",      LG_BB_PCT)
+        k_pri      = pd_pri.get("k_pct",       LG_K_PCT)
         woba_pri   = hitting_pri.get("woba",   LG_WOBA)
         rpg_pri    = hitting_pri.get("rpg",    LG_RPG)
 
         # ── Bayesian regression to mean (current season) ──────────────────
         xwoba_reg  = _regress(xwoba_cur,  LG_XWOBA,     pa_cur, _K_XWOBA)
-        barrel_reg = _regress(barrel_cur, LG_BARREL_PA, pa_cur, _K_BARREL)
+        # barrel_cur is a per-batted-ball-event (attempts) rate, not per-PA —
+        # its shrinkage sample size must be attempts_cur, not pa_cur (PA always
+        # exceeds attempts since walks/Ks/HBP are plate appearances but not
+        # batted-ball events). Using pa_cur here under-shrunk barrel% relative
+        # to how much real data actually backed it — same category of fix as
+        # the LG_XWOBA/LG_DER stale-constant bugs found earlier this session.
+        barrel_reg = _regress(barrel_cur, LG_BARREL_PA, attempts_cur, _K_BARREL)
         bb_reg     = _regress(bb_cur,     LG_BB_PCT,    pa_cur, _K_BB)
         k_reg      = _regress(k_cur,      LG_K_PCT,     pa_cur, _K_K)
 
@@ -583,6 +739,7 @@ class TrueTalentOffenseEngine:
             "pa_current":   int(pa_cur),
             "lineup_confirmed": bool(lineup_ids and len(lineup_ids) >= 9),
             "n_statcast_players": sc_cur["n_players"],
+            "n_plate_discipline_players": pd_cur["n_players"],
             "metrics": {
                 "xwoba_raw":        round(xwoba_cur,  4),
                 "xwoba_regressed":  round(xwoba_reg,  4),

@@ -26,10 +26,11 @@ Convention (consistent with Bullpen and HFA engines):
   • Home defence → adjusts λ_away  (home fielders face away batters)
   • Away defence → adjusts λ_home  (away fielders face home batters)
 
-Output range: ±5% (hard cap).  DER varies ≈ 0.68–0.74 across MLB;
-±0.015 DER → ±2.0% λ change × innings-weight, well within cap.
+Output range: ±8% (hard cap, expanded from ±5% — see _MAX_DEF_ADJ below).
+DER varies ≈ 0.68–0.74 across MLB; ±0.015 DER → ±2.0% λ change ×
+innings-weight, well within cap.
 
-Pipeline position: PASO 4 (after HFA, before Pitcher Engine).
+Pipeline position: PASO 6 (after Park+Weather, before HFA).
 """
 
 from __future__ import annotations
@@ -43,13 +44,32 @@ from config import LEAGUE_AVG_RUNS
 log = logging.getLogger(__name__)
 
 # ── League constants ─────────────────────────────────────────────────────────
-_LG_DER       = 0.715    # 2024 MLB average (1 − BABIP_allowed ≈ 0.285)
+# Empirically measured 2026-07-05 via live MLB Stats API across all 30 teams:
+# 2024 avg DER=0.7097, 2025 avg DER=0.7097 (identical). The prior 0.715 value
+# was stale/wrong even for the 2024 season it claimed to represent — a
+# regression screen on the clean PIT backtest (4,830 games) found this
+# systematically skewed the defense stage factor above 1.0 for most teams
+# (p=0.0006 unexplained residual correlation, see run_module.py's
+# stage_factors_naming TODO near the defense engine call).
+_LG_DER       = 0.7097   # 2024-2025 MLB average (1 − BABIP_allowed ≈ 0.2903)
 _LG_OAA_RUN   = 0.80     # runs saved per net OAA (Dewan/StatCast research)
-_LG_GAMES     = 162      # games per season (for OAA → per-game conversion)
+_BIP_PER_GAME = 25.9     # used to estimate games-played from BIP (see OAA fix below)
 
 # Bayesian stabilisation: DER stabilises ≈500 BIP; BIP/game ≈ 26 → ~19 games
 # k=500 BIP; at 1 full team-season (4,200 BIP) → ~89% observed, 11% prior
 _K_BIP_DER    = 500
+
+# OAA Bayesian stabilisation (games-played-equivalent). No citation found for
+# team-aggregate OAA specifically (unlike _K_BIP_DER, which has one) — set
+# conservatively above DER's ~19-game-equivalent k since this file's own
+# docstring already calls OAA "the hardest fielding component" to measure,
+# i.e. presumed noisier than DER at the same sample size. Flagged 2026-07-05
+# as an interim estimate needing proper derivation against the clean
+# backtest, same category as bullpen_engine.py's still-missing _K_BARREL_BP —
+# implemented now because fixing the OAA/games-played bug below (see
+# games_played_est) supplies the sample-size input this needs, but the
+# constant itself is a placeholder, not a researched value.
+_K_GAMES_OAA  = 40
 
 # Weight split when both metrics are available
 _DER_WEIGHT   = 0.55
@@ -171,12 +191,32 @@ class DefensiveEfficiencyEngine:
 
         # ── OAA factor (optional) ────────────────────────────────────────────
         oaa_factor = None
+        games_played_est = None
+        oaa_per_game_reg = None
         if td.oaa is not None:
-            # Convert season OAA to per-game run impact, then to % of λ
-            oaa_run_pg = (td.oaa * _LG_OAA_RUN) / _LG_GAMES
+            # td.oaa is a SEASON-TO-DATE cumulative total from Savant (grows as
+            # the season progresses), not a fixed final-season number — dividing
+            # by a hardcoded 162 (the old behaviour) understated real per-game
+            # impact by up to ~1.8x mid-season and only became correct once the
+            # season was nearly over. td.bip already exists on this same
+            # TeamDefense object and accumulates in lockstep with games played
+            # (this file's own docstring cites BIP/game≈26), so it's a
+            # zero-new-plumbing proxy for games-played-so-far. Fixed 2026-07-05.
+            games_played_est = max(1.0, td.bip / _BIP_PER_GAME)
+            oaa_per_game_raw = td.oaa / games_played_est
+
+            # Bayesian shrinkage toward 0 (OAA is defined relative to league
+            # average, so a thin sample should regress toward "no net
+            # advantage", not toward some other constant) — same
+            # games-played-equivalent sample size used for the fix above.
+            # DER gets this kind of shrinkage already (_K_BIP_DER); OAA
+            # previously got none at all.
+            shrink_w_oaa = _K_GAMES_OAA / (_K_GAMES_OAA + games_played_est)
+            oaa_per_game_reg = oaa_per_game_raw * (1.0 - shrink_w_oaa)
+
+            oaa_run_pg = oaa_per_game_reg * _LG_OAA_RUN
             # Positive OAA → fewer runs for opponent → factor < 1
             # Negative OAA → more runs for opponent  → factor > 1
-            # λ_avg ≈ 4.5 runs/game; 0.80 runs/162 ≈ 0.005 per game
             # Adjust relative to league-average λ; clip to ±8%
             oaa_factor = max(0.92, min(1.08, 1.0 - oaa_run_pg / LEAGUE_AVG_RUNS))
 
@@ -186,7 +226,7 @@ class DefensiveEfficiencyEngine:
         else:
             raw_mult = der_factor   # DER only
 
-        # Apply ±5% hard cap
+        # Apply ±8% hard cap
         mult = max(1.0 - _MAX_DEF_ADJ, min(1.0 + _MAX_DEF_ADJ, raw_mult))
 
         meta = {
@@ -195,6 +235,8 @@ class DefensiveEfficiencyEngine:
             "bip_sample":    td.bip,
             "der_factor":    round(der_factor, 4),
             "oaa":           td.oaa,
+            "games_played_est": round(games_played_est, 1) if games_played_est is not None else None,
+            "oaa_per_game_regressed": round(oaa_per_game_reg, 4) if oaa_per_game_reg is not None else None,
             "oaa_factor":    round(oaa_factor, 4) if oaa_factor is not None else None,
             "raw_mult":      round(raw_mult, 4),
             "final_mult":    round(mult, 4),

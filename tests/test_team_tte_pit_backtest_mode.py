@@ -23,7 +23,7 @@ class _FakeLearning:
     def get_pipeline_weights(self, season):
         return {}
 
-    def compute_team_bias_kalman_adjusted(self, team, season, role):
+    def compute_team_bias_kalman_adjusted(self, team, season, role, month=None):
         return 1.0
 
     def get_platt_params(self, season):

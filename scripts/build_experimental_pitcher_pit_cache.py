@@ -85,12 +85,31 @@ def build_experimental_pitcher_pit_cache(args: argparse.Namespace) -> list[Build
         end_date=args.end_date,
         cutoff_policy=args.cutoff_policy,
     )
-    cutoff_dates = sorted({plan.cutoff_date for plan in plans})
+    # previous_day maps the season-opener game date to a cutoff one day
+    # BEFORE the season starts, which is an invalid (negative-length) window
+    # for build_for_as_of_date(season_start_date, as_of_date). There is no
+    # current-season data before the season starts anyway (zero events) —
+    # AdvancedPitcherDailySnapshotBuilder already falls back to the prior-
+    # season baseline for these dates, so skipping them here is correct, not
+    # a coverage loss.
+    cutoff_dates = sorted(
+        {plan.cutoff_date for plan in plans if plan.cutoff_date >= args.season_start_date}
+    )
     if not cutoff_dates:
         return []
 
     raw_ingestor = SavantRawIngestor(args.raw_savant_db)
-    raw_ingestor.ingest_date_range(start_date=args.season_start_date, end_date=cutoff_dates[-1])
+    # ingest_historical_date_range is manifest-aware and skips dates already
+    # present in raw_savant_{season}.db's completed_dates — ingest_date_range
+    # (the naive version) always re-fetches every day live from Savant, which
+    # is needlessly slow/network-bound when the raw cache is already complete.
+    manifest_path = args.raw_savant_db.with_suffix(".manifest.json")
+    raw_ingestor.ingest_historical_date_range(
+        season=args.season,
+        start_date=args.season_start_date,
+        end_date=cutoff_dates[-1],
+        manifest_path=manifest_path,
+    )
 
     fangraphs = FanGraphsDailyPITPersistence(pit_cache_db=args.pit_cache_db)
     savant = SavantRollingPITPersistence(

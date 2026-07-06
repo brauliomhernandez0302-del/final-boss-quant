@@ -10,7 +10,7 @@ Removed (E3 / FIX C2):
   direction 53% random). hfa_boost hardcoded to 0.0. The hfa_base
   per-stadium dict has been removed entirely.
 
-NOT in scope (handled by ParkWeatherEngine, PASO 2):
+NOT in scope (handled by ParkWeatherEngine, PASO 5):
   Park run-environment factor — symmetric, belongs in its own engine.
   Weather (temp, wind, rain)  — symmetric, belongs in ParkWeatherEngine.
 """
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class HFAEngine:
     """
     Adjusts (λ_home, λ_away) for crowd advantage and away-team travel fatigue.
-    Park factor and weather are handled upstream by ParkWeatherEngine (PASO 2).
+    Park factor and weather are handled upstream by ParkWeatherEngine (PASO 5).
     """
 
     def __init__(self):
@@ -43,7 +43,7 @@ class HFAEngine:
     ) -> Tuple[float, float, Dict[str, Any]]:
         """
         Apply crowd advantage and travel fatigue (asymmetric adjustments only).
-        Park factor and weather are handled by ParkWeatherEngine (PASO 2).
+        Park factor and weather are handled by ParkWeatherEngine (PASO 5).
 
         Args:
             lh: Home expected runs after ParkWeatherEngine.
@@ -100,9 +100,9 @@ class HFAEngine:
           • Max penalty 0.10 runs (~2.2% λ cut): empirical estimates put the
             travel effect at ~0.5–1% win-prob, equivalent to ~0.05–0.10 runs.
           • Back-to-back is intentionally excluded: owned by ContextualEngine
-            (PASO 7), which applies the B2B penalty to BOTH teams symmetrically
-            in their own rest_days signal. Keeping it here would double-count
-            the away team's B2B.
+            (PASO 3), which applies the B2B penalty to BOTH teams asymmetrically
+            (home/away multipliers differ, FIX D4) via their own rest_days
+            signal. Keeping it here would double-count the away team's B2B.
           • In practice travel fields are rarely populated by the free MLB API;
             the penalty fires mainly when game_data is enriched externally.
         """

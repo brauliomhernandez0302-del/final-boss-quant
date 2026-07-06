@@ -109,18 +109,22 @@ def calculate_kelly(
     odds: Optional[float],
     prob: Optional[float],
     fraction: float = 0.25,
-    max_stake: float = 0.05,
 ) -> float:
-    """Fractional Kelly stake as a fraction of bankroll (capped at max_stake)."""
+    """Fractional Kelly stake as a fraction of bankroll.
+
+    Delegates to core.value_detector.kelly_criterion so the display cards
+    use the same MIN_KELLY/MAX_KELLY clip as the pipeline's best_bets —
+    previously this hardcoded its own 5% cap while best_bets used 15%,
+    showing two different Kelly numbers for the same pick.
+    """
     if odds is None or prob is None:
         return 0.0
     try:
         o, p = float(odds), float(prob)
         if o <= 1.0 or not (0 < p < 1):
             return 0.0
-        b = o - 1.0
-        kelly = ((p * b) - (1.0 - p)) / b
-        return max(0.0, min(kelly * fraction, max_stake))
+        from core.value_detector import kelly_criterion
+        return kelly_criterion(p, o, fractional=fraction)
     except (ValueError, TypeError, ZeroDivisionError):
         return 0.0
 

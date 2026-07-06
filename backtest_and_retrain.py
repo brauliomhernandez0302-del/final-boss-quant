@@ -9,8 +9,8 @@ For each game:
   1. Fetches season-level team and pitcher stats from MLB Stats API
      (disk-cached in .cache/backtest/ — fast on re-runs)
   2. Runs the complete pipeline:
-       base_lambda → AutoCalibrator → HFA → PitcherEngine → Regression
-       → MonteCarlo(50 000 sims)
+       base_lambda → LearningEngine(Kalman+bias) → Park/Weather → HFA
+       → Defense → PitcherEngine → Bullpen → Context → MonteCarlo(50 000 sims)
   3. Writes real model λ_home, λ_away, p_home, p_away back to game_outcomes,
      replacing the 4.5 priors
 
@@ -445,6 +445,7 @@ def build_game_data(
     use_team_full_season_offense_base: bool = True,
     use_team_full_season_defense: bool = True,
     use_legacy_full_season_bullpen: bool = True,
+    use_team_full_season_pitching_base: bool = True,
 ) -> Tuple[Dict, float, float]:
     """
     Assemble game_data and (lh_base, la_base) from cached season-level stats.
@@ -525,13 +526,27 @@ def build_game_data(
     def _team_dict(name: str, off: dict, pitch: dict, rpg: float,
                    is_home: bool) -> Dict:
         d = _default_team_dict(name, rpg)
+        # team_era/team_whip/runs_allowed_per_game come from the same
+        # season-aggregate get_team_pitching_stats() call as der/bip (which
+        # use_team_full_season_defense already gates). Without this flag they
+        # leaked into home_dict/away_dict unconditionally regardless of PIT
+        # mode, concentrated exactly in the thin-IP fallback-of-fallback path
+        # in run_module.py where a starter's own era/whip is missing.
+        if use_team_full_season_pitching_base:
+            team_era = pitch.get("team_era", LEAGUE_AVG_ERA)
+            team_whip = pitch.get("team_whip", LEAGUE_AVG_WHIP)
+            runs_allowed = pitch.get("runs_allowed_per_game", LEAGUE_AVG_RUNS)
+        else:
+            team_era = LEAGUE_AVG_ERA
+            team_whip = LEAGUE_AVG_WHIP
+            runs_allowed = LEAGUE_AVG_RUNS
         d.update({
             "woba":                off.get("woba", 0.320),
             "ops":                 off.get("ops", 0.735),
             "wrc_plus":            off.get("wrc_plus", 100.0),
-            "team_era":            pitch.get("team_era", LEAGUE_AVG_ERA),
-            "team_whip":           pitch.get("team_whip", LEAGUE_AVG_WHIP),
-            "runs_allowed_per_game": pitch.get("runs_allowed_per_game", LEAGUE_AVG_RUNS),
+            "team_era":            team_era,
+            "team_whip":           team_whip,
+            "runs_allowed_per_game": runs_allowed,
             "runs_per_game":       rpg,
             "home_runs_per_game":  rpg,
             "away_runs_per_game":  rpg,
@@ -576,7 +591,12 @@ def build_game_data(
             "hr_fb_pct":       fg.get("hr_fb"),
             "babip":           fg.get("babip"),
             "lob_pct":         fg.get("lob_pct"),
-            "innings_pitched": fg.get("ip"),   # for Bayesian regression in pitcher_engine
+            # for Bayesian regression in pitcher_engine (quality_mult, 32% weight).
+            # FanGraphs IP preferred when available; falls back to the MLB Stats
+            # API season IP (same fallback as the live path in run_module.py) so
+            # pitchers FanGraphs doesn't cover (rookies, call-ups, name-matching
+            # misses) don't silently collapse quality_mult to exactly 1.0.
+            "innings_pitched": fg.get("ip") if fg.get("ip") is not None else ps.get("innings_pitched", 0),
             # Baseball Savant contact quality
             "est_woba":        sv.get("est_woba"),
             "xera":            sv.get("xera") or fg.get("xera"),
@@ -1733,11 +1753,15 @@ def run_pipeline(
     _w = learning.get_pipeline_weights(season)
 
     # ── Team bias (LearningEngine) ────────────────────────────────────────────
+    try:
+        _game_month = int(str(game_data.get("game_date", ""))[5:7])
+    except (ValueError, TypeError):
+        _game_month = None
     lh *= learning.compute_team_bias_kalman_adjusted(
-        game_data.get("home_team", {}).get("name", ""), season, "offense_home"
+        game_data.get("home_team", {}).get("name", ""), season, "offense_home", month=_game_month
     )
     la *= learning.compute_team_bias_kalman_adjusted(
-        game_data.get("away_team", {}).get("name", ""), season, "offense_away"
+        game_data.get("away_team", {}).get("name", ""), season, "offense_away", month=_game_month
     )
 
     # ── PASO 2: Park + Weather ────────────────────────────────────────────────
@@ -2278,8 +2302,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="MLB pipeline backtest + retrain")
     parser.add_argument("--limit",       type=int,   default=0,
                         help="Process only the first N games (0 = all)")
-    parser.add_argument("--season", "--seasons", type=int, default=0,
-                        help="Restrict to one season (0 = all)")
+    parser.add_argument("--season", "--seasons", type=str, default="",
+                        help="Restrict to one or more seasons, comma-separated "
+                             "(e.g. --season 2024,2025). Empty = all seasons.")
     parser.add_argument("--report-only", action="store_true",
                         help="Skip pipeline; just re-generate report from current DB state")
     parser.add_argument("--prefetch",    action="store_true",
@@ -2314,7 +2339,18 @@ def main() -> None:
                         help="PIT cache DB for --use-bullpen-pit")
     parser.add_argument("--technical-pit-coverage-only", action="store_true",
                         help="Trace PIT coverage/provenance without scoring predictions")
+    parser.add_argument("--use-full-pit", action="store_true",
+                        help="Convenience flag: enables all 4 PIT modes "
+                             "(pitcher, TTE, defense, bullpen) at once, so a "
+                             "clean backtest run can't accidentally leave one "
+                             "flag off and silently reintroduce a look-ahead leak")
     args = parser.parse_args()
+
+    if args.use_full_pit:
+        args.experimental_pitcher_pit_mode = True
+        args.use_team_tte_pit = True
+        args.use_defense_pit = True
+        args.use_bullpen_pit = True
 
     if args.experimental_pitcher_pit_mode and not args.pitcher_pit_cache_db:
         parser.error("--pitcher-pit-cache-db is required with --experimental-pitcher-pit-mode")
@@ -2340,8 +2376,10 @@ def main() -> None:
     _add_backtest_col(conn)
 
     where = "WHERE actual_home_runs IS NOT NULL"
+    seasons_filter: List[int] = []
     if args.season:
-        where += f" AND season = {args.season}"
+        seasons_filter = [int(s.strip()) for s in args.season.split(",") if s.strip()]
+        where += f" AND season IN ({','.join(str(s) for s in seasons_filter)})"
     order = "ORDER BY game_date ASC"
     limit = f"LIMIT {args.limit}" if args.limit else ""
     rows = conn.execute(
@@ -2507,7 +2545,7 @@ def main() -> None:
                 "clv_home": (r["p_home"] / pin_fh - 1.0) if (pin_fh and pin_fh > 0) else None,
                 "clv_away": (r["p_away"] / pin_fa - 1.0) if (pin_fa and pin_fa > 0) else None,
             })
-        generate_report(results, REPORT_DIR)
+        generate_report(results, args.report_dir)
         conn.close()
         return
 
@@ -2559,7 +2597,7 @@ def main() -> None:
         if prior and prior.get("n", 0) >= _PLATT_MIN_SAMPLES:
             learning.save_state(
                 "platt_params", "calibration",
-                {"a": prior["a"], "b": prior["b"], "c": prior.get("c", 0.0), "n": 0},
+                {"a": prior["a"], "b": prior["b"], "n": 0},
                 sample_count=0,
                 season=season,
             )
@@ -2661,7 +2699,7 @@ def main() -> None:
         _today_str = game_date[:10]                          # "YYYY-MM-DD"
         _yesterday = (
             datetime.strptime(_today_str, "%Y-%m-%d").date()
-            - __import__('datetime').timedelta(days=1)
+            - timedelta(days=1)
         ).strftime("%Y-%m-%d")
         _cur_venue = TEAM_VENUES.get(home_name, "Unknown")
 
@@ -2702,6 +2740,11 @@ def main() -> None:
                 use_team_full_season_offense_base=not args.use_team_tte_pit,
                 use_team_full_season_defense=not args.use_defense_pit,
                 use_legacy_full_season_bullpen=not args.use_bullpen_pit,
+                # Same season-aggregate get_team_pitching_stats() call that
+                # feeds der/bip (gated above) also feeds team_era/team_whip/
+                # runs_allowed_per_game — tied to the same flag so the two
+                # can't drift out of sync and silently reopen the leak.
+                use_team_full_season_pitching_base=not args.use_defense_pit,
             )
             if args.experimental_pitcher_pit_mode:
                 pit_meta = apply_experimental_pitcher_pit_mode(

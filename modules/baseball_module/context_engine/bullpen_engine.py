@@ -8,7 +8,10 @@ same tier of advanced metrics as the Pitcher Engine for starters:
   Quality signals (parallel to starter engine):
     xwOBA against   (0.40) — removes BABIP luck from contact outcomes
     K% − BB%        (0.30) — most stable command/whiff signal for relievers
-    ERA             (0.20) — reliever-specific (pitcherType=R endpoint)
+    ERA             (0.20) — SIERA/xFIP team-aggregate when available (FanGraphs,
+                     IP-weighted across the bullpen), falls back to raw
+                     pitcherType=R ERA otherwise — same luck-stripping
+                     override philosophy as the Pitcher Engine's quality_mult
     Barrel% against (0.10) — predicts HR/XBH allowed
 
   All metrics are Bayesian-regressed toward league averages based on
@@ -23,8 +26,10 @@ Data sources:
   Baseball Savant pitcher leaderboard → xwOBA against, barrel% against
     (team-aggregate over all pitchers who appear in Savant; relievers
      dominate by volume once starters are at 25–30 starts)
+  FanGraphs pitcher leaderboard → SIERA/xFIP, IP-weighted across the
+    roster's pitchers found in Savant (same relievers-dominate-by-volume logic)
 
-Pipeline position: PASO 6 — after Pitcher Engine, before Contextual.
+Pipeline position: PASO 4 — after Pitcher Engine and Contextual Engine, before Park+Weather.
 Convention (same as Pitcher Engine):
   Away bullpen suppresses home-team scoring → adjusts λ_home
   Home bullpen suppresses away-team scoring → adjusts λ_away
@@ -41,6 +46,9 @@ from typing import Any, Dict, Optional, Tuple
 
 import requests
 
+from modules.baseball_module.data_enrichment.fangraphs_fetcher import FanGraphsFetcher
+from config import LEAGUE_AVG_XWOBA
+
 log = logging.getLogger(__name__)
 
 ROOT      = Path(__file__).parent.parent.parent.parent
@@ -52,12 +60,12 @@ SAVANT_BASE = "https://baseballsavant.mlb.com"
 
 # ── League averages for RELIEVERS (2024/2025 combined) ────────────────────────
 _LG_BP_ERA       = 4.10   # team reliever ERA (pitcherType=R)
-_LG_BP_WHIP      = 1.26
 _LG_BP_K_PCT     = 0.248  # relievers K% avg (higher than starters ~22%)
 _LG_BP_BB_PCT    = 0.086
 _LG_BP_K_BB      = _LG_BP_K_PCT - _LG_BP_BB_PCT  # 0.162
-_LG_XWOBA_AG     = 0.312  # xwOBA against league avg (pitcher-side)
-_LG_BARREL_PA_AG = 0.088  # barrel% against league avg
+_LG_XWOBA_AG     = LEAGUE_AVG_XWOBA  # single source of truth: config.py
+_LG_BARREL_PA_AG = 0.088  # barrel% against league avg (per batted-ball-event)
+_LG_BP_SIERA     = 4.10   # SIERA/xFIP team-bullpen average — same scale as _LG_BP_ERA
 
 # Bayesian stabilisation constants for team-aggregate bullpen stats (TBF).
 # Team bullpen accumulates TBF fast (many pitchers × high appearance rate).
@@ -65,6 +73,16 @@ _LG_BARREL_PA_AG = 0.088  # barrel% against league avg
 _K_ERA_BP    = 250   # ERA / WHIP for team bullpen aggregate
 _K_XWOBA_BP  = 200   # xwOBA against for team bullpen aggregate
 _K_K_BB_BP   = 180   # K%-BB% for team bullpen aggregate
+_K_SIERA_BP  = 250   # SIERA/xFIP for team bullpen aggregate — same n-scale as ERA (TBF, see _TBF_PER_IP)
+
+# Same TBF-per-IP conversion Pitcher Engine uses (~4.3 TBF/IP for starters).
+# _aggregate_team_siera() returns total_ip (raw innings), not TBF — without
+# this conversion, _K_SIERA_BP=250 was being compared against a raw IP count
+# instead of the TBF-equivalent it was calibrated for, which meant a team
+# with ~240 bullpen IP got shrink_w≈51% instead of the correct ≈19.5% (i.e.
+# ~80.5% trust) — badly over-regressing team SIERA toward league average
+# exactly when good data was available. Confirmed 2026-07-05.
+_TBF_PER_IP = 4.3
 
 # Workload: "normal" bullpen throws ~3 IP per game × 3 games = 9 IP over 3 days
 _NORMAL_IP_3D  = 9.0
@@ -308,6 +326,48 @@ def _aggregate_team_savant(
     }
 
 
+def _aggregate_team_siera(
+    roster: Dict[int, str],
+    fg_pitchers: Dict[int, dict],
+) -> dict:
+    """
+    IP-weighted SIERA (falls back to xFIP per-pitcher) across a team's bullpen
+    roster — the same luck-stripping signal Pitcher Engine uses for starters
+    (SIERA/xFIP > raw ERA), aggregated the same way _aggregate_team_savant
+    aggregates xwOBA/barrel%: relievers dominate by volume once starters are
+    deep into their season IP totals.
+
+    Returns {siera_ag, total_ip, n_pitchers}. total_ip=0 (and siera_ag=None)
+    when no roster pitcher has FanGraphs coverage — caller falls back to raw ERA.
+    """
+    siera_sum = 0.0
+    total_ip  = 0.0
+    n_found   = 0
+
+    for pid in roster:
+        fg = fg_pitchers.get(pid) or fg_pitchers.get(str(pid))
+        if not fg:
+            continue
+        primary = fg.get("siera")
+        if primary is None:
+            primary = fg.get("xfip")
+        ip = fg.get("ip")
+        if primary is None or not ip:
+            continue
+        siera_sum += float(primary) * float(ip)
+        total_ip  += float(ip)
+        n_found   += 1
+
+    if total_ip <= 0:
+        return {"siera_ag": None, "total_ip": 0.0, "n_pitchers": 0}
+
+    return {
+        "siera_ag":   round(siera_sum / total_ip, 4),
+        "total_ip":   total_ip,
+        "n_pitchers": n_found,
+    }
+
+
 # ── Main engine ───────────────────────────────────────────────────────────────
 
 class BullpenEngine:
@@ -319,12 +379,15 @@ class BullpenEngine:
     def __init__(self) -> None:
         self._savant_exp: Dict[int, dict] = {}
         self._savant_ev:  Dict[int, dict] = {}
+        self._fg_pitchers: Dict[int, dict] = {}
+        self._fg_fetcher = FanGraphsFetcher(cache_dir=CACHE_DIR)
         self._season_loaded: Optional[int] = None
 
     def _ensure_savant_loaded(self, season: int) -> None:
         if self._season_loaded != season:
-            self._savant_exp = _fetch_savant_pitcher_expected(season)
-            self._savant_ev  = _fetch_savant_pitcher_exitvelo(season)
+            self._savant_exp  = _fetch_savant_pitcher_expected(season)
+            self._savant_ev   = _fetch_savant_pitcher_exitvelo(season)
+            self._fg_pitchers = self._fg_fetcher.get_all_pitcher_stats(season)
             self._season_loaded = season
 
     def adjust_for_bullpen(
@@ -398,33 +461,47 @@ class BullpenEngine:
         avg_ips     = max(4.0, min(8.0, avg_ips))
         innings_weight = (9.0 - avg_ips) / 9.0
 
+        # ── Roster (shared by the SIERA/xFIP and Savant aggregations below) ──
+        roster = _fetch_team_roster(int(team_id), season) if team_id else {}
+
         # ── MLB API metrics (reliever-specific) ───────────────────────────
-        _era  = bullpen.get("era");          era  = float(_era  if _era  is not None else _LG_BP_ERA)
-        _whip = bullpen.get("bullpen_whip"); whip = float(_whip if _whip is not None else _LG_BP_WHIP)
+        _era  = bullpen.get("era");          era_raw = float(_era if _era is not None else _LG_BP_ERA)
         _tbf  = bullpen.get("tbf");          tbf  = float(_tbf  if _tbf  is not None else 0)
         k_pct  = bullpen.get("k_pct")   # may be None if not yet fetched
         bb_pct = bullpen.get("bb_pct")
+
+        # ── ERA estimator override: SIERA/xFIP (IP-weighted across the bullpen
+        # roster, luck-stripped) preferred over raw pitcherType=R ERA — same
+        # override philosophy as Pitcher Engine's quality_mult fallback chain,
+        # applied here as a team aggregate instead of per-starter.
+        siera_info = _aggregate_team_siera(roster, self._fg_pitchers) if roster else {"siera_ag": None, "total_ip": 0.0, "n_pitchers": 0}
+        used_siera = siera_info["siera_ag"] is not None
+        if used_siera:
+            primary_era, primary_n, primary_k, primary_lg = (
+                siera_info["siera_ag"], siera_info["total_ip"] * _TBF_PER_IP,
+                _K_SIERA_BP, _LG_BP_SIERA,
+            )
+        else:
+            primary_era, primary_n, primary_k, primary_lg = era_raw, tbf, _K_ERA_BP, _LG_BP_ERA
 
         # ── Tier ERA adjustment: who actually pitches depends on starter depth ──
         # Short starter → Long Relief (worse ERA); deep starter → High Leverage (better).
         # Blend is linear: full effect at threshold extremes, neutral in the middle.
         if avg_ips < _LONG_RELIEF_IPS_THRESHOLD:
             tier_blend = min(1.0, (_LONG_RELIEF_IPS_THRESHOLD - avg_ips) / 1.5)
-            tier_era   = era + _LONG_RELIEF_ERA_DELTA * tier_blend
+            tier_era   = primary_era + _LONG_RELIEF_ERA_DELTA * tier_blend
             tier_label = f"long_relief(blend={tier_blend:.2f})"
         elif avg_ips > _HIGH_LEVERAGE_IPS_THRESHOLD:
             tier_blend = min(1.0, (avg_ips - _HIGH_LEVERAGE_IPS_THRESHOLD) / 1.0)
-            tier_era   = era - _HIGH_LEVERAGE_ERA_DELTA * tier_blend
+            tier_era   = primary_era - _HIGH_LEVERAGE_ERA_DELTA * tier_blend
             tier_label = f"high_leverage(blend={tier_blend:.2f})"
         else:
-            tier_era   = era
+            tier_era   = primary_era
             tier_label = "average"
 
-        # Bayesian regression on tier-adjusted ERA/WHIP based on TBF
-        era_reg  = _regress(tier_era, _LG_BP_ERA,  tbf, _K_ERA_BP)
-        whip_reg = _regress(whip,     _LG_BP_WHIP, tbf, _K_ERA_BP)
-        era_factor  = era_reg  / _LG_BP_ERA
-        whip_factor = whip_reg / _LG_BP_WHIP
+        # Bayesian regression on tier-adjusted primary ERA-estimator
+        era_reg  = _regress(tier_era, primary_lg,  primary_n, primary_k)
+        era_factor  = era_reg  / primary_lg
 
         # K%-BB% differential (regressed) — most stable relief quality signal
         if k_pct is not None and bb_pct is not None:
@@ -444,15 +521,13 @@ class BullpenEngine:
         savant_att = 0.0
         n_pitchers = 0
 
-        if team_id:
-            roster = _fetch_team_roster(int(team_id), season)
-            if roster:
-                sv = _aggregate_team_savant(roster, self._savant_exp, self._savant_ev)
-                xwoba_ag      = sv["xwoba_against"]
-                barrel_ag     = sv["barrel_pa_against"]
-                savant_pa     = sv["total_pa"]
-                savant_att    = sv["total_attempts"]
-                n_pitchers    = sv["n_pitchers"]
+        if roster:
+            sv = _aggregate_team_savant(roster, self._savant_exp, self._savant_ev)
+            xwoba_ag      = sv["xwoba_against"]
+            barrel_ag     = sv["barrel_pa_against"]
+            savant_pa     = sv["total_pa"]
+            savant_att    = sv["total_attempts"]
+            n_pitchers    = sv["n_pitchers"]
 
         xwoba_reg  = _regress(xwoba_ag,  _LG_XWOBA_AG,     savant_pa,  _K_XWOBA_BP)
         barrel_reg = _regress(barrel_ag, _LG_BARREL_PA_AG, savant_att, _K_XWOBA_BP)
@@ -461,14 +536,32 @@ class BullpenEngine:
         xwoba_factor  = xwoba_reg  / _LG_XWOBA_AG
         barrel_factor = barrel_reg / _LG_BARREL_PA_AG
 
-        # ── Composite quality: four signals, ERA replaces raw league proxy ─
-        # Weights: xwOBA 0.40, K-BB 0.30, ERA 0.20, Barrel 0.10
-        quality_raw = (
-            xwoba_factor  * 0.40 +
-            k_bb_factor   * 0.30 +
-            era_factor    * 0.20 +
-            barrel_factor * 0.10
-        )
+        # ── Composite quality: four signals, ERA replaces raw league proxy ──
+        # Weights are conditional on used_siera: when SIERA/xFIP wins the
+        # era_factor fallback, k_bb_factor is redundant with it (SIERA/xFIP
+        # substantially encode K%/BB% in their own published formulas —
+        # confirmed empirically 2026-07-05 on real team-bullpen data:
+        # corr(K%-BB%, team bullpen SIERA)=-0.762 across 30 teams, mirroring
+        # the same finding for starters in pitcher_engine.py, r=-0.947).
+        # Composite is additive (weights sum to 1.0), unlike Pitcher Engine's
+        # multiplicative combination, so dropping k_bb_factor's weight here
+        # requires redistributing it (TTE-wRC+-style) rather than the
+        # multiply-by-1.0 trick used for Pitcher Engine's kbb_mult.
+        # When era_factor falls back to raw ERA (doesn't encode K%/BB%),
+        # k_bb_factor is NOT redundant and keeps the original weight.
+        if used_siera:
+            quality_raw = (
+                xwoba_factor  * 0.55 +
+                era_factor    * 0.35 +
+                barrel_factor * 0.10
+            )
+        else:
+            quality_raw = (
+                xwoba_factor  * 0.40 +
+                k_bb_factor   * 0.30 +
+                era_factor    * 0.20 +
+                barrel_factor * 0.10
+            )
         quality_mult = max(0.75, min(1.30, quality_raw))
 
         # ── Workload fatigue ───────────────────────────────────────────────
@@ -483,15 +576,18 @@ class BullpenEngine:
         total_mult = max(BULLPEN_CLAMP_LOW, min(BULLPEN_CLAMP_HIGH, total_mult))
 
         log.debug(
-            "   [%s bp] tier=%s ERA %.2f→%.2f(tier)→%.2f(reg) xwOBA=%.3f kbb=%.3f brl=%.3f "
+            "   [%s bp] primary=%s(%.2f) tier=%s →%.2f(tier)→%.2f(reg) xwOBA=%.3f kbb=%.3f brl=%.3f "
             "→ quality=%.3f  workload=%.3f  raw=%.3f  bp_w=%.2f  total=%.3f",
-            label, tier_label, era, tier_era, era_reg,
+            label, "SIERA/xFIP" if used_siera else "ERA", primary_era, tier_label, tier_era, era_reg,
             xwoba_reg, k_bb_reg, barrel_reg,
             quality_mult, workload_mult, raw_mult, innings_weight, total_mult,
         )
 
         return {
-            "era":            round(era,            2),
+            "era":            round(era_raw,        2),
+            "used_siera":     used_siera,
+            "siera_ag":       round(siera_info["siera_ag"], 3) if used_siera else None,
+            "primary_era":    round(primary_era,    3),
             "tier_era":       round(tier_era,       2),
             "tier_label":     tier_label,
             "era_reg":        round(era_reg,        3),
@@ -511,6 +607,7 @@ class BullpenEngine:
             "innings_weight": round(innings_weight,  3),
             "total_mult":     round(total_mult,      4),
             "n_pitchers":     n_pitchers,
+            "n_siera_pitchers": siera_info["n_pitchers"],
         }
 
     @staticmethod

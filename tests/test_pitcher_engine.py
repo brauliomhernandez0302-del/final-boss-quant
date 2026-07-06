@@ -166,16 +166,18 @@ class TestPitcherQualityMultiplier:
             {"era": 4.20, "brl_percent": 8.0, "innings_pitched": 100})
         assert result_high > result_avg
 
-    def test_clamped_at_0_70_minimum(self):
+    def test_clamped_at_floor(self):
+        # Bounds widened 2026-07-05 from [0.70,1.35] to [0.60,1.45] — that
+        # range was binding on ~11.5% of real 2025 qualified starters.
         engine = _engine()
         result = engine._adjust_pitcher_quality({"era": 0.50, "fip": 0.50, "innings_pitched": 999})
-        assert result == pytest.approx(0.70)
+        assert result == pytest.approx(0.60)
 
     def test_clamped_at_ceiling(self):
-        # _adjust_pitcher_quality clips at [0.70, 1.35] — verify the ceiling.
+        # _adjust_pitcher_quality clips at [0.60, 1.45] — verify the ceiling.
         engine = _engine()
         result = engine._adjust_pitcher_quality({"era": 10.0, "fip": 10.0, "innings_pitched": 999})
-        assert result == pytest.approx(1.35)
+        assert result == pytest.approx(1.45)
 
     def test_fip_overrides_lucky_era(self):
         # FIP fallback: lucky ERA 2.00 but FIP 4.20 → mult closer to 1.0 than genuine 2.00

@@ -22,12 +22,10 @@ UFC_SIMULATIONS = 100_000
 
 # ── Kelly / bankroll ───────────────────────────────────────────────────────
 KELLY_FRACTION  = 0.25   # fractional Kelly (quarter-Kelly default)
-MAX_RISK_PCT    = 0.05   # max 5 % of bankroll per bet
-MIN_STAKE       = 1.0    # minimum absolute stake (USD)
 
 # ── Value detection ────────────────────────────────────────────────────────
 MIN_KELLY       = 0.01
-MAX_KELLY       = 0.15
+MAX_KELLY       = 0.15   # single source of truth for the max stake fraction per bet
 MIN_CONFIDENCE  = 0.65
 MIN_EDGE        = 0.5    # percentage points
 VIG_METHODS     = ["multiplicative", "power", "shin"]
@@ -44,6 +42,16 @@ LEAGUE_AVG_OPS  = 0.735
 LEAGUE_AVG_ERA  = 4.15
 LEAGUE_AVG_WHIP = 1.30
 LEAGUE_AVG_WOBA = 0.310  # FanGraphs Guts! 2024
+# Statcast expected wOBA (≠ traditional wOBA above) — empirically measured
+# 2026-07-05 via Savant's expected_statistics leaderboard with min=1 PA
+# (matches true_talent_engine.py's own fetch filter exactly): PA-weighted
+# league avg was 0.3157 (2024) and 0.3163 (2025), both meaningfully above the
+# 0.312 this constant used to duplicate across 4 files (true_talent_engine.py,
+# pitcher_engine.py, bullpen_engine.py, tte_pit_adapter.py) — same
+# systematic-stale-constant pattern as the LG_DER fix in
+# defensive_efficiency_engine.py. Centralized here as the single source of
+# truth so it can't drift out of sync across files again.
+LEAGUE_AVG_XWOBA = 0.316
 
 # ── Odds API / caching ─────────────────────────────────────────────────────
 ODDS_CACHE_TTL       = 300   # seconds — Streamlit function-cache TTL

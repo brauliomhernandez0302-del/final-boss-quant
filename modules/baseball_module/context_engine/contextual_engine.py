@@ -17,11 +17,18 @@ Factors:
        Umpire zone factor: umpire_stats never populated in pipeline — always 1.0.
 
 Why here and not in AutoCalibrator?
-  AutoCalibrator applies a ±8 % hard cap on form + season context.
-  Moving rest out gives it clean, uncapped accounting at its true
-  empirical value without competing for budget inside that cap.
+  AutoCalibrator (now removed — calibration/auto_calibrator.py no longer
+  exists; superseded by the Kalman + multidim_bias system in
+  learning_engine.py) used to apply a ±8 % hard cap on form + season
+  context. Moving rest out gave it clean, uncapped accounting at its true
+  empirical value without competing for budget inside that cap — a
+  decision that still holds even though AutoCalibrator itself is gone.
 
-Pipeline position: PASO 7 (after Bullpen, before Monte Carlo).
+Pipeline position: PASO 3 (after Pitcher Engine, before Bullpen).
+  Intentional: the F5 (first-5-innings) snapshot is taken right after this
+  engine runs, since starters — not the bullpen — cover the first 5 innings,
+  so rest/B2B (which affects the starter's team, not bullpen usage) belongs
+  in the F5 signal while Bullpen adjustments correctly don't.
 """
 
 from __future__ import annotations

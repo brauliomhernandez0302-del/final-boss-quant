@@ -42,10 +42,11 @@ logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────
 
+ROOT         = Path(__file__).parent
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "").strip()
 BASE_URL     = "https://api.the-odds-api.com/v4"
 REGION       = "us"
-MARKETS      = ["h2h", "totals", "spreads"]
+MARKETS      = ["h2h", "totals", "spreads", "h2h_h1", "totals_h1", "spreads_h1"]
 
 SPORTS_KEYS = [
     "baseball_mlb",
@@ -64,7 +65,7 @@ SPORTS_KEYS = [
     "icehockey_nhl",
 ]
 
-CACHE_DIR  = Path(".cache")
+CACHE_DIR  = ROOT / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)
 CACHE_FILE = CACHE_DIR / "odds_last.json"
 CACHE_TTL  = ODDS_FILE_CACHE_TTL   # seconds
@@ -222,6 +223,22 @@ def _normalize_event(event: Dict) -> Dict:
         "under_odds":    None,
         "runline_home":  None,
         "runline_away":  None,
+        # F5 (first 5 innings) — NAMING NOTE (2026-07-06): this is a THIRD
+        # F5 naming scheme, distinct from both get_best_odds_for_teams()'s
+        # (f5_ml_home/f5_total_over, matching GameOdds' convention) and each
+        # other. This one feeds ui/odds_loader.py::get_odds_data() only (the
+        # UI dropdown), not run_module()/GameOdds directly, so it isn't the
+        # bug that was just fixed — but if anyone later wires this dict's
+        # data more directly into F5 analysis, it WILL hit the exact same
+        # class of silent-key-mismatch bug a second time. Rename to match
+        # GameOdds' convention before connecting it to anything F5-related.
+        "f5_home_odds":  None,
+        "f5_away_odds":  None,
+        "f5_total_line": None,
+        "f5_over_odds":  None,
+        "f5_under_odds": None,
+        "f5_rl_home":    None,
+        "f5_rl_away":    None,
         "bookmaker":     None,
         "last_update":   datetime.now().isoformat(),
     }
@@ -239,6 +256,12 @@ def _normalize_event(event: Dict) -> Dict:
     best_under: float = 0.0
     best_rl_home: float = 0.0
     best_rl_away: float = 0.0
+    best_f5_home: float = 0.0
+    best_f5_away: float = 0.0
+    best_f5_over: float = 0.0
+    best_f5_under: float = 0.0
+    best_f5_rl_home: float = 0.0
+    best_f5_rl_away: float = 0.0
 
     for bm in bookmakers:
         if result["bookmaker"] is None:
@@ -288,13 +311,48 @@ def _normalize_event(event: Dict) -> Dict:
                     elif name == away:
                         best_rl_away = max(best_rl_away, price)
 
-    result["home_odds"]    = best_home    or None
-    result["away_odds"]    = best_away    or None
+            elif mkey == "h2h_h1" and outcomes:
+                for o in outcomes:
+                    name  = o.get("name", "").strip()
+                    price = o.get("price") or 0.0
+                    if name == home:
+                        best_f5_home = max(best_f5_home, price)
+                    elif name == away:
+                        best_f5_away = max(best_f5_away, price)
+
+            elif mkey == "totals_h1" and outcomes:
+                for o in outcomes:
+                    n     = o.get("name", "").lower()
+                    price = o.get("price") or 0.0
+                    if n == "over":
+                        if result["f5_total_line"] is None:
+                            result["f5_total_line"] = o.get("point")
+                        best_f5_over = max(best_f5_over, price)
+                    elif n == "under":
+                        best_f5_under = max(best_f5_under, price)
+
+            elif mkey == "spreads_h1" and outcomes:
+                for o in outcomes:
+                    name  = o.get("name", "").strip()
+                    price = o.get("price") or 0.0
+                    if name == home:
+                        best_f5_rl_home = max(best_f5_rl_home, price)
+                    elif name == away:
+                        best_f5_rl_away = max(best_f5_rl_away, price)
+
+    result["home_odds"]    = best_home      or None
+    result["away_odds"]    = best_away      or None
     result["draw_odds"]    = best_draw
-    result["over_odds"]    = best_over    or None
-    result["under_odds"]   = best_under   or None
-    result["runline_home"] = best_rl_home or None
-    result["runline_away"] = best_rl_away or None
+    result["over_odds"]    = best_over      or None
+    result["under_odds"]   = best_under     or None
+    result["runline_home"] = best_rl_home   or None
+    result["runline_away"] = best_rl_away   or None
+    result["f5_home_odds"] = best_f5_home   or None
+    result["f5_away_odds"] = best_f5_away   or None
+    result["f5_over_odds"] = best_f5_over   or None
+    result["f5_under_odds"]= best_f5_under  or None
+    result["f5_rl_home"]   = best_f5_rl_home or None
+    result["f5_rl_away"]   = best_f5_rl_away or None
     return result
 
 
@@ -343,6 +401,13 @@ def get_best_odds_for_teams(
         total_under: Optional[float] = None
         best_rl_home = 0.0
         best_rl_away = 0.0
+        best_f5_home = 0.0
+        best_f5_away = 0.0
+        f5_total_line: Optional[float] = None
+        best_f5_over = 0.0
+        best_f5_under = 0.0
+        best_f5_rl_home = 0.0
+        best_f5_rl_away = 0.0
 
         for bm in event.get("bookmakers", []):
             is_pinnacle = (
@@ -388,20 +453,69 @@ def get_best_odds_for_teams(
                         elif name == g_away:
                             best_rl_away = max(best_rl_away, price)
 
+                elif mkey == "h2h_h1":
+                    for outcome in outcomes:
+                        name  = outcome.get("name", "")
+                        price = outcome.get("price", 0.0) or 0.0
+                        if name == g_home:
+                            best_f5_home = max(best_f5_home, price)
+                        elif name == g_away:
+                            best_f5_away = max(best_f5_away, price)
+
+                elif mkey == "totals_h1":
+                    for outcome in outcomes:
+                        n     = outcome.get("name", "").lower()
+                        price = outcome.get("price", 0.0) or 0.0
+                        if n == "over":
+                            if f5_total_line is None:
+                                f5_total_line = outcome.get("point")
+                            best_f5_over = max(best_f5_over, price)
+                        elif n == "under":
+                            best_f5_under = max(best_f5_under, price)
+
+                elif mkey == "spreads_h1":
+                    for outcome in outcomes:
+                        name  = outcome.get("name", "")
+                        price = outcome.get("price", 0.0) or 0.0
+                        if name == g_home:
+                            best_f5_rl_home = max(best_f5_rl_home, price)
+                        elif name == g_away:
+                            best_f5_rl_away = max(best_f5_rl_away, price)
+
         return {
-            "home_team":    g_home,
-            "away_team":    g_away,
-            "ml_home":      best_home if best_home > 0 else None,
-            "ml_away":      best_away if best_away > 0 else None,
-            "pin_home":     pin_home,
-            "pin_away":     pin_away,
-            "pin_total":    pin_total,
-            "total_line":   total_line,
-            "total_over":   total_over if (total_over or 0) > 0 else None,
-            "total_under":  total_under if (total_under or 0) > 0 else None,
-            "runline_home": best_rl_home if best_rl_home > 0 else None,
-            "runline_away": best_rl_away if best_rl_away > 0 else None,
-            "game_id":      event.get("id"),
+            "home_team":     g_home,
+            "away_team":     g_away,
+            "ml_home":       best_home if best_home > 0 else None,
+            "ml_away":       best_away if best_away > 0 else None,
+            "pin_home":      pin_home,
+            "pin_away":      pin_away,
+            "pin_total":     pin_total,
+            "total_line":    total_line,
+            "total_over":    total_over if (total_over or 0) > 0 else None,
+            "total_under":   total_under if (total_under or 0) > 0 else None,
+            "runline_home":  best_rl_home if best_rl_home > 0 else None,
+            "runline_away":  best_rl_away if best_rl_away > 0 else None,
+            # f5_ml_home/f5_ml_away/f5_total_over/f5_total_under: named to
+            # match GameOdds' established convention (core/value_detector.py)
+            # and run_module.py's read side. Previously these were
+            # "f5_home"/"f5_away"/"f5_over"/"f5_under" — a naming mismatch
+            # that silently meant F5 markets could never activate anywhere
+            # run_module() relies on this function for real odds (e.g.
+            # track_record/publisher.py's publish_mlb_picks, which calls
+            # run_mlb() without an explicit market_odds override) — only
+            # f5_total_line happened to match by coincidence, letting
+            # analyze_first5()'s outer gate pass while every inner F5
+            # ML/totals check silently failed on None. Found + fixed
+            # 2026-07-06, confirmed via GameOdds' own self-test data
+            # (value_detector.py) using this exact naming.
+            "f5_ml_home":    best_f5_home if best_f5_home > 0 else None,
+            "f5_ml_away":    best_f5_away if best_f5_away > 0 else None,
+            "f5_total_line": f5_total_line,
+            "f5_total_over": best_f5_over if best_f5_over > 0 else None,
+            "f5_total_under": best_f5_under if best_f5_under > 0 else None,
+            "f5_rl_home":    best_f5_rl_home if best_f5_rl_home > 0 else None,
+            "f5_rl_away":    best_f5_rl_away if best_f5_rl_away > 0 else None,
+            "game_id":       event.get("id"),
         }
 
     return {}

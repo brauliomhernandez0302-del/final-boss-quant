@@ -22,6 +22,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from track_record.db import TrackRecordDB
+from core.value_detector import kelly_criterion
 
 log = logging.getLogger("track_record.publisher")
 
@@ -41,7 +42,11 @@ def _tier_ok(tier: Optional[str]) -> bool:
 
 
 def _tier_rank(tier: str) -> int:
-    return _TIER_RANK.get((tier or "").upper(), 0)
+    t = (tier or "").upper()
+    for name, rank in _TIER_RANK.items():
+        if name in t:
+            return rank
+    return 0
 
 
 def _american_to_decimal(american: float) -> float:
@@ -51,13 +56,43 @@ def _american_to_decimal(american: float) -> float:
 
 
 def _market_label(bet: Dict[str, Any]) -> str:
-    """Normalise the 'market' or 'bet_type' field from value_detector output."""
+    """Normalise the 'market' or 'bet_type' field from value_detector output.
+
+    F5 markets MUST be checked before the generic OVER/UNDER/HOME/AWAY
+    patterns: value_detector's real F5 market-name strings are "F5 ML HOME"/
+    "F5 ML AWAY" (moneyline) and "F5 OVER {line}"/"F5 UNDER {line}" (totals)
+    (see core/value_detector.py::analyze_first5). A plain substring-mapping
+    checked in the wrong order let "F5 OVER 4.5" match the generic "OVER"
+    key (since "OVER" IS a substring of it) before ever reaching an F5-aware
+    check — colliding pick_uid with a real full-game Over on the same game
+    (one silently dropped via INSERT OR IGNORE) and causing the reconciler
+    to grade it against the full-game score/line instead of the first-5-
+    innings score/line. "F5 ML HOME"/"F5 ML AWAY" fared even worse: the old
+    mapping's "F5 HOME"/"F5 AWAY" keys aren't contiguous substrings of them
+    (the "ML " token breaks the match), so they fell through entirely,
+    were stored as the raw unmapped string, and reconciler.py's
+    _resolve_market() — which only recognizes ML_HOME/ML_AWAY/RL_HOME/
+    RL_AWAY/OVER+F5_OVER/UNDER+F5_UNDER/F5_HOME/F5_AWAY — resolved every
+    single one as VOID. Found + fixed 2026-07-06.
+    """
     raw = (
         bet.get("market")
         or bet.get("bet_type")
         or bet.get("type")
         or ""
     ).upper()
+
+    if raw.startswith("F5"):
+        if "OVER" in raw:
+            return "F5_OVER"
+        if "UNDER" in raw:
+            return "F5_UNDER"
+        if "AWAY" in raw:
+            return "F5_AWAY"
+        if "HOME" in raw:
+            return "F5_HOME"
+        return raw or "F5_HOME"
+
     # value_detector uses labels like 'ML_HOME', 'MONEYLINE HOME', 'OVER', etc.
     mapping = {
         "ML_HOME": "ML_HOME", "MONEYLINE HOME": "ML_HOME",
@@ -66,8 +101,6 @@ def _market_label(bet: Dict[str, Any]) -> str:
         "RL_AWAY": "RL_AWAY", "RUNLINE AWAY": "RL_AWAY",
         "OVER": "OVER", "O/U OVER": "OVER", "TOTALS OVER": "OVER",
         "UNDER": "UNDER", "O/U UNDER": "UNDER", "TOTALS UNDER": "UNDER",
-        "F5_HOME": "F5_HOME", "F5 HOME": "F5_HOME",
-        "F5_AWAY": "F5_AWAY", "F5 AWAY": "F5_AWAY",
     }
     for k, v in mapping.items():
         if k in raw:
@@ -173,7 +206,10 @@ def publish_mlb_picks(
                         "market": "ML_HOME",
                         "model_prob": p_home,
                         "ev_pct": ev,
-                        "kelly_fraction": max(0, ev / (dec - 1)) * 0.25,
+                        # Same fraction/clip (MIN_KELLY/MAX_KELLY) as the main
+                        # pipeline's best_bets, so a synthesised fallback pick
+                        # never bypasses the risk cap.
+                        "kelly_fraction": kelly_criterion(p_home, dec, fractional=0.25),
                         "confidence_tier": "SLIGHT",
                         "odds": ml_home_odds,
                     }]
@@ -187,8 +223,18 @@ def publish_mlb_picks(
             # pick_uid is deterministic so re-runs are idempotent
             pick_uid = f"MLB:{game_pk}:{market}:{game_date}"
 
+            # 'probability' is the real key name from
+            # analyze_market_generic() (core/value_detector.py); 'model_prob'/
+            # 'prob' are legacy aliases kept in case a caller passes a
+            # differently-shaped bet dict (e.g. the synthesised ML fallback
+            # a few lines up, which does use 'model_prob'). Checking
+            # 'probability' FIRST matters now that all_opportunities spreads
+            # the real bet dict (2026-07-06) — without it, every real
+            # pipeline pick silently fell through to the generic p_home/
+            # p_away guess instead of its own per-market probability.
             model_prob = float(
-                bet.get("model_prob")
+                bet.get("probability")
+                or bet.get("model_prob")
                 or bet.get("prob")
                 or (p_home if "HOME" in market else p_away)
             )
@@ -202,10 +248,26 @@ def publish_mlb_picks(
             implied = round(1 / odds_dec, 4) if odds_dec else None
             kelly = float(bet.get("kelly_fraction") or bet.get("kelly") or 0.0)
             stake = round(kelly * 100, 4)  # in units (100-unit bankroll)
+            total_line = (
+                float(bet.get("line") or bet.get("total_line") or 0) or
+                (float(market_odds.get("total_line") or 0) or None)
+            ) if market in ("OVER", "UNDER", "F5_OVER", "F5_UNDER") else None
 
+            # probabilities carries raw Monte Carlo sample arrays
+            # (home_samples/away_samples/total_samples, size n_sims each —
+            # confirmed live 2026-07-06) which are neither JSON-serializable
+            # nor useful in an audit snapshot; every publish with a real
+            # bet would otherwise crash at json.dumps() below with
+            # "TypeError: Object of type ndarray is not JSON serializable",
+            # unguarded by any try/except in this loop, before the pick was
+            # ever saved.
+            mc_probs = {
+                k: v for k, v in (result.get("probabilities") or {}).items()
+                if not k.endswith("_samples")
+            }
             pipeline_snap = {
                 "lambdas": result.get("lambdas_history", {}),
-                "mc_probs": result.get("probabilities", {}),
+                "mc_probs": mc_probs,
                 "bet": bet,
             }
 
@@ -230,6 +292,7 @@ def publish_mlb_picks(
                     odds_decimal=odds_dec,
                     stake_units=stake,
                     pipeline_json=json.dumps(pipeline_snap),
+                    total_line=total_line,
                 )
                 if row_id:
                     log.info(

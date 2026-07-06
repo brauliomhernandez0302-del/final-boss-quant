@@ -68,7 +68,6 @@ The system models each sport as a probability estimator and compares those proba
 
 | File | Lines | What it does |
 |------|-------|-------------|
-| `core/bankroll.py` | 55 | `KellyConfig` dataclass + `kelly_stake(odds, prob, bankroll, cfg)` — fractional Kelly with `max_risk_pct` cap. Imports from `config.py`. Used by `value_detector.py`. |
 | `core/utils.py` | 10 | `calculate_ev(prob, decimal_odds) → float (%)` — single source of truth for EV formula. Imported by `basketball_module.py` and `value_detector.py`. |
 | `core/value_detector.py` | 925 | **Multi-market value detector.** `evaluate_value_ultra(mc_result, odds, ...)` — full 9-step analysis: vig removal (3 methods), EV per market, Kelly sizing, bootstrap confidence intervals, tier classification (ULTRA/HIGH/MEDIUM/SLIGHT), Pinnacle line as fair reference. Markets: ML_HOME, ML_AWAY, OVER, UNDER, RL_HOME (+/-1.5), RL_AWAY, F5_HOME, F5_AWAY. Returns sorted `best_bets` list. |
 
@@ -135,7 +134,6 @@ data_fetchers.py                               ← MLB data source
 odds_fetcher.py                                ← odds data source
 odds_api.py                                    ← odds lookup in run_module
 storage.py                                     ← CSV bet log (manual save)
-core/bankroll.py                               ← value_detector depends on this
 core/utils.py                                  ← basketball_module + value_detector
 core/value_detector.py                         ← step 6 of MLB pipeline
 modules/baseball_module/core/run_module.py     ← MLB pipeline entry
@@ -432,7 +430,7 @@ betting_ai/
     └── betting_model.py   — empty
 ```
 
-This folder was a placeholder created during early project planning. No code was ever written. The directory structure suggests an intended alternative value-detection system (detector, model, bankroll, odds_api), but none of the files were implemented. The live system uses `core/value_detector.py`, `core/bankroll.py`, and `odds_api.py` at the root instead.
+This folder was a placeholder created during early project planning. No code was ever written. The directory structure suggests an intended alternative value-detection system (detector, model, bankroll, odds_api), but none of the files were implemented. The live system uses `core/value_detector.py` and `odds_api.py` at the root instead.
 
 **Action:** Can be safely deleted or used as a staging area for a v2 refactor.
 
@@ -467,7 +465,6 @@ data_fetchers.py ←────────────────────
 odds_fetcher.py ←─────────────────────── app.py (via safe_import)
 odds_api.py ←─────────────────────────── run_module (PASO 6)
 core/utils.py ←───────────────────────── basketball_module, value_detector
-core/bankroll.py ←────────────────────── value_detector
 core/value_detector.py ←──────────────── run_module (PASO 6), app.py
 
 modules/baseball_module/core/run_module.py ←── app.MLBAnalyzer, publisher, backtest
@@ -539,7 +536,7 @@ track_record/ ←─────────────────────
          ▲                              ▲
          │                              │
     run_module.py ────────────► core/value_detector
-         ▲          core/bankroll ──────┘
+         ▲
          │
    ┌─────┴──────────────────────────────────┐
    │  auto_calibrator  learning_engine       │

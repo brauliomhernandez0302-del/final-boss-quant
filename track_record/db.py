@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS picks (
     game_pk          INTEGER,                    -- sport internal game ID
     home_team        TEXT    NOT NULL,
     away_team        TEXT    NOT NULL,
-    market           TEXT    NOT NULL,           -- ML_HOME|ML_AWAY|RL_HOME|RL_AWAY|OVER|UNDER|F5_HOME|F5_AWAY
+    market           TEXT    NOT NULL,           -- ML_HOME|ML_AWAY|RL_HOME|RL_AWAY|OVER|UNDER|F5_HOME|F5_AWAY|F5_OVER|F5_UNDER
     model_prob       REAL    NOT NULL,
     implied_prob     REAL,
     ev_pct           REAL    NOT NULL,
@@ -107,6 +107,10 @@ class TrackRecordDB:
     def _init_schema(self) -> None:
         with self._conn() as conn:
             conn.executescript(_SCHEMA)
+            try:
+                conn.execute("ALTER TABLE picks ADD COLUMN total_line REAL")
+            except Exception:
+                pass  # column already exists
 
     # ------------------------------------------------------------------ writes
 
@@ -129,6 +133,7 @@ class TrackRecordDB:
         notes: Optional[str] = None,
         pipeline_json: Optional[str] = None,
         published_at: Optional[str] = None,
+        total_line: Optional[float] = None,
     ) -> int:
         """Insert a pre-game pick. Returns the new row id (0 if already exists)."""
         ts = published_at or datetime.now(timezone.utc).isoformat()
@@ -140,15 +145,15 @@ class TrackRecordDB:
                     home_team, away_team, market,
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
-                    notes, pipeline_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    notes, pipeline_json, total_line
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     pick_uid, ts, game_date, sport, game_pk,
                     home_team, away_team, market,
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
-                    notes, pipeline_json,
+                    notes, pipeline_json, total_line,
                 ),
             )
             return int(cur.lastrowid or 0)
@@ -186,9 +191,16 @@ class TrackRecordDB:
                 "SELECT id, stake_units FROM picks WHERE pick_uid = ?", (pick_uid,)
             ).fetchone()
             if row:
+                # Latest-by-insertion-order, NOT MAX(running_total): the
+                # cumulative total legitimately dips below a prior peak
+                # after any loss, so MAX() silently freezes in a stale,
+                # inflated baseline the next time a pick resolves (found +
+                # reproduced 2026-07-06: pnl sequence +10,-15,+3 should give
+                # running_total 10,-5,-2 but MAX() gave 10,-5,13).
                 prev = conn.execute(
-                    "SELECT COALESCE(MAX(running_total), 0.0) FROM bankroll"
-                ).fetchone()[0]
+                    "SELECT running_total FROM bankroll ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                prev = prev[0] if prev else 0.0
                 conn.execute(
                     """
                     INSERT INTO bankroll (pick_id, resolved_at, units_staked,
@@ -305,11 +317,15 @@ class TrackRecordDB:
                 """,
                 (snap_date,),
             ).fetchone()
-            cum = conn.execute(
-                "SELECT COALESCE(MAX(running_total), 0) FROM bankroll "
-                "WHERE resolved_at <= ? || 'T23:59:59Z'",
+            # Same latest-by-insertion-order fix as resolve_pick() — MAX()
+            # is wrong here too, for the identical reason.
+            cum_row = conn.execute(
+                "SELECT running_total FROM bankroll "
+                "WHERE resolved_at <= ? || 'T23:59:59Z' "
+                "ORDER BY id DESC LIMIT 1",
                 (snap_date,),
-            ).fetchone()[0]
+            ).fetchone()
+            cum = cum_row[0] if cum_row else 0.0
             wagered = row["wagered"] or 0
             roi = round(row["pnl"] / wagered * 100, 2) if wagered > 0 else 0.0
             conn.execute(

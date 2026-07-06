@@ -159,6 +159,17 @@ def build_game_selector(
             total_under   = _safe_float(row.get("under_odds")),
             runline_home  = _safe_float(row.get("runline_home")),
             runline_away  = _safe_float(row.get("runline_away")),
+            # odds_fetcher.py::_normalize_event()'s own F5 naming scheme
+            # (f5_home_odds/f5_over_odds/f5_under_odds) is a THIRD,
+            # independent convention from GameOdds' f5_ml_home/f5_total_over
+            # — mapped here rather than left as a silent mismatch, the same
+            # class of bug just fixed one boundary over in
+            # get_best_odds_for_teams(). f5_total_line already matches.
+            f5_ml_home    = _safe_float(row.get("f5_home_odds")),
+            f5_ml_away    = _safe_float(row.get("f5_away_odds")),
+            f5_total_line = _safe_float(row.get("f5_total_line")),
+            f5_total_over = _safe_float(row.get("f5_over_odds")),
+            f5_total_under= _safe_float(row.get("f5_under_odds")),
             commence_time = str(commence),
             raw_row       = row,
         )
