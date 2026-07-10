@@ -494,14 +494,17 @@ def run_module(
             _w_pit = _weights.get("pitcher", 1.0)
             lh = _lh_pre * (1.0 + _w_pit * (_raw_h_pit - 1.0))
             la = _la_pre * (1.0 + _w_pit * (_raw_a_pit - 1.0))
-            # TODO(stage_factors_naming): the keys below are semantically inverted.
-            # "home_pitcher" stores the AWAY pitcher's multiplier on λ_home (ratio
-            # lh_after/lh_before, driven by adj_away["total_multiplier"]).
-            # "away_pitcher" stores the HOME pitcher's multiplier on λ_away.
-            # Renaming requires updating backtest_and_retrain.py, residual analysis
-            # scripts, and learning_engine gradient-descent stage keys simultaneously.
-            _stage_factors["home_pitcher"] = _raw_h_pit
-            _stage_factors["away_pitcher"] = _raw_a_pit
+            # Key format: "{stage}_on_{role}_lambda" — unambiguously "the ratio
+            # applied to λ_{role}", not "which team's engine produced it".
+            # Renamed 2026-07-06 (was "home_pitcher"/"away_pitcher", which read
+            # like "home team's own pitcher" but meant "factor on λ_home" — for
+            # Pitcher Engine that's driven by the AWAY pitcher, since the away
+            # pitcher faces home batters). Same fix applied to all 6 stages for
+            # one uniform convention; learning_engine.py's _gradient_step() reads
+            # this exact format (with an old-format fallback during transition —
+            # see its docstring).
+            _stage_factors["pitcher_on_home_lambda"] = _raw_h_pit
+            _stage_factors["pitcher_on_away_lambda"] = _raw_a_pit
             results['lambdas_history']['pitcher'] = {'lh': lh, 'la': la}
             results['metadata']['pitcher'] = pitcher_meta
             logger.info(f"   ✅ Pitcher adjusted: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_pit:.3f})")
@@ -524,8 +527,8 @@ def run_module(
         la = _la_pre * (1.0 + _w_ctx * (_raw_a_ctx - 1.0))
         results['lambdas_history']['contextual'] = {'lh': lh, 'la': la}
         results['metadata']['contextual'] = ctx_meta
-        _stage_factors['home_context'] = _raw_h_ctx
-        _stage_factors['away_context'] = _raw_a_ctx
+        _stage_factors['context_on_home_lambda'] = _raw_h_ctx
+        _stage_factors['context_on_away_lambda'] = _raw_a_ctx
         logger.info(
             f"   ✅ home_rest={ctx_meta['home_rest_reason']}(×{ctx_meta['home_rest_mult']:.3f})"
             f"  away_rest={ctx_meta['away_rest_reason']}(×{ctx_meta['away_rest_mult']:.3f})"
@@ -581,16 +584,15 @@ def run_module(
         lh = _lh_pre * (1.0 + _w_bp * (_raw_h_bp - 1.0))
         la = _la_pre * (1.0 + _w_bp * (_raw_a_bp - 1.0))
         results['lambdas_history']['bullpen'] = {'lh': lh, 'la': la}
-        # TODO(stage_factors_naming): same inversion as pitcher (line 522) and
-        # defense (line ~647). "home_bullpen" stores the AWAY bullpen's
-        # multiplier on λ_home; "away_bullpen" stores the HOME bullpen's
-        # multiplier on λ_away — adjust_for_bullpen()'s own docstring says
-        # "Away bullpen → adjusts λ_home. Home bullpen → adjusts λ_away."
-        # Regression screen 2026-07-05 found no significant residual signal on
-        # either bullpen key (p=0.58/0.56), so lower urgency than defense, but
-        # rename together with pitcher/defense for correctness.
-        _stage_factors['home_bullpen'] = _raw_h_bp
-        _stage_factors['away_bullpen'] = _raw_a_bp
+        # Renamed 2026-07-06 (was "home_bullpen"/"away_bullpen", same inversion
+        # as pitcher/defense — adjust_for_bullpen()'s own docstring says "Away
+        # bullpen → adjusts λ_home. Home bullpen → adjusts λ_away"). Regression
+        # screen 2026-07-05 found no significant residual signal on either key
+        # (p=0.58/0.56), so this was lower urgency than defense, but renamed
+        # together with the rest for one uniform "{stage}_on_{role}_lambda"
+        # convention across all 6 stages.
+        _stage_factors['bullpen_on_home_lambda'] = _raw_h_bp
+        _stage_factors['bullpen_on_away_lambda'] = _raw_a_bp
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 5: PARK + WEATHER ENGINE (simétrico: ambos equipos)
@@ -608,8 +610,8 @@ def run_module(
         la = _la_pre * (1.0 + _w_park * (_raw_a_park - 1.0))
         results['lambdas_history']['park_weather'] = {'lh': lh, 'la': la}
         results['metadata']['park_weather'] = park_meta
-        _stage_factors['home_park'] = _raw_h_park
-        _stage_factors['away_park'] = _raw_a_park
+        _stage_factors['park_on_home_lambda'] = _raw_h_park
+        _stage_factors['park_on_away_lambda'] = _raw_a_park
         logger.info(
             f"   ✅ Park+Weather: park={park_meta['park_factor']:.3f}  "
             f"weather={park_meta['weather_mult']:.3f}  "
@@ -632,15 +634,13 @@ def run_module(
             _w_def = _weights.get("defense", 1.0)
             lh = _lh_pre * (1.0 + _w_def * (_raw_h_def - 1.0))
             la = _la_pre * (1.0 + _w_def * (_raw_a_def - 1.0))
-            # TODO(stage_factors_naming): same inversion as pitcher (line 522).
-            # "home_defense" stores the AWAY team's fielding multiplier on λ_home.
-            # "away_defense" stores the HOME team's fielding multiplier on λ_away
-            # (confirmed real signal here — regression screen 2026-07-05 found
-            # p=0.0006 on this exact key, i.e. home-team defense's effect on away
-            # scoring). Rename together with pitcher/bullpen — same three-file
-            # coordination note applies.
-            _stage_factors['home_defense'] = _raw_h_def   # DEE ratio on lh (away_mult)
-            _stage_factors['away_defense'] = _raw_a_def   # DEE ratio on la (home_mult)
+            # Renamed 2026-07-06 (was "home_defense"/"away_defense", same
+            # inversion as pitcher/bullpen — the AWAY team's fielding affects
+            # λ_home, confirmed real signal here: regression screen 2026-07-05
+            # found p=0.0006 on this exact key, i.e. home-team defense's effect
+            # on away scoring).
+            _stage_factors['defense_on_home_lambda'] = _raw_h_def   # DEE ratio on lh (away_mult)
+            _stage_factors['defense_on_away_lambda'] = _raw_a_def   # DEE ratio on la (home_mult)
             results['metadata']['defense'] = def_meta
             logger.info(
                 f"   ✅ Defense adjusted: λ_h={lh:.3f}  λ_a={la:.3f}  "
@@ -663,8 +663,8 @@ def run_module(
             _w_hfa = _weights.get("hfa", 1.0)
             lh = _lh_pre * (1.0 + _w_hfa * (_raw_h_hfa - 1.0))
             la = _la_pre * (1.0 + _w_hfa * (_raw_a_hfa - 1.0))
-            _stage_factors["home_hfa"] = _raw_h_hfa
-            _stage_factors["away_hfa"] = _raw_a_hfa
+            _stage_factors["hfa_on_home_lambda"] = _raw_h_hfa
+            _stage_factors["hfa_on_away_lambda"] = _raw_a_hfa
             results['lambdas_history']['hfa'] = {'lh': lh, 'la': la}
             results['metadata']['hfa'] = hfa_meta
             logger.info(f"   ✅ HFA adjusted: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_hfa:.3f})")

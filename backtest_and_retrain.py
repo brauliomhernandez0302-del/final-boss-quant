@@ -401,7 +401,6 @@ def prefetch_team_stats(
             if tid in {133}:  # Athletics already counted once
                 if name != "Athletics":
                     continue
-            api.get_team_offensive_stats(tid, season)
             api.get_team_pitching_stats(tid, season)
             if include_legacy_bullpen:
                 api.get_bullpen_era(tid, season)
@@ -454,9 +453,15 @@ def build_game_data(
     htid = _team_id(home_name)
     atid = _team_id(away_name)
 
-    # ── team offensive stats ────────────────────────────────────────────────
-    home_off = (api.get_team_offensive_stats(htid, season) or {}) if htid else {}
-    away_off = (api.get_team_offensive_stats(atid, season) or {}) if atid else {}
+    # get_team_offensive_stats() was deleted 2026-07-06 (data_fetchers.py
+    # dead-code review — its woba/ops/wrc_plus output was traced to
+    # game_data['home_team']/['away_team'] and confirmed never read by any
+    # engine downstream, same as the identical dead pattern found and fixed
+    # in run_module.py's own team_dict construction the same day). home_off/
+    # away_off now stay empty; _team_dict()'s existing .get(..., default)
+    # fallbacks handle this the same way they already handle any missing data.
+    home_off: Dict = {}
+    away_off: Dict = {}
 
     # ── team pitching / defense ─────────────────────────────────────────────
     home_pitch = (api.get_team_pitching_stats(htid, season) or {}) if htid else {}
@@ -1752,16 +1757,21 @@ def run_pipeline(
     # ── Learned pipeline weights ──────────────────────────────────────────────
     _w = learning.get_pipeline_weights(season)
 
-    # ── Team bias (LearningEngine) ────────────────────────────────────────────
+    # ── Team bias (LearningEngine, walk-forward: only sees games strictly ──────
+    #    before this one — see compute_team_bias's docstring for the leak this
+    #    before_date param closes, found+fixed 2026-07-08) ──────────────────────
     try:
         _game_month = int(str(game_data.get("game_date", ""))[5:7])
     except (ValueError, TypeError):
         _game_month = None
+    _bias_before_date = str(game_data.get("game_date", "")) or None
     lh *= learning.compute_team_bias_kalman_adjusted(
-        game_data.get("home_team", {}).get("name", ""), season, "offense_home", month=_game_month
+        game_data.get("home_team", {}).get("name", ""), season, "offense_home",
+        month=_game_month, before_date=_bias_before_date,
     )
     la *= learning.compute_team_bias_kalman_adjusted(
-        game_data.get("away_team", {}).get("name", ""), season, "offense_away", month=_game_month
+        game_data.get("away_team", {}).get("name", ""), season, "offense_away",
+        month=_game_month, before_date=_bias_before_date,
     )
 
     # ── PASO 2: Park + Weather ────────────────────────────────────────────────
@@ -1772,8 +1782,12 @@ def run_pipeline(
     _w_park = _w.get("park", 1.0)
     lh = _lh_pre * (1.0 + _w_park * (_raw_h - 1.0))
     la = _la_pre * (1.0 + _w_park * (_raw_a - 1.0))
-    _sf["home_park"] = _raw_h
-    _sf["away_park"] = _raw_a
+    # Key format: "{stage}_on_{role}_lambda" (renamed 2026-07-06 for a uniform,
+    # unambiguous convention across all 6 stages — matches run_module.py exactly,
+    # required since learning_engine.py's _gradient_step() reads whichever run
+    # produced the game's stored stage_factors_json).
+    _sf["park_on_home_lambda"] = _raw_h
+    _sf["park_on_away_lambda"] = _raw_a
     # DEFERRED F7: weather_mult stage factor — reactivar post-Sprint 3
     # _sf["weather_mult"] = float(_park_meta.get("weather_mult", 1.0))
 
@@ -1785,8 +1799,8 @@ def run_pipeline(
     _w_hfa = _w.get("hfa", 1.0)
     lh = _lh_pre * (1.0 + _w_hfa * (_raw_h - 1.0))
     la = _la_pre * (1.0 + _w_hfa * (_raw_a - 1.0))
-    _sf["home_hfa"] = _raw_h
-    _sf["away_hfa"] = _raw_a
+    _sf["hfa_on_home_lambda"] = _raw_h
+    _sf["hfa_on_away_lambda"] = _raw_a
 
     # ── PASO 4: Defensive Efficiency (DEE) ───────────────────────────────────────
     # Stage factor captures DEE-only ratio (DER fielding signal, orthogonal to Pitcher Engine).
@@ -1803,8 +1817,8 @@ def run_pipeline(
         _w_def = _w.get("defense", 1.0)
         lh = _lh_pre * (1.0 + _w_def * (_raw_h - 1.0))
         la = _la_pre * (1.0 + _w_def * (_raw_a - 1.0))
-        _sf["home_defense"] = _raw_h   # away defense multiplier on home runs
-        _sf["away_defense"] = _raw_a   # home defense multiplier on away runs
+        _sf["defense_on_home_lambda"] = _raw_h   # away defense multiplier on home runs
+        _sf["defense_on_away_lambda"] = _raw_a   # home defense multiplier on away runs
 
     # ── PASO 5: Pitcher Engine ────────────────────────────────────────────────
     _lh_pre, _la_pre = lh, la
@@ -1814,8 +1828,8 @@ def run_pipeline(
     _w_pit = _w.get("pitcher", 1.0)
     lh = _lh_pre * (1.0 + _w_pit * (_raw_h - 1.0))
     la = _la_pre * (1.0 + _w_pit * (_raw_a - 1.0))
-    _sf["home_pitcher"] = _raw_h
-    _sf["away_pitcher"] = _raw_a
+    _sf["pitcher_on_home_lambda"] = _raw_h
+    _sf["pitcher_on_away_lambda"] = _raw_a
 
     # ── F5 lambda — snapshot post-pitcher, pre-bullpen ────────────────────────
     lh_f5 = round(lh * F5_SCALE, 3)
@@ -1837,8 +1851,8 @@ def run_pipeline(
     _w_bp = _w.get("bullpen", 1.0)
     lh = _lh_pre * (1.0 + _w_bp * (_raw_h - 1.0))
     la = _la_pre * (1.0 + _w_bp * (_raw_a - 1.0))
-    _sf["home_bullpen"] = _raw_h
-    _sf["away_bullpen"] = _raw_a
+    _sf["bullpen_on_home_lambda"] = _raw_h
+    _sf["bullpen_on_away_lambda"] = _raw_a
 
     # ── PASO 7: Contextual Engine (rest / B2B / umpire) ──────────────────────
     _lh_pre, _la_pre = lh, la
@@ -1848,19 +1862,31 @@ def run_pipeline(
     _w_ctx = _w.get("context", 1.0)
     lh = _lh_pre * (1.0 + _w_ctx * (_raw_h - 1.0))
     la = _la_pre * (1.0 + _w_ctx * (_raw_a - 1.0))
-    _sf["home_context"] = _raw_h
-    _sf["away_context"] = _raw_a
+    _sf["context_on_home_lambda"] = _raw_h
+    _sf["context_on_away_lambda"] = _raw_a
 
     # ── Sanity clamp ──────────────────────────────────────────────────────────
     lh = max(1.5, min(lh, 12.0))
     la = max(1.5, min(la, 12.0))
 
     # ── PASO 8: Monte Carlo ───────────────────────────────────────────────────
+    # Deterministic per-game seed (added 2026-07-06): monte_carlo_advanced()
+    # defaults to rng_seed=None (true system entropy), so two backtest runs on
+    # identical code previously produced different Brier/accuracy numbers
+    # purely from MC sampling noise — confirmed as the explanation for a
+    # 0.66pp accuracy / 0.0003 Brier swing between two otherwise-identical
+    # runs the same day. Seeding from game_pk keeps each game's own randomness
+    # genuinely independent (no shared/correlated stream across games) while
+    # making the whole backtest byte-reproducible run-to-run, so a Brier delta
+    # after a real code change can be trusted instead of being noise-sized.
+    _game_pk_for_seed = game_data.get("game_pk")
+    _mc_seed = int(_game_pk_for_seed) % (2**32) if _game_pk_for_seed else None
     mc = monte_carlo_advanced(
         lh=lh, la=la, n_max=n_mc,
         block=min(10_000, n_mc),
         analyze_f5=False,
         lh_f5=lh_f5, la_f5=la_f5,
+        rng_seed=_mc_seed,
     )
 
     # Capture raw MC probabilities BEFORE Platt — needed for clean Platt refitting.

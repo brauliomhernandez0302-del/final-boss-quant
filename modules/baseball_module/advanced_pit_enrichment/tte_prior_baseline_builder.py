@@ -63,6 +63,19 @@ class TTEPriorBaselineBuilder:
         """Persist one prior-season baseline per team for the requested current season."""
         total_started = time.perf_counter()
         prior = prior_season or int(season) - 1
+        # Anti-leak guard (2026-07-09): the other 3 prior-baseline builders
+        # (pitcher, team defense, bullpen) already validate that the window
+        # dates fall inside prior_season; this one didn't. Real callers today
+        # source dates from a trusted table (SEASON_WINDOWS in
+        # scripts/build_all_pit_caches.py) so this was never exploited, but a
+        # future caller passing a wrong end date would silently build a
+        # "prior baseline" from current-season data with no defense at all.
+        if int(prior) != int(season) - 1:
+            raise ValueError("prior_season must be exactly season - 1")
+        if not prior_season_start_date.startswith(f"{prior}-"):
+            raise ValueError("prior_season_start_date must stay inside prior_season")
+        if not prior_season_end_date.startswith(f"{prior}-"):
+            raise ValueError("prior_season_end_date must stay inside prior_season")
         print(
             "[TTEPriorBaselineBuilder] start "
             f"season={season} prior_season={prior} "

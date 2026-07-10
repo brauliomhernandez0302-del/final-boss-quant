@@ -1,7 +1,7 @@
 # CONTRACTS.md — System Map: Final Boss Quant G8+
 
-**Generated:** 2026-05-13  
-**Version:** 2.1  
+**Generated:** 2026-05-13
+**Rewritten:** 2026-07-06 — full verification against current code, following the 2026-07-06 audit (`docs/AUDITORIA_MLB_2026-07.md`). The 2026-05-13 version had drifted substantially: it cited files that no longer exist (`odds_api.py`, `storage.py`, `ablation_calibrator.py`, `post_game.py`, `train_historical.py`), described a component (`AutoCalibrator`) that was removed and superseded, and predated the entire point-in-time (PIT) rebuild, the `ui/` package split, and 5 pipeline engines that didn't exist yet. Every claim below was verified directly against the code on 2026-07-06.
 **Purpose:** North-star reference — what every file does, what is alive vs dead, and the correct data flow for every sport.
 
 ---
@@ -14,28 +14,28 @@
 4. [MLB Data Flow (canonical)](#4-mlb-data-flow)
 5. [NBA Data Flow](#5-nba-data-flow)
 6. [UFC Data Flow](#6-ufc-data-flow)
-7. [betting_ai/ — What it contains](#7-betting_ai--what-it-contains)
-8. [bbets_ia_pro/ — What it contains](#8-bbets_ia_pro--what-it-contains)
-9. [Connected vs Orphaned Files](#9-connected-vs-orphaned-files)
-10. [Database Schema](#10-database-schema)
-11. [Import Graph](#11-import-graph)
+7. [Connected vs Orphaned Files](#7-connected-vs-orphaned-files)
+8. [Database Schema](#8-database-schema)
+9. [Import Graph](#9-import-graph)
 
 ---
 
 ## 1. System Overview
 
-**Final Boss Quant G8+** is a Streamlit sports-betting prediction system.  
+**Final Boss Quant G8+** is a Streamlit sports-betting prediction system.
 Entry point: `app.py`. Run: `streamlit run app.py`.
 
-The system models each sport as a probability estimator and compares those probabilities to market odds to find positive-EV bets. MLB is the primary sport with a full quantitative pipeline. NBA and UFC have self-contained modules but lack live data integrations. Soccer and boxing exist as code but are disabled.
+The system models each sport as a probability estimator and compares those probabilities to market odds to find positive-EV bets. MLB is the primary sport with a full quantitative pipeline (9 sequential lambda-adjustment engines + point-in-time data infrastructure). NBA and UFC have self-contained modules but lack live data integrations (run on demo/passed-in data only). Soccer was disabled and later removed entirely.
 
 **Three runtime modes:**
 
 | Mode | Entry Point | Purpose |
 |------|------------|---------|
-| Live UI | `app.py` | Streamlit dashboard, one-game analysis |
-| Daily CLI | `run_daily_picks.py` | Publish picks to track_record.db + reconcile results |
-| Dev/Research | `backtest_and_retrain.py`, `ablation_calibrator.py`, `analyze_game_outcomes.py` | Offline model validation |
+| Live UI | `app.py` (imports `ui.mlb`, `ui.odds_loader`, `ui.sidebar`, `ui.components`) | Streamlit dashboard, one-game analysis + Track Record tab |
+| Daily CLI | `run_daily_picks.py` | Publish picks to `track_record.db` + reconcile results |
+| Dev/Research | `backtest_and_retrain.py`, `analyze_game_outcomes.py`, `fetch_historical_odds.py` | Offline model validation and historical data bootstrap |
+
+**No longer part of this repo (verified removed):** `betting_ai/` and `bbets_ia_pro/` directories, `injuries_fetcher.py`, `nba_stats_fetcher.py`, `ufc_data_fetcher.py`, `modules/football_module.py`, `modules/boxing_module.py`, `ablation_calibrator.py`, `post_game.py`, `train_historical.py`, `odds_api.py`, `storage.py`, `modules/baseball_module/calibration/auto_calibrator.py`, `modules/baseball_module/context_engine/pitchers_regression.py` (only a stale `.pyc` remains). None of these should be referenced as live components going forward.
 
 ---
 
@@ -45,22 +45,14 @@ The system models each sport as a probability estimator and compares those proba
 
 | File | Lines | What it does |
 |------|-------|-------------|
-| `app.py` | 1,591 | **Primary entry point.** Streamlit UI. Defines `AppConfig`, `SportConfig`, `PredictionsDB`, `BaseAnalyzer`/`MLBAnalyzer`/`NBAAnalyzer`/`UFCAnalyzer`, all `render_*` functions, and `main()`. Imports and calls sport modules. |
-| `config.py` | 54 | **Single source of truth for constants.** `MLB_SIMULATIONS=5_000_000`, `KELLY_FRACTION=0.25`, `MAX_RISK_PCT=0.05`, `LEAGUE_AVG_RUNS=4.5`, `LEAGUE_AVG_ERA=4.15`, `DEFAULT_MIN_EV=3.0`, etc. Everything else imports from here. |
-| `data_fetchers.py` | 2,157 | **MLB data layer.** `MLBStatsAPI` (hits `statsapi.mlb.com`): game schedule, team stats, pitcher stats, bullpen ERA, standings, travel. `MLBDataIntegrator` orchestrates parallel fetches. `ParkFactors` class with FanGraphs 2024 park factors. `WeatherFetcher` (OpenWeather, optional). Free, no API key. |
-| `odds_fetcher.py` | 383 | **Odds API layer.** `get_odds_data()` — fetches h2h + totals + spreads for 15 sport keys via The Odds API. 3-region coverage (us/uk/eu). On-disk JSON cache with `ODDS_FILE_CACHE_TTL=600s`. Returns list of game dicts. |
-| `odds_api.py` | 93 | **Odds lookup + fuzzy matching.** `get_best_odds_for_teams(home, away, sport)` — fetches odds from The Odds API for a specific matchup using substring fuzzy matching. Returns best ML odds across all bookmakers plus Pinnacle reference. |
-| `storage.py` | 46 | **CSV bet log.** `save_bets(df)` / `load_bets()` — appends/reads `bets_log.csv`. Independent of SQLite. Used by app.py sidebar "Save Picks" button. |
-| `run_daily_picks.py` | 140 | **Daily CLI runner.** Calls `track_record.publisher.publish_daily_picks()` then `track_record.reconciler.reconcile_all_sports()` then prints summary. Designed for cron at 18:00 UTC. |
-| `post_game.py` | 311 | **Post-game reconciliation script.** Fetches actual scores via `LearningEngine.fetch_pending_outcomes()`, matches them to `predictions` table by team names + date, updates `results`, refreshes team bias cache in `ml_state`. Older predecessor to `run_daily_picks.py`. |
-| `train_historical.py` | 359 | **One-time historical bootstrap.** Downloads every 2024-2025 MLB game result via MLB Stats API, inserts into `game_outcomes` using season RPG as predicted λ, then recomputes team bias. Safe to re-run (UNIQUE on game_pk). |
-| `fetch_historical_odds.py` | 571 | **One-time historical odds downloader.** Pulls 2024-2025 MLB pre-game moneylines from The Odds API historical endpoint, one bulk call per game-day at 17:00 UTC. Writes to `historical_odds` table. ~7,380 total API calls. Costs quota. Per memory notes: 162 Athletics games pending re-fetch when API quota resets. |
-| `backtest_and_retrain.py` | 1,094 | **Full pipeline backtest.** Runs every game in `game_outcomes` (4,695+ games) through the complete pipeline: `AutoCalibrator → HFA → PitcherEngine → Regression → MC(50k sims)`. Writes real model λ/p back to `game_outcomes`. Produces JSON report in `data/`. Uses disk-cached API calls in `.cache/backtest/`. |
-| `ablation_calibrator.py` | 508 | **Ablation test harness.** Compares Scenario A (with `AutoCalibrator`) vs Scenario B (without, using Kalman+bias only). Uses `backtest_and_retrain.py` infrastructure. Zero new API calls. |
-| `analyze_game_outcomes.py` | 558 | **Analytics script.** Reads `game_outcomes` table, analyzes ROI by stadium, month, day/night, drawdown curves, systematic failures. Standalone — no pipeline changes. |
-| `injuries_fetcher.py` | 892 | NBA injury scraper (ESPN). **ORPHANED — never imported anywhere.** See §9. |
-| `nba_stats_fetcher.py` | 783 | NBA team stats via `nba_api`. **ORPHANED — never imported anywhere.** See §9. |
-| `ufc_data_fetcher.py` | 524 | UFC fighter stats scraper (web scraping, BeautifulSoup). **ORPHANED — never imported anywhere.** See §9. |
+| `app.py` | 305 | **Streamlit entry point** — page config, `SPORT_CONFIGS`, NBA/UFC stubs (`_NBAAnalyzer`/`_UFCAnalyzer`), `_render_analysis_tab()`, `main()`. MLB's analyzer/renderer are NOT here — imported from `ui.mlb` (`from ui.mlb import MLBAnalyzer, render_mlb_results`). |
+| `config.py` | 74 | **Single source of truth for constants.** `MLB_SIMULATIONS=5_000_000`, `KELLY_FRACTION=0.25`, `MIN_KELLY=0.01`/`MAX_KELLY=0.15`, `LEAGUE_AVG_RUNS=4.5`, `LEAGUE_AVG_ERA=4.15`, `LEAGUE_AVG_XWOBA=0.316`, `PITCHER_ENGINE_WEIGHTS` dict, `DEFAULT_MIN_EV=3.0`. No `MAX_RISK_PCT` (does not exist, despite prior versions of this doc citing it). |
+| `data_fetchers.py` | 2,182 | **MLB data layer.** `MLBStatsAPI` (hits `statsapi.mlb.com`, free, no key): games, pitcher/team stats, bullpen ERA+workload, travel, roof status, batting handedness, Savant OAA. `MLBDataIntegrator` orchestrates enrichment. `WeatherAPI` (OpenWeather, optional). 5 dead fetchers removed 2026-07-06 (`get_head_to_head`, `get_standings_status`, `get_team_offensive_stats`, `get_team_recent_form`, `get_umpire_historical_stats` — zero downstream consumers, confirmed via grep). |
+| `odds_fetcher.py` | 521 | **Odds API layer — both odds functions live here now.** `get_odds_data()` (UI dropdown, via `_normalize_event()`) and `get_best_odds_for_teams(home, away, sport)` (fuzzy-match lookup used by `run_module.py`'s auto-fetch path and `track_record/publisher.py`) — there is no separate `odds_api.py`. F5 field naming fixed 2026-07-06 (`f5_ml_home`/`f5_ml_away`/`f5_total_over`/`f5_total_under`, matching `GameOdds`' convention — previously `f5_home`/`f5_over` etc., a mismatch that silently meant F5 markets never activated via this path). `_normalize_event()` (feeds `get_odds_data()`) still uses a third, distinct naming scheme (`f5_home_odds`/`f5_over_odds`) — flagged inline as a land mine for any future refactor connecting it more directly to F5 analysis, not yet an active bug. |
+| `run_daily_picks.py` | 140 | **Daily CLI runner.** Calls `track_record.publisher.publish_daily_picks()` then `track_record.reconciler.reconcile_all_sports()`, prints summary. Designed for cron. |
+| `fetch_historical_odds.py` | 581 | **One-time historical odds downloader.** Pulls historical Pinnacle moneylines via The Odds API's historical endpoint. Costs quota; per project memory, has previously hit quota limits mid-run. |
+| `backtest_and_retrain.py` | 3,178 | **Full pipeline backtest + walk-forward retrain.** Runs every game in `game_outcomes` through the complete live pipeline (not a separate reimplementation — imports and calls the same engines as `run_module.py`), refits Platt/Platt-2D, relearns gradient-descent pipeline weights. Supports 4 independent PIT modes (`--experimental-pitcher-pit-mode`, `--use-team-tte-pit`, `--use-defense-pit`, `--use-bullpen-pit`, or `--use-full-pit` for all 4) so backtest evaluation reads point-in-time-correct data instead of season aggregates. `_team_dict()`'s `use_team_full_season_pitching_base` flag (gated to `--use-defense-pit`) makes `team_era`/`team_whip`/`runs_allowed_per_game` fall back to league averages in PIT mode rather than leaking full-season data — confirmed present and correctly wired 2026-07-06 (a prior draft of this doc's audit had this flagged as an open leak; it is not). Writes model λ/p back to `game_outcomes`, produces a JSON report in `data/`. |
+| `analyze_game_outcomes.py` | 558 | **Analytics script.** Reads `game_outcomes`, analyzes ROI by stadium/month/day-night, drawdown curves. Standalone, read-only against the pipeline. |
 
 ---
 
@@ -68,30 +60,46 @@ The system models each sport as a probability estimator and compares those proba
 
 | File | Lines | What it does |
 |------|-------|-------------|
-| `core/utils.py` | 10 | `calculate_ev(prob, decimal_odds) → float (%)` — single source of truth for EV formula. Imported by `basketball_module.py` and `value_detector.py`. |
-| `core/value_detector.py` | 925 | **Multi-market value detector.** `evaluate_value_ultra(mc_result, odds, ...)` — full 9-step analysis: vig removal (3 methods), EV per market, Kelly sizing, bootstrap confidence intervals, tier classification (ULTRA/HIGH/MEDIUM/SLIGHT), Pinnacle line as fair reference. Markets: ML_HOME, ML_AWAY, OVER, UNDER, RL_HOME (+/-1.5), RL_AWAY, F5_HOME, F5_AWAY. Returns sorted `best_bets` list. |
+| `core/utils.py` | ~10 | `calculate_ev(prob, decimal_odds)` — single source of truth for the EV formula, imported by `basketball_module.py` and `value_detector.py`. |
+| `core/value_detector.py` | 1,119 | **Multi-market value detector, sport-agnostic.** `evaluate_value_ultra()` — vig removal (3 methods: multiplicative/power/Shin), EV/edge/Kelly per market, `calculate_composite_score()`, `classify_value_tier()` (ULTRA/HIGH/MEDIUM/SLIGHT), Pinnacle as fair-line reference, optional Platt-2D correction via injected `p_home_corrector` callable. Markets: ML, totals, run line (±1.5), F5 (moneyline + totals). `all_opportunities` (source of `best_bets`) now spreads the full underlying bet dict (2026-07-06 fix — two independent downstream consumers each needed a field the old hand-picked projection didn't carry) except `tier_enum` (a raw Enum, not JSON-serializable). `GameOdds` dataclass defines the canonical field-naming convention (`f5_ml_home`, `f5_total_over`, etc.) that other files must match. |
 
 ---
 
-### `modules/` — Sport analysis engines
+### `modules/baseball_module/` — MLB pipeline (9-step lambda engine + PIT data layer)
 
 | File | Lines | What it does |
 |------|-------|-------------|
-| `modules/baseball_module/core/run_module.py` | 630 | **MLB pipeline orchestrator.** `run_module(game_id, ...)` — drives the 6-step Poisson λ pipeline (see §4). Also defines `_compute_f5_lambda()` and `_platt()`. Calls every engine in sequence, applies gradient-descent pipeline weights from `LearningEngine`. |
-| `modules/baseball_module/calibration/auto_calibrator.py` | 336 | **LambdaCalibrator.** Adjusts λ using 5 multiplicative factors: offense quality (30%), opponent defense (25%), recent form (25%), rest days (10%), season context (10%). Combined ±15% hard cap applied on the final product. wOBA league avg = 0.310 (FanGraphs 2024). |
-| `modules/baseball_module/calibration/learning_engine.py` | 758 | **Adaptive ML engine.** 5 mechanisms: (1) team bias (mean actual/predicted λ per team/season), (2) multi-dim bias (home/away/month/stadium), (3) Kalman filter (hidden team run-rate state), (4) Platt recalibration (weekly logistic refit on outcomes), (5) gradient-descent pipeline weights. Tables in `predictions_history.db`. |
-| `modules/baseball_module/hfa/hfa_engine.py` | 353 | **HFA Engine.** `get_adjusted_lambdas(lh, la, game_data)` — applies: (1) home crowd boost (asymmetric, home only, empirically ÷4), (2) FanGraphs 5-year park run-factor (symmetric), (3) away travel fatigue (miles + time zones, asymmetric). Does NOT touch team offense/defense (AutoCalibrator owns that). |
-| `modules/baseball_module/context_engine/pitcher_engine.py` | 540 | **PitcherEngine.** `adjust_for_pitchers(lh, la, game_data)` — weights: quality (0.25), form (0.20), matchup vs lineup (0.15), platoon splits (0.08), fatigue (0.10), park-for-pitchers (0.10), travel (0.05), bullpen (0.07). Strictly pitcher signals only — does not touch team context. |
-| `modules/baseball_module/context_engine/pitchers_regression.py` | 163 | **PitcherRegressionEngine.** `calculate_pitcher_regression(pitcher_stats, ...)` — BABIP luck, LOB% luck, HR/FB% luck vs career baselines (0.285 / 0.738 / 0.106 from FanGraphs 2024-2025). Returns `(factor, confidence)`. factor > 1 → pitcher was lucky → expect more runs. |
-| `modules/baseball_module/montecarlo/simulator.py` | 251 | **Monte Carlo engine.** `monte_carlo_advanced(lh, la, n_max=5_000_000, ...)` — vectorized Poisson blocks of 200k, early stopping at SE < 0.003. Outputs p_home, p_away, p_tie, mean_total, p_over/under per line, plus F5 probabilities. λ noise = 0.05 (mild uncertainty). |
-| `modules/baseball_module/data_enrichment/savant_fetcher.py` | ~120 | **Baseball Savant enrichment (optional).** `SavantFetcher.get_pitcher_stats(mlbam_id, year)` — fetches xERA, xwOBA from Savant leaderboard CSVs. 24h disk cache. Used in `run_module` if `_ENRICHMENT_AVAILABLE=True`. |
-| `modules/baseball_module/data_enrichment/fangraphs_fetcher.py` | ~130 | **FanGraphs enrichment (optional).** `FanGraphsFetcher.get_pitcher_stats(mlbam_id, year)` — fetches xFIP, SIERA, WAR, K%, BB%, SwStr% from FanGraphs public API. 24h disk cache. |
-| `modules/baseball_module/utils/helpers.py` | 28 | `clamp(x, a, b)`, `infer_decimal(odds)`, `prob_from_decimal(dec)`. |
-| `modules/baseball_module/logging/__init__.py` | — | Empty. The `logging/` subdirectory is a naming curiosity — it does not shadow the stdlib `logging` module because Python resolves absolute imports from `sys.path`, not local package names at this depth. |
-| `modules/basketball_module.py` | 2,411 | **NBA G10+ Ultra Pro V2.** `NBAAnalyzerG10PlusV2` with 12-engine analysis (see §5). `run_module(data=None, home_team=None, ...)` as public interface. Self-contained: no external API calls during analysis. Demo falls back to Lakers @ Nuggets. |
-| `modules/ufc_module.py` | 626 | **UFC G8+ Ultra.** `UFCAnalyzer.analyze_fight()` — style matchup matrix, physical attrs, record quality, round simulation. `run_module(data=None, fighter1_data=None, ...)`. Self-contained: demo falls back to Fighter A vs Fighter B. |
-| `modules/football_module.py` | 575 | **DISABLED soccer predictor.** `enabled=False` in `SPORT_CONFIGS`. Has `st.set_page_config()` at module level — importing it would crash the app. Dead code. |
-| `modules/boxing_module.py` | 205 | **Disconnected boxing module.** Not in `SPORT_CONFIGS`. No `run_module()` function. Uses a separate `predictions_history.sqlite` (not the main DB). Dead code. |
+| `core/run_module.py` | 878 | **MLB pipeline orchestrator.** `run_module(game_id, ...)` drives the full PASO 0-9 sequence (§4). Applies gradient-descent pipeline weights (`LearningEngine.get_pipeline_weights()`) via a delta-weighted blend at every stage: `λ_out = λ_in × (1 + w×(raw_ratio−1))` — confirmed 2026-07-06 this is the actual combination method everywhere, not geometric mean. Stamps `lambdas_history['final']` (the exact λ fed to Monte Carlo) since 2026-07-06, so consumers don't have to guess "last stage present." |
+| `offense/true_talent_engine.py` | 799 | **True Talent Engine (TTE) — offense, pre-pipeline.** Park-neutral λ_base from Statcast xwOBA/barrel%/plate discipline, lineup-filtered when a confirmed lineup exists, blended with a prior-season baseline (`prior_w = 1000/(1000+PA_current)`). PIT coverage ~99.4%. |
+| `calibration/learning_engine.py` | 1,081 | **Adaptive ML engine, 6 mechanisms:** (1) team bias (mean actual/predicted λ per team/season/context, incl. multi-dim by home-away/month), (2) Kalman filter (hidden team run-rate state), (3) Platt recalibration (1D, weekly refit), (4) Platt-2D (`logit(p_corrected)=a+b·logit(p_home)+c·logit(market_prob)`, expanding-window, shipped 2026-07-05), (5) gradient-descent pipeline weights, (6) idempotent `update_outcome()`. **`auto_calibrator.py` does NOT exist** — the multiplicative-cap calibrator it used to describe was fully superseded by this file. |
+| `context_engine/pitcher_engine.py` | 412 | **Pitcher Engine (PASO 2).** Fallback hierarchy SIERA→xFIP→xERA→FIP→raw ERA, branched TBF-based Bayesian shrinkage per estimator, conditional `kbb_mult` (only applied when the winning estimator doesn't already encode K%-BB%, avoiding double-counting), platoon splits, matchup history, fatigue. Quality clamp `[0.60,1.45]` (widened 2026-07-05 from real unclamped distribution). |
+| `context_engine/contextual_engine.py` | 152 | **Contextual Engine (PASO 3).** Rest/back-to-back only, asymmetric (home B2B neutralized per audit finding, away B2B −4%). No umpire factor (removed, never had real data). |
+| `context_engine/bullpen_engine.py` | 645 | **Bullpen Engine (PASO 4).** Composite of xwOBA/SIERA-or-ERA/K-BB%/barrel%, conditionally reweighted when team SIERA is available (drops K-BB weight to avoid double-counting, mirrors Pitcher Engine's `kbb_mult` fix). Workload/fatigue factor from real per-team boxscore innings (`ip_last_3_days`). PIT coverage 100%. |
+| `hfa/park_weather_engine.py` | 484 | **Park + Weather Engine (PASO 5).** Symmetric park run-factor (static, 5-year FanGraphs-sourced `STADIUM_DATABASE`, no L/R split), temperature/wind/rain, retractable-roof handling. `roof_open`/`roof_closed` were never populated by any fetcher until 2026-07-06 (forced `roof_closed=True` unconditionally for all 8 retractable-roof parks) — fixed via `data_fetchers.py::get_roof_status()` reading the live game feed. Includes 2026 stadium renames (Daikin Park, UNIQLO Field at Dodger Stadium). Deliberately blind in the backtest (`historical_weather.py` instantiation is commented out — documented, intentional). |
+| `context_engine/defensive_efficiency_engine.py` | 308 | **Defensive Efficiency Engine (PASO 6).** Fielding-only, isolated from pitching: DER (`1 − BABIP`, Bayesian-shrunk toward `_LG_DER=0.7097`) + OAA (Savant, now divided by an estimated real games-played denominator instead of a fixed 162, plus new Bayesian shrinkage — both fixed 2026-07-05/06). PIT coverage 100%. |
+| `hfa/hfa_engine.py` | 145 | **HFA Engine (PASO 7).** Home crowd boost is permanently disabled (`hfa_boost=0.0`, confirmed noise — Pearson=-0.015). Away-team travel fatigue only (miles + timezone-crossing penalty, dynamic per-game, max −0.10 runs / ~2.2% λ). |
+| `montecarlo/simulator.py` | 368 | **Monte Carlo engine.** `monte_carlo_advanced(lh, la, n_max=5_000_000)` — Negative Binomial (`NB_DISPERSION=6.0`, not Poisson), vectorized blocks, early stopping at `SE<0.003` (checked on `p_home` only — O/U and F5 ride on whatever `n` that produces, a known, low-priority, bounded gap). Bivariate correlation (`rho_game`) for run totals. `F5_SCALE=0.575` empirically validated against 60 real 2025 games. Rated the best-implemented file in the pipeline across multiple audits. |
+| `advanced_pit_enrichment/` | 26 files | **Point-in-time data infrastructure**, distinct from the lambda-adjustment engines above — snapshot builders, daily aggregators, and prior-baseline builders that feed TTE/Bullpen/Defense/Pitcher with data "as of" a given date rather than season aggregates. Built incrementally across recent sessions; has never had a formal file-by-file audit despite being touched extensively (flagged in `docs/AUDITORIA_MLB_2026-07.md`). |
+| `data_enrichment/savant_fetcher.py`, `fangraphs_fetcher.py` | ~120/~250 | Baseball Savant / FanGraphs enrichment (xERA, xwOBA, xFIP, SIERA, batter stats). 24h disk cache, graceful failure if unreachable. |
+
+---
+
+### `ui/` — Streamlit UI layer (did not exist in the 2026-05-13 version of this doc)
+
+| File | Lines | What it does |
+|------|-------|-------------|
+| `ui/mlb.py` | 355 | **`MLBAnalyzer` + `render_mlb_results()`** — the actual MLB analysis/rendering logic, imported into `app.py`. `save_value_picks()` persists positive-EV picks to `PredictionsDB`. `market_odds` construction now includes F5 fields (fixed 2026-07-06 — previously the UI-selector-driven path had no way to carry F5 odds at all, a separate bug from the `odds_fetcher.py` naming mismatch). Displayed "λ Final" now reads `lambdas_history['final']` (fixed 2026-07-06 — previously read the wrong pipeline stage, post-Contextual instead of post-HFA). |
+| `ui/components.py` | 277 | `SportConfig`, `ThemeColors`, `UIComponents` (render helpers), `calculate_ev`/`calculate_kelly` (delegates to `core.value_detector.kelly_criterion` — single source of truth, no local reimplementation). |
+| `ui/sidebar.py` | 121 | `render_sidebar()` (settings: min_ev, kelly_factor, min_rating), `render_history()`. |
+| `ui/odds_loader.py` | 177 | `load_odds_data()`, `filter_odds_by_sport()`, `build_game_selector()` — builds `GameData` objects for the Streamlit dropdown. Now maps F5 fields from `_normalize_event()`'s naming scheme into the canonical `GameData` convention (fixed 2026-07-06). |
+
+---
+
+### `db/` — Shared data models (did not exist in the 2026-05-13 version of this doc)
+
+| File | Lines | What it does |
+|------|-------|-------------|
+| `db/predictions_db.py` | 232 | `GameData` (TypedDict — now includes `f5_ml_home`/`f5_ml_away`/`f5_total_line`/`f5_total_over`/`f5_total_under`, added 2026-07-06), `PredictionData`, `AnalysisResult`, `PredictionsDB` (SQLite wrapper for `data/predictions_history.db`). |
 
 ---
 
@@ -99,470 +107,233 @@ The system models each sport as a probability estimator and compares those proba
 
 | File | Lines | What it does |
 |------|-------|-------------|
-| `track_record/db.py` | ~120 | `TrackRecordDB` — SQLite CRUD for `data/track_record.db`. Tables: `picks` (one row per pick, with `published_at` timestamp as audit proof), `bankroll` (running P&L ledger). |
-| `track_record/publisher.py` | ~200 | `publish_daily_picks(db, sports, dry_run)` — runs the full MLB/NBA/UFC analysis pipeline for today's games, saves every bet meeting EV/tier threshold to `picks` table with `published_at < game_start - 30min`. Only publishes once per `pick_uid`. |
-| `track_record/reconciler.py` | ~180 | `reconcile_all_sports(db, lookback_days)` — fetches final MLB scores via `statsapi` (with `MLBStatsAPI` fallback), resolves WIN/LOSS/PUSH for each pending pick by market logic (ML, run line, total, F5). |
-| `track_record/stats.py` | ~120 | `compute_stats(db, sport)` — calculates headline (W-L, win rate, ROI, Sharpe), by-sport, by-market, by-tier, by-month, bankroll curve, recent picks. Returns structured dict for Streamlit. |
-| `track_record/ui.py` | ~100 | `render_track_record()` — Streamlit page shown in app.py "Track Record" tab. Filterable by sport and result. |
-| `track_record/__init__.py` | 8 | Exports `TrackRecordDB`. |
+| `track_record/db.py` | 360 | `TrackRecordDB` — SQLite CRUD for `data/track_record.db`. Tables: `picks`, `bankroll`, `daily_snapshots`. `resolve_pick()`/`upsert_daily_snapshot()` bankroll running-total fixed 2026-07-06 (was `MAX(running_total)`, corrupts the equity curve after any loss — now latest-by-insertion-order). |
+| `track_record/publisher.py` | 343 | `publish_daily_picks()`/`publish_mlb_picks()` — runs the pipeline for today's games, saves qualifying picks pre-game. `_market_label()`'s F5 substring-collision fixed 2026-07-06 (F5 totals were colliding with full-game totals; F5 moneyline always resolved VOID). `mc_probs` now strips raw ndarray MC samples before `json.dumps()` (was an unconditional crash on the first real qualifying bet, 2026-07-06). |
+| `track_record/reconciler.py` | 284 | `reconcile_pending()`/`reconcile_all_sports()` — fetches final scores via `statsapi` (fallback: `MLBStatsAPI`), resolves WIN/LOSS/PUSH/VOID per market. |
+| `track_record/stats.py` | 184 | `compute_stats()` — headline (W-L, win rate, ROI, Sharpe; computed directly from `picks`, independent of the bankroll bug above), by-sport/market/tier/month, bankroll curve. |
+| `track_record/ui.py` | 218 | `render_track_record()` — Streamlit page, "Track Record" tab in `app.py`. |
+| `track_record/__init__.py` | 13 | Exports. |
+
+**Status as of 2026-07-06**: all known bugs fixed and tested; `picks` table is empty (0 rows) — no real pick has completed the full publish→resolve cycle yet under the corrected code.
 
 ---
 
 ### `tests/` — Test suite
 
-| File | What it tests |
-|------|--------------|
-| `tests/conftest.py` | Adds project root to `sys.path`. |
-| `tests/test_hfa_pipeline.py` | HFA engine multiplicative pipeline: each factor applies independently, home boost only to λ_home, travel only to λ_away, park factor symmetric. |
-| `tests/test_f5_lambda.py` | `_compute_f5_lambda()` in `run_module.py` — F5 expected runs from starter avg_IPS + f5_ERA + bullpen ERA. |
-| `tests/test_formulas.py` | Core math: EV, Kelly, prob conversions. |
-| `tests/test_defense_multiplier.py` | AutoCalibrator's `_calculate_defense_multiplier`. |
-| `tests/test_learning_engine.py` | `LearningEngine` table init, bias caching, Platt params. |
-| `tests/test_montecarlo.py` | `monte_carlo_advanced()` — output shape, early stopping, F5 mode. |
-| `tests/test_pitcher_engine.py` | `adjust_for_pitchers()` — direction and magnitude of adjustments. |
+**39 test files, 448 tests total** (was "184+" as of the 2026-05-13 doc — grown substantially with the PIT infrastructure buildout). Notable groupings: PIT/Savant/FanGraphs snapshot+cache tests (~20 files), engine-specific tests (`test_pitcher_engine.py`, `test_defense_multiplier.py`, `test_hfa_pipeline.py`, `test_montecarlo.py`, `test_f5_lambda.py`), `test_learning_engine.py`, `test_validated_fixes.py` (regression tests for previously-fixed bugs), and 2 new files from the 2026-07-06 F5 fix (`test_odds_fetcher_f5_keys.py`, `test_ui_f5_odds_pipeline.py` — verify F5 activates end-to-end from synthetic payloads, no live `ODDS_API_KEY` needed).
 
 ---
 
 ## 3. Active vs Dead Code
 
-### ACTIVE — Connected to the live system
+### ACTIVE — Connected to the live MLB pipeline
 
 ```
-app.py                                         ← runs everything
-config.py                                      ← imported by everyone
-data_fetchers.py                               ← MLB data source
-odds_fetcher.py                                ← odds data source
-odds_api.py                                    ← odds lookup in run_module
-storage.py                                     ← CSV bet log (manual save)
-core/utils.py                                  ← basketball_module + value_detector
-core/value_detector.py                         ← step 6 of MLB pipeline
-modules/baseball_module/core/run_module.py     ← MLB pipeline entry
-modules/baseball_module/calibration/auto_calibrator.py
+app.py                                              ← Streamlit entry point
+config.py                                           ← imported by nearly everyone
+data_fetchers.py                                    ← MLB data source
+odds_fetcher.py                                     ← both get_odds_data() and get_best_odds_for_teams() live here
+core/utils.py                                       ← basketball_module + value_detector
+core/value_detector.py                              ← PASO 9 of the MLB pipeline, sport-agnostic
+db/predictions_db.py                                ← GameData/PredictionData/PredictionsDB
+ui/mlb.py, ui/components.py, ui/sidebar.py, ui/odds_loader.py
+
+modules/baseball_module/core/run_module.py          ← MLB pipeline entry
+modules/baseball_module/offense/true_talent_engine.py
 modules/baseball_module/calibration/learning_engine.py
-modules/baseball_module/hfa/hfa_engine.py
 modules/baseball_module/context_engine/pitcher_engine.py
-modules/baseball_module/context_engine/pitchers_regression.py
+modules/baseball_module/context_engine/contextual_engine.py
+modules/baseball_module/context_engine/bullpen_engine.py
+modules/baseball_module/hfa/park_weather_engine.py
+modules/baseball_module/context_engine/defensive_efficiency_engine.py
+modules/baseball_module/hfa/hfa_engine.py
 modules/baseball_module/montecarlo/simulator.py
-modules/baseball_module/data_enrichment/savant_fetcher.py  (optional, graceful fail)
-modules/baseball_module/data_enrichment/fangraphs_fetcher.py (optional, graceful fail)
-modules/baseball_module/utils/helpers.py
-modules/basketball_module.py
-modules/ufc_module.py
-track_record/db.py
-track_record/publisher.py
-track_record/reconciler.py
-track_record/stats.py
-track_record/ui.py
+modules/baseball_module/advanced_pit_enrichment/ (26 files)
+modules/baseball_module/data_enrichment/savant_fetcher.py       (optional, graceful fail)
+modules/baseball_module/data_enrichment/fangraphs_fetcher.py    (optional, graceful fail)
+
+modules/basketball_module.py                        ← self-contained, demo-data fallback
+modules/ufc_module.py                                ← self-contained, demo-data fallback
+
+track_record/db.py, publisher.py, reconciler.py, stats.py, ui.py
 run_daily_picks.py
-post_game.py                                   ← older reconciler, still functional
-tests/ (all 7 files)
+tests/ (39 files, 448 tests)
 ```
 
-### ACTIVE — Dev/Research tools (not part of live pipeline)
+### ACTIVE — Dev/Research tools (not part of the live pipeline)
 
 ```
-backtest_and_retrain.py          ← used for model validation
-ablation_calibrator.py           ← calls backtest_and_retrain infrastructure
-analyze_game_outcomes.py         ← analytics on historical data
-train_historical.py              ← one-time historical bootstrap (already run)
-fetch_historical_odds.py         ← one-time historical odds download (partially run)
+backtest_and_retrain.py          ← model validation + walk-forward retrain, imports the live engines
+analyze_game_outcomes.py         ← analytics on historical data, read-only
+fetch_historical_odds.py         ← historical odds download, quota-limited
 ```
 
-### ORPHANED — Written but never imported or called
+### REMOVED since the 2026-05-13 version of this document (confirmed absent, do not reference as live)
 
 ```
-injuries_fetcher.py              ← NBA injury scraper, 0 callers
-nba_stats_fetcher.py             ← NBA stats via nba_api, 0 callers
-ufc_data_fetcher.py              ← UFC fighter scraper, 0 callers
-```
-
-### DEAD CODE — Disabled or empty
-
-```
-modules/football_module.py       ← Soccer, enabled=False in SPORT_CONFIGS;
-                                    st.set_page_config() at module level = crash on import
-modules/boxing_module.py         ← No run_module(), not in SPORT_CONFIGS,
-                                    writes to different SQLite file
-
-betting_ai/main.py               ← EMPTY (0 bytes)
-betting_ai/detector.py           ← EMPTY (0 bytes)
-betting_ai/bankroll.py           ← EMPTY (0 bytes)
-betting_ai/gestor_apuestas.py    ← EMPTY (0 bytes)
-betting_ai/odds_api.py           ← EMPTY (0 bytes)
-betting_ai/model/__init__.py     ← EMPTY (0 bytes)
-betting_ai/model/betting_model.py ← EMPTY (0 bytes)
+odds_api.py, storage.py, ablation_calibrator.py, post_game.py, train_historical.py
+injuries_fetcher.py, nba_stats_fetcher.py, ufc_data_fetcher.py
+modules/football_module.py, modules/boxing_module.py
+modules/baseball_module/calibration/auto_calibrator.py
+modules/baseball_module/context_engine/pitchers_regression.py (only a stale .pyc remains)
+betting_ai/ (entire directory), bbets_ia_pro/ (entire directory)
 ```
 
 ---
 
-## 4. MLB Data Flow
+## 4. MLB Data Flow (canonical)
 
-Full chain from "user clicks Analyze" to "best bet displayed":
+Full chain from "user clicks Analyze" to "best bet displayed," verified against `run_module.py` line numbers on 2026-07-06:
 
 ```
-[Streamlit UI — app.py]
+[Streamlit UI — app.py → ui/*]
 │
-├── render_sidebar() → settings: kelly_factor, min_ev, min_rating
-├── load_odds_data() → odds_fetcher.get_odds_data()
-│   ├── Hits The Odds API: h2h + totals + spreads, 3 regions
-│   ├── On-disk JSON cache (ODDS_FILE_CACHE_TTL=600s)
-│   └── Returns DataFrame of all sport odds
-│
-├── filter_odds_by_sport(df, ["baseball","mlb"])
-├── build_game_selector(sport_df) → user picks matchup from dropdown
+├── render_sidebar() [ui/sidebar.py] → settings: kelly_factor, min_ev, min_rating
+├── load_odds_data() [ui/odds_loader.py] → odds_fetcher.get_odds_data()
+├── filter_odds_by_sport(), build_game_selector() → GameData (incl. F5 fields since 2026-07-06)
 │
 └── [User clicks "Analizar Evento (MLB)"]
     │
     ▼
-[MLBAnalyzer.analyze() — app.py:875]
+[MLBAnalyzer.analyze() — ui/mlb.py]
 │
-├── find_game_id(game_data)
-│   └── MLBDataIntegrator.get_complete_game_data() for today+tomorrow
-│       → fuzzy-match home/away names → return game_pk
+├── find_game_id(game_data) — fuzzy-match via MLBDataIntegrator
 │
-└── run_module(game_id=game_pk, ...) [modules/baseball_module/core/run_module.py]
+└── run_module(game_id, market_odds=..., ...) [modules/baseball_module/core/run_module.py]
     │
-    ├── INIT: LearningEngine(db_path)
-    │   └── fetch_pending_outcomes() → fills actual scores for last 7 days
-    │       via MLB Stats API → triggers bias recalc + Platt refit if due
+    ├── PASO 0: MLBDataIntegrator.get_complete_game_data() — pitcher/team/bullpen stats,
+    │           travel, roof status, lineup handedness, Savant/FanGraphs enrichment
     │
-    ├── PASO 0: Fetch game data
-    │   ├── MLBStatsAPI.get_todays_games() + get_games_by_date(tomorrow)
-    │   ├── [Streamlit] st.selectbox → user picks specific game
-    │   ├── MLBDataIntegrator.get_complete_game_data(date)
-    │   │   ├── Team offensive stats: wOBA, OPS, wRC+, RPG (season)
-    │   │   ├── Team pitching stats: ERA, WHIP, runs_allowed_per_game
-    │   │   ├── Pitcher stats: ERA, FIP, WHIP, K/9, last-5 ERA, f5_ERA,
-    │   │   │                  avg_innings_per_start, platoon splits
-    │   │   ├── Bullpen ERA (home + away)
-    │   │   ├── Team form: wins, losses, last-10, streak
-    │   │   ├── Travel: miles_traveled_away, time_zones_crossed_away, B2B flag
-    │   │   ├── Park: venue name (ParkFactors provides run/HR factors)
-    │   │   ├── H2H stats (from .cache/ JSON)
-    │   │   └── Weather (OpenWeather, optional)
-    │   │
-    │   ├── [OPTIONAL] SavantFetcher.get_pitcher_stats(mlbam_id)
-    │   │   → enriches pitcher dict with xERA, xwOBA (24h cache)
-    │   │
-    │   └── [OPTIONAL] FanGraphsFetcher.get_pitcher_stats(mlbam_id)
-    │       → enriches pitcher dict with xFIP, SIERA, SwStr% (24h cache)
+    ├── True Talent Engine (offense) — park-neutral λ_base per team (Statcast, PIT-aware,
+    │   lineup-filtered when a confirmed lineup exists)
     │
-    │   BASE LAMBDAS:
-    │   lh = home_team.runs_per_game (season RPG)
-    │   la = away_team.runs_per_game
+    ├── Kalman + multidim team bias [calibration/learning_engine.py] — pulls λ toward each
+    │   team's observed run-scoring rate, applies learned multidimensional bias
     │
-    │   PRE-CALIBRATION ADJUSTMENTS (inside run_module before Step 1):
-    │   ├── LearningEngine.get_kalman_estimate(team, season)
-    │   │   → Kalman-filtered team run rate (KF Q=0.025, R=9.0)
-    │   │   → lh = 0.65*lh + 0.35*kalman_home; la = 0.65*la + 0.35*kalman_away
-    │   └── LearningEngine.compute_team_bias(team, season)
-    │       → mean(actual/predicted) from game_outcomes, min 10 samples
-    │       → applied as multiplicative bias (clamped ±30%)
-    │       → integrated into AutoCalibrator ±15% combined cap
+    ├── PASO 2: Pitcher Engine — SIERA/xFIP/xERA/FIP/ERA fallback hierarchy, form, matchup,
+    │           platoon, fatigue. Quality clamp [0.60, 1.45].
     │
-    ├── PASO 1: AutoCalibrator [auto_calibrator.py]
-    │   LambdaCalibrator.calibrate(lh, la, game_data)
-    │   ├── Factor 1 (30%): Offense — wOBA vs 0.310, OPS vs 0.735, wRC+ vs 100, RPG vs 4.5
-    │   ├── Factor 2 (25%): Opponent defense — ERA vs 4.15, WHIP vs 1.30, DER vs 0.715
-    │   ├── Factor 3 (25%): Recent form — last-10 win%, streak momentum
-    │   ├── Factor 4 (10%): Rest days — bonus for 3+ days rest, penalty for B2B
-    │   ├── Factor 5 (10%): Season context — early/mid/late phase adjustment
-    │   ├── Combined product × team_bias → ±15% HARD CAP applied
-    │   └── Pipeline weight from LearningEngine:
-    │       lh = lh_pre × (1 + w_cal × (factor-1))
+    ├── PASO 3: Contextual Engine — rest/B2B only, asymmetric
     │
-    ├── PASO 2: HFA Engine [hfa_engine.py]
-    │   get_adjusted_lambdas(lh, la, game_data)
-    │   ├── Home crowd boost: +0.034 R/G asymmetric (empirically calibrated)
-    │   ├── Park run-factor: FanGraphs 5yr (e.g. Coors=1.25, Petco=0.88), symmetric
-    │   ├── Travel fatigue: miles × per-1000mi penalty + timezone penalty, away only
-    │   └── Pipeline weight applied: lh = lh_pre × (1 + w_hfa × (factor-1))
+    ├── PASO 4: Bullpen Engine — quality composite + workload/fatigue
     │
-    ├── PASO 3: Pitcher Engine [pitcher_engine.py]
-    │   adjust_for_pitchers(lh, la, game_data)
-    │   ├── Quality (0.25): ERA, FIP, WHIP relative to league avg
-    │   ├── Form (0.20): ERA last-5 trend, K/9 trend
-    │   ├── Matchup (0.15): historical ERA vs this lineup (era_vs_opp)
-    │   ├── Platoon (0.08): LHB/RHB splits × opposing lineup handedness
-    │   ├── Fatigue (0.10): days rest, last pitch count
-    │   ├── Park for pitchers (0.10)
-    │   ├── Travel (0.05): pitcher-specific travel (away pitcher only)
-    │   ├── Bullpen (0.07): bullpen ERA + workload × expected usage %
-    │   └── Pipeline weight applied
+    ├── PASO 5: Park + Weather Engine — park run-factor, weather, retractable roof
     │
-    ├── PASO 4: Pitcher Regression [pitchers_regression.py]
-    │   calculate_pitcher_regression(pitcher_stats, opponent_stats)
-    │   ├── BABIP luck: current vs career 0.285 baseline
-    │   ├── LOB% luck: current vs career 0.738 baseline
-    │   ├── HR/FB% luck: current vs career 0.106 baseline
-    │   ├── Confidence: scales with innings_pitched, signal alignment
-    │   └── factor_away applied to lh (home team runs against away pitcher)
-    │       factor_home applied to la (away team runs against home pitcher)
+    ├── PASO 6: Defensive Efficiency Engine — DER + OAA, fielding-only
     │
-    ├── PASO 4b: Umpire zone adjustment (symmetric, ±4% max, if available)
-    │   zone_factor from umpire_stats (strike%, games_worked ≥ 4)
+    ├── PASO 7: HFA Engine — away-team travel fatigue only (crowd boost disabled)
     │
-    ├── λ CLAMP: lh = max(3.0, min(lh, 7.0)); la = max(3.0, min(la, 7.0))
+    │   [λ clamp: 1.5 ≤ lh, la ≤ 12.0 — sanity guard, confirmed rarely/never binds]
+    │   lambdas_history['final'] stamped here (2026-07-06) — the exact λ fed to Monte Carlo
     │
-    ├── PASO 5: Monte Carlo [simulator.py]
-    │   monte_carlo_advanced(lh, la, n_max=5_000_000)
-    │   ├── Vectorized Poisson in blocks of 200k
-    │   ├── lambda_noise=0.05 (mild game-to-game uncertainty)
-    │   ├── Early stopping: SE < 0.003 (typically stops at ~500k-2M sims)
-    │   ├── Full-game: p_home, p_away, p_tie, mean_total, p_over/under
-    │   ├── F5: lh_f5 / la_f5 from _compute_f5_lambda()
-    │   │   (starter_ip × f5_ERA + bullpen_ip × bullpen_ERA) / 9
-    │   ├── Platt calibration: get_platt_params() → logistic shrinkage
-    │   │   p_home, p_away renormalized to sum to 1.0 after Platt
-    │   └── LearningEngine.record_prediction() — persists to game_outcomes
+    ├── PASO 8: Monte Carlo [montecarlo/simulator.py] — Negative Binomial(NB_DISPERSION=6.0),
+    │           early stopping SE<0.003 on p_home, F5 via F5_SCALE=0.575 (empirically validated)
     │
-    ├── PASO 6: Value Detection [core/value_detector.py]
-    │   odds_api.get_best_odds_for_teams(home, away) → market odds
-    │   evaluate_value_ultra(mc_result, game_odds)
-    │   ├── Vig removal: multiplicative + power + Shin methods → average
-    │   ├── EV = (prob × odds) - 1, expressed as %
-    │   ├── Kelly = ((prob × (odds-1)) - (1-prob)) / (odds-1) × 0.25, capped 15%
-    │   ├── Bootstrap CI (1000 samples) on probability estimate
-    │   ├── Tiers: ULTRA>15%, HIGH>8%, MEDIUM>4%, SLIGHT>1%
-    │   └── Markets evaluated: ML_HOME, ML_AWAY, OVER, UNDER,
-    │                          RL_HOME(-1.5), RL_AWAY(+1.5), F5_HOME, F5_AWAY
-    │
-    └── RETURN: {status, game_info, probabilities, lambdas_history, best_bets, metadata}
+    └── PASO 9: Value Detection [core/value_detector.py::evaluate_value_ultra]
+        ├── Platt-2D correction of p_home against the market (if fit available)
+        ├── Vig removal (multiplicative/power/Shin), EV/edge/Kelly per market
+        ├── calculate_composite_score() + classify_value_tier() (ULTRA/HIGH/MEDIUM/SLIGHT,
+        │   percentile-refit 2026-07-06 against the real post-Platt-2D distribution)
+        ├── Markets: ML, totals, run line (±1.5), F5 (moneyline + totals)
+        └── RETURN: {status, game_info, probabilities, lambdas_history, best_bets, metadata}
 
-[Back in app.py]
-├── render_mlb_results(result, game_data, settings)
-│   ├── Shows λ progression table (per-stage)
-│   ├── Win probabilities + total
-│   ├── Value cards (EV, Kelly) per market
-│   └── best_bets list by tier
-│
-├── PredictionsDB.save() → predictions_history.db:predictions table
-└── [Optional] storage.save_bets() → bets_log.csv
+[Back in ui/mlb.py]
+├── render_mlb_results() — λ progression (reads lambdas_history['final']), probabilities,
+│   value cards, best_bets by tier
+└── save_value_picks() → PredictionsDB.save() → predictions_history.db::predictions
 ```
+
+**Separately, `run_daily_picks.py` → `track_record/publisher.py::publish_mlb_picks()`** calls this same `run_module()` (without an explicit `market_odds` override, relying on `run_module`'s own internal `get_best_odds_for_teams()` fetch) to publish pre-game picks to `track_record.db`, then `track_record/reconciler.py` resolves them post-game via real final scores.
 
 ---
 
 ## 5. NBA Data Flow
 
-```
-app.py → NBAAnalyzer.analyze()
-│
-├── Passes {home_team: {name}, away_team: {name}, game_context: {...}}
-│   NOTE: Only team names are passed from odds data. No real stats.
-│
-└── basketball_module.run_module(data=payload)
-    │
-    └── NBAAnalyzerG10PlusV2.analyze_game()
-        │
-        ├── Fallback to demo data if no stats provided (Lakers @ Nuggets)
-        │   ← nba_stats_fetcher.py is NOT called here (orphaned)
-        │   ← injuries_fetcher.py is NOT called here (orphaned)
-        │
-        └── 12 WEIGHTED ENGINES (weights sum to 1.0):
-            ├── Context (0.18): B2B(-3.0pt), timezone(-1.2), rest advantage(+2.0)
-            ├── Injuries (0.20): player tiers × status (uses passed injury list only)
-            ├── Pace (0.14): possessions / game → scoring projection
-            ├── Monte Carlo (0.16): correlated Gaussian simulation (not Poisson)
-            ├── Shooting Luck (0.08): eFG regression to mean
-            ├── Sharp Money (0.12): line movement signals (hardcoded heuristics)
-            ├── Matchups (0.10): paint pts, 3PT%, PnR, fastbreak, turnovers
-            ├── HFA (0.04): home court + altitude (Denver = +3.2 pts)
-            ├── Blowout (0.03): variance + consistency
-            ├── Risk (0.05): opponent strength
-            ├── Stability (0.05): scoring variance
-            └── Trends (0.05): last 3/5/10 game scoring
-
-        Output: {probabilities: {home_win, away_win, margin, total}, best_bets: [...]}
-
-        EV: core.utils.calculate_ev(prob, decimal_odds)
-        No Kelly sizing in NBA module output.
-        No Odds API integration inside basketball_module — EV uses passed odds only.
-```
-
-**Critical gap:** NBA module runs on demo data unless the caller explicitly passes real team stats. `nba_stats_fetcher.py` has the fetching code but is never called.
+Unchanged from the 2026-05-13 version — not touched by the 2026-07-06 review (explicitly out of scope). `app.py → _NBAAnalyzer.analyze() → modules/basketball_module.py::run_module()` — a 12-engine self-contained analyzer that falls back to demo data (Lakers @ Nuggets) unless real stats are explicitly passed in. Real-data fetchers (`nba_stats_fetcher.py`, `injuries_fetcher.py`) that used to exist for this purpose have been removed from the repo — this module currently has no live data path at all.
 
 ---
 
 ## 6. UFC Data Flow
 
-```
-app.py → UFCAnalyzer.analyze()
-│
-├── Passes {fighter1_data: {name}, fighter2_data: {name}}
-│   NOTE: Only fighter names from odds data. No real fight stats.
-│
-└── ufc_module.run_module(fighter1_data, fighter2_data, ...)
-    │
-    └── UFCAnalyzer.analyze_fight()
-        │
-        ├── Fallback to demo Fighter A vs Fighter B if no stats provided
-        │   ← ufc_data_fetcher.py is NOT called here (orphaned)
-        │
-        ├── Style matchup matrix: striker/grappler/wrestler 3x3 advantage table
-        ├── Physical factors: reach delta, age delta
-        ├── Record quality: wins, losses, recent 5 results
-        ├── Technical factors: striking/grappling accuracy + defense
-        ├── Finish probability: KO%, submission%, decision%
-        ├── Cardio/conditioning factor
-        ├── n_simulations × round simulation with random outcome draws
-        └── EV vs market odds
-
-        Output: {probabilities: {p1_win, p2_win, p_ko, p_sub, p_dec}, best_bets: [...]}
-```
-
-**Critical gap:** UFC module runs on demo data unless the caller passes real fighter stats. `ufc_data_fetcher.py` has scraping code but is never called.
+Unchanged from the 2026-05-13 version — not touched by the 2026-07-06 review (explicitly out of scope). `app.py → _UFCAnalyzer.analyze() → modules/ufc_module.py::run_module()` — falls back to demo fighters unless real stats are passed in. `ufc_data_fetcher.py` (the scraper that used to exist for this) has been removed from the repo.
 
 ---
 
-## 7. `betting_ai/` — What it contains
+## 7. Connected vs Orphaned Files
 
-**All 7 files are completely empty (0 bytes):**
-
-```
-betting_ai/
-├── main.py                — empty
-├── detector.py            — empty
-├── bankroll.py            — empty
-├── gestor_apuestas.py     — empty
-├── odds_api.py            — empty
-└── model/
-    ├── __init__.py        — empty
-    └── betting_model.py   — empty
-```
-
-This folder was a placeholder created during early project planning. No code was ever written. The directory structure suggests an intended alternative value-detection system (detector, model, bankroll, odds_api), but none of the files were implemented. The live system uses `core/value_detector.py` and `odds_api.py` at the root instead.
-
-**Action:** Can be safely deleted or used as a staging area for a v2 refactor.
+No orphaned root-level fetchers remain as of 2026-07-06 (`injuries_fetcher.py`, `nba_stats_fetcher.py`, `ufc_data_fetcher.py` were all removed, along with 5 dead methods inside `data_fetchers.py` itself — see §2). The only known "fetched but never consumed" pattern still present is `_normalize_event()`'s F5 naming scheme in `odds_fetcher.py` (§2) — not orphaned code, just a latent naming inconsistency flagged for whoever connects it to F5 analysis next.
 
 ---
 
-## 8. `bbets_ia_pro/` — What it contains
-
-```
-bbets_ia_pro/
-├── .env                   — separate environment variables (unused by main project)
-└── venv/                  — complete Python 3.12 virtual environment
-    ├── bin/
-    ├── lib/
-    └── ...
-```
-
-This is an early, abandoned project directory. It contains **no Python source code** — only a virtual environment and a `.env` file. The main project's virtual environment is at `/home/raulio/mi_entorno/` instead.
-
-The `bbets_ia_pro/` name suggests it was an early version of the current system, then superseded when the project moved to `/home/raulio/` as the root.
-
-**Action:** The venv (~700MB estimated) is a stranded artifact. Safe to delete `bbets_ia_pro/venv/`. The `.env` may contain a different API key — check before deleting.
-
----
-
-## 9. Connected vs Orphaned Files
-
-### Import dependency graph (simplified)
-
-```
-config.py ←────────────────────────────── everyone imports this
-data_fetchers.py ←────────────────────── run_module, backtest, post_game, reconciler
-odds_fetcher.py ←─────────────────────── app.py (via safe_import)
-odds_api.py ←─────────────────────────── run_module (PASO 6)
-core/utils.py ←───────────────────────── basketball_module, value_detector
-core/value_detector.py ←──────────────── run_module (PASO 6), app.py
-
-modules/baseball_module/core/run_module.py ←── app.MLBAnalyzer, publisher, backtest
-  ├── data_fetchers (MLBStatsAPI, MLBDataIntegrator)
-  ├── calibration/auto_calibrator (LambdaCalibrator)
-  ├── calibration/learning_engine (LearningEngine)
-  ├── hfa/hfa_engine (get_adjusted_lambdas)
-  ├── context_engine/pitcher_engine (adjust_for_pitchers)
-  ├── context_engine/pitchers_regression (calculate_pitcher_regression)
-  ├── montecarlo/simulator (monte_carlo_advanced)
-  ├── core/value_detector (evaluate_value_ultra)
-  └── odds_api (get_best_odds_for_teams)
-
-modules/basketball_module.py ←──────────── app.NBAAnalyzer
-  ├── config (NBA_SIMULATIONS, KELLY_FRACTION)
-  └── core/utils (calculate_ev)
-
-modules/ufc_module.py ←─────────────────── app.UFCAnalyzer
-  └── config (UFC_SIMULATIONS)
-
-track_record/ ←─────────────────────────── app.py (Track Record tab), run_daily_picks
-  publisher ← run_module (indirectly, via analyze pipeline)
-  reconciler ← data_fetchers (MLBStatsAPI), statsapi
-  stats ← db
-  ui ← db, stats
-```
-
-### Orphaned (no callers, not connected)
-
-| File | Why orphaned | Fix to connect |
-|------|-------------|----------------|
-| `injuries_fetcher.py` | NBA module uses only the `injuries` list passed from caller; ESPN scraping never triggered | Add call in `basketball_module.run_module()` or `publisher.py` |
-| `nba_stats_fetcher.py` | NBA module falls back to demo data; no call site populates real stats | Add call in `publisher.py` NBA analysis branch |
-| `ufc_data_fetcher.py` | UFC module falls back to demo data; no call site populates real fighter stats | Add call in `publisher.py` UFC analysis branch |
-| `modules/football_module.py` | `enabled=False` in SPORT_CONFIGS; `st.set_page_config()` at module top would crash | Re-architect to separate page config from module body |
-| `modules/boxing_module.py` | Not in SPORT_CONFIGS; no `run_module()` wrapper; uses different DB file | Add `run_module()`, register in SPORT_CONFIGS, migrate DB |
-
----
-
-## 10. Database Schema
+## 8. Database Schema
 
 ### `data/predictions_history.db`
 
 | Table | Purpose | Key columns |
 |-------|---------|-------------|
-| `predictions` | UI-generated predictions (one per analysis run) | `sport`, `home_team`, `away_team`, `ev`, `kelly`, `rating`, `p_home`, `p_away` |
-| `game_outcomes` | LearningEngine: model predictions + actual scores | `game_pk`, `game_date`, `lambda_home/away`, `p_home/away`, `actual_home/away_runs`, `home_won` |
-| `ml_state` | Key-value store for team bias, Platt params, pipeline weights | `key`, `scope`, `season`, `value_json`, `sample_count` |
+| `predictions` | UI-generated predictions (one per analysis run) | `sport`, `home_team`, `away_team`, `ev`, `kelly`, `confidence`, `rating`, `p_home`, `p_away` |
+| `game_outcomes` | Backtest: model predictions + actual scores, PIT metadata | `game_pk`, `game_date`, `season`, `lambda_home/away`, `p_home`/`p_home_raw`, `actual_home/away_runs`, `home_won`, `ml_home_pin`/`ml_away_pin`, `market_prob_home`/`market_prob_away`, `stage_factors_json`, `backtest_run_at` (note: the last 5 columns were added via idempotent `ALTER TABLE` migrations directly in `backtest_and_retrain.py`, independent of `learning_engine.py`'s own table-creation code — grep `backtest_and_retrain.py` for `ALTER TABLE game_outcomes` for the authoritative, current column list rather than treating any single file's schema definition as complete) |
+| `ml_state` | Key-value store: team bias, Platt/Platt-2D params, pipeline weights | `key`, `scope`, `season`, `value_json` |
 | `kalman_state` | Kalman filter state per team/context/season | `team`, `scope`, `season`, `x_est`, `p_est` |
-| `historical_odds` | Historical Pinnacle odds for backtesting | `game_pk`, `game_date`, `home_ml`, `away_ml`, `pinnacle_home`, `pinnacle_away` |
 
 ### `data/track_record.db`
 
 | Table | Purpose | Key columns |
 |-------|---------|-------------|
-| `picks` | One row per published pick, with pre-game timestamp | `pick_uid`, `published_at`, `sport`, `market`, `model_prob`, `ev_pct`, `confidence_tier`, `result`, `profit_loss_units` |
-| `bankroll` | Running P&L ledger (one row per resolved pick) | `pick_id`, `units_staked`, `units_pnl`, `running_total` |
+| `picks` | One row per published pick, pre-game timestamp | `pick_uid`, `published_at`, `sport`, `market` (`ML_HOME`\|`ML_AWAY`\|`RL_HOME`\|`RL_AWAY`\|`OVER`\|`UNDER`\|`F5_HOME`\|`F5_AWAY`\|`F5_OVER`\|`F5_UNDER`), `model_prob`, `ev_pct`, `odds_decimal`, `confidence_tier`, `result`, `profit_loss_units` |
+| `bankroll` | Running P&L ledger (one row per resolved pick) | `pick_id`, `units_staked`, `units_pnl`, `running_total` (correctness of this column's ordering fixed 2026-07-06 — see §2) |
+| `daily_snapshots` | Daily roll-up | `snap_date`, `picks_count`, `wins`/`losses`/`pushes`, `cumulative_pnl`, `roi_pct` |
+
+### Other DBs
+
+- `data/pit_cache_2024.db`, `pit_cache_2025.db`, `pit_cache_merged.db`, `pit_cache_pitcher.db` — point-in-time feature caches (TTE/Bullpen/Defense share the merged file, distinguished by `namespace`; Pitcher has its own).
 
 ---
 
-## 11. Import Graph
+## 9. Import Graph
 
 ```
                     config.py (root)
                         ▲
-         ┌──────────────┼──────────────┐
-         │              │              │
-   data_fetchers     odds_fetcher   core/utils
-         ▲                              ▲
-         │                              │
+         ┌──────────────┼──────────────┬─────────────┐
+         │              │              │             │
+   data_fetchers    odds_fetcher    core/utils   db/predictions_db
+         ▲  │                           ▲
+         │  │ (direct: _fetch_team_roster,
+         │  │  data_fetchers.py L.19)    │
+         │  ▼                           │
+         │  offense/true_talent_engine ◄┘ ── ALSO imported by run_module.py
+         │        ▲                          (get_true_talent_lambda, L.56;
+         │        │                           _fetch_game_lineup, L.376 —
+         │        │                           lazy, inside a function body)
     run_module.py ────────────► core/value_detector
          ▲
          │
-   ┌─────┴──────────────────────────────────┐
-   │  auto_calibrator  learning_engine       │
-   │  hfa_engine       pitcher_engine        │
-   │  pitchers_regression  simulator         │
-   └─────────────────────────────────────────┘
+   ┌─────┴───────────────────────────────────────────────────┐
+   │  calibration/learning_engine                              │
+   │  context_engine/pitcher_engine, contextual_engine,        │
+   │    bullpen_engine, defensive_efficiency_engine             │
+   │  hfa/park_weather_engine, hfa_engine                       │
+   │  montecarlo/simulator                                     │
+   │  advanced_pit_enrichment/ (26 files, feeds the 4 PIT-aware │
+   │    engines above)                                          │
+   └─────────────────────────────────────────────────────────┘
+         ▲
+    ui/mlb.py ◄── ui/odds_loader.py, ui/sidebar.py, ui/components.py
          ▲
      app.py ◄──── track_record/ ◄──── run_daily_picks.py
          ▲
-   [basketball_module]  [ufc_module]
-   (self-contained)     (self-contained)
+   [modules/basketball_module.py]  [modules/ufc_module.py]
+   (self-contained, no live data path — see §5, §6)
 
-ISOLATED (no callers):
-   injuries_fetcher.py
-   nba_stats_fetcher.py
-   ufc_data_fetcher.py
-
-EMPTY:
-   betting_ai/* (all 7 files)
-
-DEAD:
-   modules/football_module.py
-   modules/boxing_module.py
-   bbets_ia_pro/ (only venv)
+backtest_and_retrain.py ──► imports the SAME live engines as run_module.py
+                             (not a separate reimplementation), plus its own
+                             use_team_full_season_defense/pitching_base gates
+                             for PIT-safe backtest evaluation.
 ```
+
+Confirmed via direct grep (2026-07-06) that no circular imports exist among the `context_engine/`, `hfa/`, and `offense/` engine packages — each imports `config`/`core` but never each other.
 
 ---
 
-*End of CONTRACTS.md — Last updated 2026-05-13*
+*End of CONTRACTS.md — verified against code 2026-07-06. Regenerate on the next major structural change rather than letting this drift again — see `docs/AUDITORIA_MLB_2026-07.md` for the audit that found the previous version stale.*

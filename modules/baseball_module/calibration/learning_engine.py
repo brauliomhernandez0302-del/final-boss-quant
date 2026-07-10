@@ -55,10 +55,12 @@ _PLATT2D_RECAL_DAYS  = 7
 # the actual blend applied.
 _KALMAN_BLEND = 0.35
 
-# Pipeline gradient-descent weights — one per engine stage.
-# Must match the keys emitted in stage_factors_json by run_module.py and
-# backtest_and_retrain.py.  Add a stage here only when its factors are
-# actually recorded; otherwise it stays at 1.0 and wastes gradient cycles.
+# Pipeline gradient-descent weights — one per engine stage. These stage
+# names are combined with a role ("home"/"away") into the actual
+# stage_factors_json key as "{stage}_on_{role}_lambda" (see _gradient_step) —
+# must match what run_module.py and backtest_and_retrain.py emit. Add a
+# stage here only when its factors are actually recorded; otherwise it stays
+# at 1.0 and wastes gradient cycles.
 _STAGE_KEYS = [
     "park",         # Park + Weather engine
     "hfa",          # Home Field Advantage engine
@@ -355,27 +357,51 @@ class LearningEngine:
         team: str,
         season: int,
         min_samples: int = _MIN_SAMPLES,
+        before_date: Optional[str] = None,
     ) -> float:
-        """mean(actual_runs / predicted_λ) for the team. Returns 1.0 when insufficient data."""
-        cache_key = f"team_bias:{team}"
-        cached = self.load_state(cache_key, "team_bias", season)
-        if cached and cached.get("sample_count", 0) >= min_samples:
-            if self._hours_since(cached.get("updated_at", "")) < _BIAS_CACHE_HRS:
-                return float(cached["bias"])
+        """mean(actual_runs / predicted_λ) for the team. Returns 1.0 when insufficient data.
+
+        FIX (2026-07-08): added `before_date` — a walk-forward cutoff (exclusive,
+        "YYYY-MM-DD"). Without it, this query only filters by season, so a
+        backtest replay of an early-season game (e.g. Opening Day) pulls in
+        actual_home_runs from every OTHER game of that team's season already
+        sitting in game_outcomes — including games chronologically AFTER the
+        one being predicted, since the backtest loader pre-populates the whole
+        season's ground truth before the per-game loop starts. Confirmed via
+        isolated repro: a team with neutral early games and extreme "future"
+        games produced bias=1.3 (the clamp ceiling) when queried as of its
+        first game of the season. When before_date is given, the 24h ml_state
+        cache is bypassed entirely (the cache has no date dimension, so a
+        cached value from one as-of-date is not valid for another) and the
+        result is computed fresh from the date-bounded query every call —
+        this is the correct walk-forward behavior for a backtest replay.
+        Live callers (before_date=None) keep the original cached, season-wide
+        behavior unchanged — there's no leak risk live since future games
+        genuinely have no actual_home_runs yet.
+        """
+        if before_date is None:
+            cache_key = f"team_bias:{team}"
+            cached = self.load_state(cache_key, "team_bias", season)
+            if cached and cached.get("sample_count", 0) >= min_samples:
+                if self._hours_since(cached.get("updated_at", "")) < _BIAS_CACHE_HRS:
+                    return float(cached["bias"])
+
+        query = """
+            SELECT home_team, away_team,
+                   lambda_home, lambda_away,
+                   actual_home_runs, actual_away_runs
+            FROM game_outcomes
+            WHERE season = ?
+              AND actual_home_runs IS NOT NULL
+              AND (home_team = ? OR away_team = ?)
+        """
+        params: List[Any] = [season, team, team]
+        if before_date is not None:
+            query += " AND game_date < ?"
+            params.append(before_date)
 
         with self._get_conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT home_team, away_team,
-                       lambda_home, lambda_away,
-                       actual_home_runs, actual_away_runs
-                FROM game_outcomes
-                WHERE season = ?
-                  AND actual_home_runs IS NOT NULL
-                  AND (home_team = ? OR away_team = ?)
-                """,
-                (season, team, team),
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
 
         if len(rows) < min_samples:
             return 1.0
@@ -392,7 +418,8 @@ class LearningEngine:
 
         raw  = sum(ratios) / len(ratios)
         bias = max(1.0 - _BIAS_CLAMP, min(1.0 + _BIAS_CLAMP, raw))
-        self.save_state(cache_key, "team_bias", {"bias": bias}, len(ratios), season)
+        if before_date is None:
+            self.save_state(cache_key, "team_bias", {"bias": bias}, len(ratios), season)
         logger.debug(f"[learning] {team} bias={bias:.4f} (n={len(ratios)})")
         return bias
 
@@ -402,6 +429,7 @@ class LearningEngine:
         season: int,
         context: str,
         month: Optional[int] = None,
+        before_date: Optional[str] = None,
     ) -> float:
         """Team bias dampened by Kalman's fractional coverage to prevent double-correction.
 
@@ -440,7 +468,7 @@ class LearningEngine:
         """
         # FIX C1: use context-specific bias instead of aggregate home+away mix.
         home_away = "home" if context == "offense_home" else "away"
-        raw_bias = self.compute_multidim_bias(team, season, home_away, month=month)
+        raw_bias = self.compute_multidim_bias(team, season, home_away, month=month, before_date=before_date)
         if raw_bias == 1.0:
             return 1.0
 
@@ -467,6 +495,7 @@ class LearningEngine:
         home_away: str = "home",       # "home" or "away"
         month: Optional[int] = None,   # 3-10; None = skip this tier, use home_away only
         min_samples: int = 8,
+        before_date: Optional[str] = None,
     ) -> float:
         """
         Bias correction refined along up to two dimensions.
@@ -478,6 +507,11 @@ class LearningEngine:
              the month-specific cache key ("...:mNone") permanently unused)
           2. team × home_away
           3. simple team bias (fallback)
+
+        FIX (2026-07-08): `before_date` threads a walk-forward cutoff down to
+        `_compute_multidim`'s SQL — see `compute_team_bias`'s docstring for
+        the full leak this closes. When given, the ml_state cache (which has
+        no date dimension) is bypassed and every tier is computed fresh.
         """
         dims = []
         if month is not None:
@@ -485,17 +519,19 @@ class LearningEngine:
         dims.append((f"bias:{team}:{home_away}", home_away, None))
 
         for scope_key, ha, mo in dims:
-            cached = self.load_state(scope_key, "multidim_bias", season)
-            if cached and cached.get("sample_count", 0) >= min_samples:
-                if self._hours_since(cached.get("updated_at", "")) < _BIAS_CACHE_HRS:
-                    return float(cached["bias"])
-            result = self._compute_multidim(team, season, ha, mo, min_samples)
+            if before_date is None:
+                cached = self.load_state(scope_key, "multidim_bias", season)
+                if cached and cached.get("sample_count", 0) >= min_samples:
+                    if self._hours_since(cached.get("updated_at", "")) < _BIAS_CACHE_HRS:
+                        return float(cached["bias"])
+            result = self._compute_multidim(team, season, ha, mo, min_samples, before_date=before_date)
             if result is not None:
-                self.save_state(scope_key, "multidim_bias", {"bias": result[0]}, result[1], season)
+                if before_date is None:
+                    self.save_state(scope_key, "multidim_bias", {"bias": result[0]}, result[1], season)
                 return result[0]
 
         # Final fallback: simple team bias
-        return self.compute_team_bias(team, season)
+        return self.compute_team_bias(team, season, before_date=before_date)
 
     def _compute_multidim(
         self,
@@ -504,6 +540,7 @@ class LearningEngine:
         home_away: str,
         month: Optional[int],
         min_samples: int,
+        before_date: Optional[str] = None,
     ) -> Optional[Tuple[float, int]]:
         is_home = (home_away == "home")
         team_col    = "home_team" if is_home else "away_team"
@@ -515,6 +552,9 @@ class LearningEngine:
         if month is not None:
             where += " AND month = ?"
             params.append(month)
+        if before_date is not None:
+            where += " AND game_date < ?"
+            params.append(before_date)
 
         with self._get_conn() as conn:
             rows = conn.execute(
@@ -964,6 +1004,20 @@ class LearningEngine:
 
         Reads stored stage_factors_json to know each stage's contribution.
         Skips silently if stage_factors are missing.
+
+        Key format is "{stage}_on_{role}_lambda" (renamed 2026-07-06 — see
+        run_module.py's inline comments at each _stage_factors[...] assignment
+        for the full rationale: the old "{role}_{stage}" format, e.g.
+        "home_pitcher", read like "home team's own pitcher" but actually meant
+        "the ratio applied to λ_home", which for Pitcher/Defense/Bullpen is
+        driven by the OPPOSING team's engine output — a real, previously
+        confirmed source of confusion for external analysis, not a bug in the
+        gradient descent itself). Falls back to the old key format for any
+        `stage_factors_json` blob written before the rename (e.g. today's
+        batched backtest) so historical games aren't silently treated as
+        neutral until the next full re-run regenerates them with the new
+        format — remove this fallback once a batched backtest has run with
+        the renamed keys and no more old-format blobs remain in game_outcomes.
         """
         with self._get_conn() as conn:
             row = conn.execute(
@@ -993,7 +1047,20 @@ class LearningEngine:
                 continue
 
             for stage in _STAGE_KEYS:
-                adj = factors.get(f"{role}_{stage}", 1.0)
+                _new_key = f"{stage}_on_{role}_lambda"
+                _old_key = f"{role}_{stage}"
+                if _new_key in factors:
+                    adj = factors[_new_key]
+                elif _old_key in factors:
+                    adj = factors[_old_key]
+                    logger.debug(
+                        "[stage_factors_naming] game_pk=%s stage=%s used legacy "
+                        "key '%s' (pre-2026-07-06 rename) — will disappear once "
+                        "a batched backtest re-run regenerates stage_factors_json "
+                        "with the new format", game_pk, stage, _old_key,
+                    )
+                else:
+                    adj = 1.0
                 if adj == 1.0:
                     continue  # stage had no effect on this game
                 w = weights[stage]

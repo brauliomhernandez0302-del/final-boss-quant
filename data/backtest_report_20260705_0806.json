@@ -1,0 +1,255 @@
+{
+  "run_at": "2026-07-05T15:06:12.681388+00:00",
+  "total_games": 0,
+  "seasons": [],
+  "team_tte_pit": {
+    "games_attempted": 10,
+    "games_processed": 0,
+    "failures": 0,
+    "games_processed_with_both_team_tte_pit": 0,
+    "games_skipped_missing_team_tte_pit": 10,
+    "home_missing": 10,
+    "away_missing": 10,
+    "both_missing": 10,
+    "home_missing_only": 0,
+    "away_missing_only": 0,
+    "home_team_tte_pit_found": 0,
+    "away_team_tte_pit_found": 0,
+    "team_tte_pit_lambdas_used": 0,
+    "missing_team_tte_pit_lambdas": 20,
+    "sample_games": [
+      {
+        "game_pk": 745444,
+        "game_date": "2024-03-20",
+        "home_team": "San Diego Padres",
+        "away_team": "Los Angeles Dodgers",
+        "team_tte_pit_skip": true,
+        "skip_reason": "missing_both_team_tte_pit",
+        "home_team_tte_pit": {
+          "team_id": 135,
+          "pit_entity_id": "SD",
+          "team_name": "San Diego Padres",
+          "pit_found": false,
+          "lambda_offense": null,
+          "fallback_used": "snapshot_not_found",
+          "requested_as_of_date": "2024-03-19T23:59:59Z",
+          "team_offense_as_of_date": null,
+          "prior_baseline_as_of_date": "2023-10-01T23:59:59+00:00",
+          "missing_inputs": [
+            "team_est_woba",
+            "pa",
+            "barrel_pa",
+            "bb_pct",
+            "k_pct"
+          ],
+          "source_fingerprints": {
+            "tte_team_daily": null,
+            "savant_team_offense_rolling": null,
+            "savant_batter_rolling": null,
+            "savant_team_offense_prior_baseline": "savant:raw:team_offense_prior:tte_prior_baseline_v1:2024:2023:2023-03-30:2023-10-01:720984:183:003767625ef49ab6"
+          },
+          "team_rolling_found": false,
+          "prior_baseline_found": true,
+          "blend_current_weight": null,
+          "blend_prior_weight": null,
+          "sample_size_status": "missing"
+        },
+        "away_team_tte_pit": {
+          "team_id": 119,
+          "pit_entity_id": "LAD",
+          "team_name": "Los Angeles Dodgers",
+          "pit_found": false,
+          "lambda_offense": null,
+          "fallback_used": "snapshot_not_found",
+          "requested_as_of_date": "2024-03-19T23:59:59Z",
+          "team_offense_as_of_date": null,
+          "prior_baseline_as_of_date": "2023-10-01T23:59:59+00:00",
+          "missing_inputs": [
+            "team_est_woba",
+            "pa",
+            "barrel_pa",
+            "bb_pct",
+            "k_pct"
+          ],
+          "source_fingerprints": {
+            "tte_team_daily": null,
+            "savant_team_offense_rolling": null,
+            "savant_batter_rolling": null,
+            "savant_team_offense_prior_baseline": "savant:raw:team_offense_prior:tte_prior_baseline_v1:2024:2023:2023-03-30:2023-10-01:720984:183:003767625ef49ab6"
+          },
+          "team_rolling_found": false,
+          "prior_baseline_found": true,
+          "blend_current_weight": null,
+          "blend_prior_weight": null,
+          "sample_size_status": "missing"
+        }
+      },
+      {
+        "game_pk": 746175,
+        "game_date": "2024-03-21",
+        "home_team": "Los Angeles Dodgers",
+        "away_team": "San Diego Padres",
+        "team_tte_pit_skip": true,
+        "skip_reason": "missing_both_team_tte_pit",
+        "home_team_tte_pit": {
+          "team_id": 119,
+          "pit_entity_id": "LAD",
+          "team_name": "Los Angeles Dodgers",
+          "pit_found": false,
+          "lambda_offense": null,
+          "fallback_used": "snapshot_not_found",
+          "requested_as_of_date": "2024-03-20T23:59:59Z",
+          "team_offense_as_of_date": null,
+          "prior_baseline_as_of_date": "2023-10-01T23:59:59+00:00",
+          "missing_inputs": [
+            "team_est_woba",
+            "pa",
+            "barrel_pa",
+            "bb_pct",
+            "k_pct"
+          ],
+          "source_fingerprints": {
+            "tte_team_daily": null,
+            "savant_team_offense_rolling": null,
+            "savant_batter_rolling": null,
+            "savant_team_offense_prior_baseline": "savant:raw:team_offense_prior:tte_prior_baseline_v1:2024:2023:2023-03-30:2023-10-01:720984:183:003767625ef49ab6"
+          },
+          "team_rolling_found": false,
+          "prior_baseline_found": true,
+          "blend_current_weight": null,
+          "blend_prior_weight": null,
+          "sample_size_status": "missing"
+        },
+        "away_team_tte_pit": {
+          "team_id": 135,
+          "pit_entity_id": "SD",
+          "team_name": "San Diego Padres",
+          "pit_found": false,
+          "lambda_offense": null,
+          "fallback_used": "snapshot_not_found",
+          "requested_as_of_date": "2024-03-20T23:59:59Z",
+          "team_offense_as_of_date": null,
+          "prior_baseline_as_of_date": "2023-10-01T23:59:59+00:00",
+          "missing_inputs": [
+            "team_est_woba",
+            "pa",
+            "barrel_pa",
+            "bb_pct",
+            "k_pct"
+          ],
+          "source_fingerprints": {
+            "tte_team_daily": null,
+            "savant_team_offense_rolling": null,
+            "savant_batter_rolling": null,
+            "savant_team_offense_prior_baseline": "savant:raw:team_offense_prior:tte_prior_baseline_v1:2024:2023:2023-03-30:2023-10-01:720984:183:003767625ef49ab6"
+          },
+          "team_rolling_found": false,
+          "prior_baseline_found": true,
+          "blend_current_weight": null,
+          "blend_prior_weight": null,
+          "sample_size_status": "missing"
+        }
+      },
+      {
+        "game_pk": 747060,
+        "game_date": "2024-03-28",
+        "home_team": "Baltimore Orioles",
+        "away_team": "Los Angeles Angels",
+        "team_tte_pit_skip": true,
+        "skip_reason": "missing_both_team_tte_pit",
+        "home_team_tte_pit": {
+          "team_id": 110,
+          "pit_entity_id": "BAL",
+          "team_name": "Baltimore Orioles",
+          "pit_found": false,
+          "lambda_offense": null,
+          "fallback_used": "snapshot_not_found",
+          "requested_as_of_date": "2024-03-27T23:59:59Z",
+          "team_offense_as_of_date": null,
+          "prior_baseline_as_of_date": "2023-10-01T23:59:59+00:00",
+          "missing_inputs": [
+            "team_est_woba",
+            "pa",
+            "barrel_pa",
+            "bb_pct",
+            "k_pct"
+          ],
+          "source_fingerprints": {
+            "tte_team_daily": null,
+            "savant_team_offense_rolling": null,
+            "savant_batter_rolling": null,
+            "savant_team_offense_prior_baseline": "savant:raw:team_offense_prior:tte_prior_baseline_v1:2024:2023:2023-03-30:2023-10-01:720984:183:003767625ef49ab6"
+          },
+          "team_rolling_found": false,
+          "prior_baseline_found": true,
+          "blend_current_weight": null,
+          "blend_prior_weight": null,
+          "sample_size_status": "missing"
+        },
+        "away_team_tte_pit": {
+          "team_id": 108,
+          "pit_entity_id": "LAA",
+          "team_name": "Los Angeles Angels",
+          "pit_found": false,
+          "lambda_offense": null,
+          "fallback_used": "snapshot_not_found",
+          "requested_as_of_date": "2024-03-27T23:59:59Z",
+          "team_offense_as_of_date": null,
+          "prior_baseline_as_of_date": "2023-10-01T23:59:59+00:00",
+          "missing_inputs": [
+            "team_est_woba",
+            "pa",
+            "barrel_pa",
+            "bb_pct",
+            "k_pct"
+          ],
+          "source_fingerprints": {
+            "tte_team_daily": null,
+            "savant_team_offense_rolling": null,
+            "savant_batter_rolling": null,
+            "savant_team_offense_prior_baseline": "savant:raw:team_offense_prior:tte_prior_baseline_v1:2024:2023:2023-03-30:2023-10-01:720984:183:003767625ef49ab6"
+          },
+          "team_rolling_found": false,
+          "prior_baseline_found": true,
+          "blend_current_weight": null,
+          "blend_prior_weight": null,
+          "sample_size_status": "missing"
+        }
+      }
+    ]
+  },
+  "defense_pit": {
+    "games_attempted": 10,
+    "games_processed": 0,
+    "failures": 0,
+    "current_defense_pit_used": 0,
+    "prior_season_baseline_used": 20,
+    "neutral_defense_adjustment_used": 0,
+    "legacy_defense_calls_blocked": 10,
+    "future_snapshot_violations": 0,
+    "same_day_violations": 0,
+    "missing_fingerprints": 0,
+    "duplicate_pit_keys": 0,
+    "mapping_failures": 0,
+    "sample_games": []
+  },
+  "bullpen_pit": {
+    "games_attempted": 10,
+    "games_processed": 0,
+    "failures": 0,
+    "current_only_bullpen_pit_uses": 0,
+    "current_prior_blended_uses": 0,
+    "prior_only_baseline_uses": 20,
+    "neutral_bullpen_uses": 0,
+    "missing_current_bullpen": 20,
+    "current_thin_bullpen": 0,
+    "legacy_bullpen_calls_blocked": 10,
+    "future_snapshot_violations": 0,
+    "same_day_violations": 0,
+    "missing_fingerprints": 0,
+    "duplicate_pit_keys": 0,
+    "starter_contamination_violations": 0,
+    "adjustment_policy": "pit_native_xwoba_kbb_barrel",
+    "sample_games": []
+  }
+}
