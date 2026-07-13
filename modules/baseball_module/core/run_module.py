@@ -591,8 +591,17 @@ def run_module(
         _f5s_home = _f5_scale(_avg_ip_away)  # scale for lh_f5 (away pitcher)
         _f5s_away = _f5_scale(_avg_ip_home)  # scale for la_f5 (home pitcher)
 
+        # Gated on the caller's analyze_f5 flag too — previously computed
+        # unconditionally whenever _post_ctx existed (nearly always), so a
+        # caller passing analyze_f5=False still got F5 lambdas here, which
+        # then made evaluate_value_ultra's own analyze_f5 (below, derived
+        # from "is lh_f5 not None") silently re-enable F5 analysis against
+        # the caller's explicit wishes, and out of sync with the fact that
+        # monte_carlo_advanced() below DOES honor analyze_f5 correctly —
+        # meaning the value detector could believe F5 markets are active
+        # while the Monte Carlo never actually simulated them.
         _post_ctx = results['lambdas_history'].get('contextual', {})
-        if _post_ctx:
+        if analyze_f5 and _post_ctx:
             lh_f5 = round(_post_ctx['lh'] * _f5s_home, 3)
             la_f5 = round(_post_ctx['la'] * _f5s_away, 3)
             logger.info(
@@ -843,7 +852,18 @@ def run_module(
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         logger.info("\n💰 PASO 9: Value Detection...")
 
-        if _fetched_odds and _fetched_odds.get('ml_home') and _fetched_odds.get('ml_away'):
+        # Any ONE market having odds is enough to run value detection —
+        # evaluate_value_ultra() already gates each market independently
+        # (moneyline/totals/runline all check their own fields). Previously
+        # this required ml_home AND ml_away specifically, so a book missing
+        # only the h2h market (but with real totals/runline odds) silently
+        # lost value detection for ALL markets, not just moneyline.
+        _has_any_market_odds = bool(_fetched_odds) and any([
+            _fetched_odds.get('ml_home') and _fetched_odds.get('ml_away'),
+            _fetched_odds.get('total_line') and _fetched_odds.get('total_over') and _fetched_odds.get('total_under'),
+            _fetched_odds.get('runline_home') and _fetched_odds.get('runline_away'),
+        ])
+        if _has_any_market_odds:
             from core.value_detector import GameOdds
             game_odds = GameOdds(
                 ml_home=_fetched_odds['ml_home'],
@@ -882,7 +902,11 @@ def run_module(
                 home_samples=mc_results.get('home_samples'),
                 away_samples=mc_results.get('away_samples'),
                 total_samples=mc_results.get('total_samples'),
-                analyze_f5=lh_f5 is not None,
+                # analyze_f5 param AND lh_f5 actually being available — both
+                # must hold, not just one, now that lh_f5's own computation
+                # above is also gated on analyze_f5 (belt-and-suspenders,
+                # see that gate's comment for the bug this prevents).
+                analyze_f5=analyze_f5 and lh_f5 is not None,
                 game_meta=game_meta,
                 p_home_corrector=lambda p_home, market_prob: _learning.apply_platt_2d(
                     p_home, market_prob, _season

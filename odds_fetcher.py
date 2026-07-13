@@ -254,6 +254,43 @@ def _get_raw_events() -> List[Dict]:
 # ── Normalization (raw → flat UI dict) ────────────────────────────────────
 
 
+def _accumulate_point_price(
+    by_point: Dict[float, float], point_counts: Dict[float, int],
+    point: Optional[float], price: float,
+) -> None:
+    """Record one bookmaker's (point, price) quote for a line-based market
+    (totals/spreads) — grouped by point so the caller can later pick a
+    single consensus line instead of blending prices across incompatible
+    lines."""
+    if point is None or price <= 0:
+        return
+    by_point[point] = max(by_point.get(point, 0.0), price)
+    point_counts[point] = point_counts.get(point, 0) + 1
+
+
+def _consensus_line_and_price(
+    by_point: Dict[float, float],
+    point_counts: Dict[float, int],
+    pin_point: Optional[float],
+) -> "tuple[Optional[float], Optional[float]]":
+    """(consensus_point, best_price_at_that_point).
+
+    Consensus prefers Pinnacle's own quoted point when available (Pinnacle
+    is the sharpest line), else whichever point the most bookmakers agree
+    on. This is what prevents shopping the max price across incompatible
+    lines — e.g. pairing a probability computed for "Over 9.5" with a
+    book's "Over 10.5" price (a harder bet that pays more), or a book that
+    has the road team favored on the runline instead of home.
+    """
+    if pin_point is not None:
+        target = pin_point
+    elif point_counts:
+        target = max(point_counts, key=point_counts.get)
+    else:
+        return None, None
+    return target, (by_point.get(target) or None)
+
+
 def _normalize_event(event: Dict) -> Dict:
     """Flatten one raw API event to a UI-friendly dict.
 
@@ -309,16 +346,32 @@ def _normalize_event(event: Dict) -> Dict:
     best_home: float = 0.0
     best_away: float = 0.0
     best_draw: Optional[float] = None
-    best_over: float = 0.0
-    best_under: float = 0.0
-    best_rl_home: float = 0.0
-    best_rl_away: float = 0.0
     best_f5_home: float = 0.0
     best_f5_away: float = 0.0
-    best_f5_over: float = 0.0
-    best_f5_under: float = 0.0
-    best_f5_rl_home: float = 0.0
-    best_f5_rl_away: float = 0.0
+
+    # Line-based markets (totals/spreads, full-game and F5): grouped by
+    # point rather than blended into a single max() — see
+    # _consensus_line_and_price()'s docstring for why.
+    over_by_point: Dict[float, float] = {}
+    over_point_counts: Dict[float, int] = {}
+    under_by_point: Dict[float, float] = {}
+    pin_total_point: Optional[float] = None
+
+    rl_home_by_point: Dict[float, float] = {}
+    rl_home_point_counts: Dict[float, int] = {}
+    rl_away_by_point: Dict[float, float] = {}
+    rl_away_point_counts: Dict[float, int] = {}
+    pin_rl_home_point: Optional[float] = None
+    pin_rl_away_point: Optional[float] = None
+
+    f5_over_by_point: Dict[float, float] = {}
+    f5_over_point_counts: Dict[float, int] = {}
+    f5_under_by_point: Dict[float, float] = {}
+
+    f5_rl_home_by_point: Dict[float, float] = {}
+    f5_rl_home_point_counts: Dict[float, int] = {}
+    f5_rl_away_by_point: Dict[float, float] = {}
+    f5_rl_away_point_counts: Dict[float, int] = {}
 
     # Prices below are shopped for the best price across ALL bookmakers, not
     # any single one — "bookmaker" records how many books were compared, not
@@ -353,23 +406,27 @@ def _normalize_event(event: Dict) -> Dict:
                 for o in outcomes:
                     n     = o.get("name", "").lower()
                     price = o.get("price") or 0.0
+                    point = o.get("point")
                     if n == "over":
-                        if result["total_line"] is None:
-                            result["total_line"] = o.get("point")
-                        if is_pinnacle and result["pin_total"] is None:
-                            result["pin_total"] = o.get("point")
-                        best_over = max(best_over, price)
+                        _accumulate_point_price(over_by_point, over_point_counts, point, price)
+                        if is_pinnacle and point is not None:
+                            pin_total_point = point
                     elif n == "under":
-                        best_under = max(best_under, price)
+                        _accumulate_point_price(under_by_point, {}, point, price)
 
             elif mkey == "spreads" and outcomes:
                 for o in outcomes:
                     name  = o.get("name", "").strip()
                     price = o.get("price") or 0.0
+                    point = o.get("point")
                     if name == home:
-                        best_rl_home = max(best_rl_home, price)
+                        _accumulate_point_price(rl_home_by_point, rl_home_point_counts, point, price)
+                        if is_pinnacle and point is not None:
+                            pin_rl_home_point = point
                     elif name == away:
-                        best_rl_away = max(best_rl_away, price)
+                        _accumulate_point_price(rl_away_by_point, rl_away_point_counts, point, price)
+                        if is_pinnacle and point is not None:
+                            pin_rl_away_point = point
 
             elif mkey == "h2h_h1" and outcomes:
                 for o in outcomes:
@@ -384,35 +441,47 @@ def _normalize_event(event: Dict) -> Dict:
                 for o in outcomes:
                     n     = o.get("name", "").lower()
                     price = o.get("price") or 0.0
+                    point = o.get("point")
                     if n == "over":
-                        if result["f5_total_line"] is None:
-                            result["f5_total_line"] = o.get("point")
-                        best_f5_over = max(best_f5_over, price)
+                        _accumulate_point_price(f5_over_by_point, f5_over_point_counts, point, price)
                     elif n == "under":
-                        best_f5_under = max(best_f5_under, price)
+                        _accumulate_point_price(f5_under_by_point, {}, point, price)
 
             elif mkey == "spreads_h1" and outcomes:
                 for o in outcomes:
                     name  = o.get("name", "").strip()
                     price = o.get("price") or 0.0
+                    point = o.get("point")
                     if name == home:
-                        best_f5_rl_home = max(best_f5_rl_home, price)
+                        _accumulate_point_price(f5_rl_home_by_point, f5_rl_home_point_counts, point, price)
                     elif name == away:
-                        best_f5_rl_away = max(best_f5_rl_away, price)
+                        _accumulate_point_price(f5_rl_away_by_point, f5_rl_away_point_counts, point, price)
+
+    total_line, over_price = _consensus_line_and_price(over_by_point, over_point_counts, pin_total_point)
+    _, under_price = _consensus_line_and_price(under_by_point, over_point_counts, pin_total_point)
+    rl_home_point, rl_home_price = _consensus_line_and_price(rl_home_by_point, rl_home_point_counts, pin_rl_home_point)
+    rl_away_point, rl_away_price = _consensus_line_and_price(rl_away_by_point, rl_away_point_counts, pin_rl_away_point)
+    f5_total_line, f5_over_price = _consensus_line_and_price(f5_over_by_point, f5_over_point_counts, None)
+    _, f5_under_price = _consensus_line_and_price(f5_under_by_point, f5_over_point_counts, None)
+    _, f5_rl_home_price = _consensus_line_and_price(f5_rl_home_by_point, f5_rl_home_point_counts, None)
+    _, f5_rl_away_price = _consensus_line_and_price(f5_rl_away_by_point, f5_rl_away_point_counts, None)
 
     result["home_odds"]    = best_home      or None
     result["away_odds"]    = best_away      or None
     result["draw_odds"]    = best_draw
-    result["over_odds"]    = best_over      or None
-    result["under_odds"]   = best_under     or None
-    result["runline_home"] = best_rl_home   or None
-    result["runline_away"] = best_rl_away   or None
+    result["total_line"]   = total_line
+    result["pin_total"]    = pin_total_point
+    result["over_odds"]    = over_price
+    result["under_odds"]   = under_price
+    result["runline_home"] = rl_home_price
+    result["runline_away"] = rl_away_price
     result["f5_home_odds"] = best_f5_home   or None
     result["f5_away_odds"] = best_f5_away   or None
-    result["f5_over_odds"] = best_f5_over   or None
-    result["f5_under_odds"]= best_f5_under  or None
-    result["f5_rl_home"]   = best_f5_rl_home or None
-    result["f5_rl_away"]   = best_f5_rl_away or None
+    result["f5_total_line"] = f5_total_line
+    result["f5_over_odds"]  = f5_over_price
+    result["f5_under_odds"] = f5_under_price
+    result["f5_rl_home"]    = f5_rl_home_price
+    result["f5_rl_away"]    = f5_rl_away_price
     return result
 
 
@@ -430,7 +499,7 @@ def get_best_odds_for_teams(
     home_team: str,
     away_team: str,
     sport: str = "baseball_mlb",
-    region: str = "us",   # kept for API compatibility, unused (cache is US-only)
+    region: str = "us",   # kept for API compatibility, unused — see module-level REGION
 ) -> Dict:
     """Find best ML prices + Pinnacle reference for a specific matchup.
 
@@ -455,19 +524,31 @@ def get_best_odds_for_teams(
         best_away = 0.0
         pin_home: Optional[float] = None
         pin_away: Optional[float] = None
-        pin_total: Optional[float] = None
-        total_line: Optional[float] = None
-        total_over: Optional[float] = None
-        total_under: Optional[float] = None
-        best_rl_home = 0.0
-        best_rl_away = 0.0
         best_f5_home = 0.0
         best_f5_away = 0.0
-        f5_total_line: Optional[float] = None
-        best_f5_over = 0.0
-        best_f5_under = 0.0
-        best_f5_rl_home = 0.0
-        best_f5_rl_away = 0.0
+
+        # Line-based markets: grouped by point, same reasoning as
+        # _normalize_event() — see _consensus_line_and_price()'s docstring.
+        over_by_point: Dict[float, float] = {}
+        over_point_counts: Dict[float, int] = {}
+        under_by_point: Dict[float, float] = {}
+        pin_total_point: Optional[float] = None
+
+        rl_home_by_point: Dict[float, float] = {}
+        rl_home_point_counts: Dict[float, int] = {}
+        rl_away_by_point: Dict[float, float] = {}
+        rl_away_point_counts: Dict[float, int] = {}
+        pin_rl_home_point: Optional[float] = None
+        pin_rl_away_point: Optional[float] = None
+
+        f5_over_by_point: Dict[float, float] = {}
+        f5_over_point_counts: Dict[float, int] = {}
+        f5_under_by_point: Dict[float, float] = {}
+
+        f5_rl_home_by_point: Dict[float, float] = {}
+        f5_rl_home_point_counts: Dict[float, int] = {}
+        f5_rl_away_by_point: Dict[float, float] = {}
+        f5_rl_away_point_counts: Dict[float, int] = {}
 
         for bm in event.get("bookmakers", []):
             is_pinnacle = (
@@ -495,23 +576,27 @@ def get_best_odds_for_teams(
                     for outcome in outcomes:
                         n     = outcome.get("name", "").lower()
                         price = outcome.get("price", 0.0) or 0.0
+                        point = outcome.get("point")
                         if n == "over":
-                            if total_line is None:
-                                total_line = outcome.get("point")
-                            if is_pinnacle and pin_total is None:
-                                pin_total = outcome.get("point")
-                            total_over = max(total_over or 0.0, price) or None
+                            _accumulate_point_price(over_by_point, over_point_counts, point, price)
+                            if is_pinnacle and point is not None:
+                                pin_total_point = point
                         elif n == "under":
-                            total_under = max(total_under or 0.0, price) or None
+                            _accumulate_point_price(under_by_point, {}, point, price)
 
                 elif mkey == "spreads":
                     for outcome in outcomes:
                         name  = outcome.get("name", "").strip()
                         price = outcome.get("price", 0.0) or 0.0
+                        point = outcome.get("point")
                         if name == g_home:
-                            best_rl_home = max(best_rl_home, price)
+                            _accumulate_point_price(rl_home_by_point, rl_home_point_counts, point, price)
+                            if is_pinnacle and point is not None:
+                                pin_rl_home_point = point
                         elif name == g_away:
-                            best_rl_away = max(best_rl_away, price)
+                            _accumulate_point_price(rl_away_by_point, rl_away_point_counts, point, price)
+                            if is_pinnacle and point is not None:
+                                pin_rl_away_point = point
 
                 elif mkey == "h2h_h1":
                     for outcome in outcomes:
@@ -526,21 +611,31 @@ def get_best_odds_for_teams(
                     for outcome in outcomes:
                         n     = outcome.get("name", "").lower()
                         price = outcome.get("price", 0.0) or 0.0
+                        point = outcome.get("point")
                         if n == "over":
-                            if f5_total_line is None:
-                                f5_total_line = outcome.get("point")
-                            best_f5_over = max(best_f5_over, price)
+                            _accumulate_point_price(f5_over_by_point, f5_over_point_counts, point, price)
                         elif n == "under":
-                            best_f5_under = max(best_f5_under, price)
+                            _accumulate_point_price(f5_under_by_point, {}, point, price)
 
                 elif mkey == "spreads_h1":
                     for outcome in outcomes:
                         name  = outcome.get("name", "").strip()
                         price = outcome.get("price", 0.0) or 0.0
+                        point = outcome.get("point")
                         if name == g_home:
-                            best_f5_rl_home = max(best_f5_rl_home, price)
+                            _accumulate_point_price(f5_rl_home_by_point, f5_rl_home_point_counts, point, price)
                         elif name == g_away:
-                            best_f5_rl_away = max(best_f5_rl_away, price)
+                            _accumulate_point_price(f5_rl_away_by_point, f5_rl_away_point_counts, point, price)
+
+        total_line, total_over = _consensus_line_and_price(over_by_point, over_point_counts, pin_total_point)
+        _, total_under = _consensus_line_and_price(under_by_point, over_point_counts, pin_total_point)
+        _, best_rl_home = _consensus_line_and_price(rl_home_by_point, rl_home_point_counts, pin_rl_home_point)
+        _, best_rl_away = _consensus_line_and_price(rl_away_by_point, rl_away_point_counts, pin_rl_away_point)
+        f5_total_line, best_f5_over = _consensus_line_and_price(f5_over_by_point, f5_over_point_counts, None)
+        _, best_f5_under = _consensus_line_and_price(f5_under_by_point, f5_over_point_counts, None)
+        _, best_f5_rl_home = _consensus_line_and_price(f5_rl_home_by_point, f5_rl_home_point_counts, None)
+        _, best_f5_rl_away = _consensus_line_and_price(f5_rl_away_by_point, f5_rl_away_point_counts, None)
+        pin_total = pin_total_point
 
         return {
             "home_team":     g_home,
@@ -551,10 +646,10 @@ def get_best_odds_for_teams(
             "pin_away":      pin_away,
             "pin_total":     pin_total,
             "total_line":    total_line,
-            "total_over":    total_over if (total_over or 0) > 0 else None,
-            "total_under":   total_under if (total_under or 0) > 0 else None,
-            "runline_home":  best_rl_home if best_rl_home > 0 else None,
-            "runline_away":  best_rl_away if best_rl_away > 0 else None,
+            "total_over":    total_over,
+            "total_under":   total_under,
+            "runline_home":  best_rl_home,
+            "runline_away":  best_rl_away,
             # f5_ml_home/f5_ml_away/f5_total_over/f5_total_under: named to
             # match GameOdds' established convention (core/value_detector.py)
             # and run_module.py's read side. Previously these were
@@ -571,10 +666,10 @@ def get_best_odds_for_teams(
             "f5_ml_home":    best_f5_home if best_f5_home > 0 else None,
             "f5_ml_away":    best_f5_away if best_f5_away > 0 else None,
             "f5_total_line": f5_total_line,
-            "f5_total_over": best_f5_over if best_f5_over > 0 else None,
-            "f5_total_under": best_f5_under if best_f5_under > 0 else None,
-            "f5_rl_home":    best_f5_rl_home if best_f5_rl_home > 0 else None,
-            "f5_rl_away":    best_f5_rl_away if best_f5_rl_away > 0 else None,
+            "f5_total_over": best_f5_over,
+            "f5_total_under": best_f5_under,
+            "f5_rl_home":    best_f5_rl_home,
+            "f5_rl_away":    best_f5_rl_away,
             "game_id":       event.get("id"),
         }
 
