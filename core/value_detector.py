@@ -557,10 +557,17 @@ def analyze_runline(
     weighted_home = home_analysis['ev'] * home_analysis['confidence'] * (home_analysis['kelly'] * 100)
     weighted_away = away_analysis['ev'] * away_analysis['confidence'] * (away_analysis['kelly'] * 100)
     
-    if weighted_home > weighted_away and home_analysis['tier_enum'] != ValueTier.NEGATIVE:
+    home_valid = home_analysis['tier_enum'] != ValueTier.NEGATIVE
+    away_valid = away_analysis['tier_enum'] != ValueTier.NEGATIVE
+
+    # A valid (non-NEGATIVE) side must never lose to "NO BET" just because
+    # the other side's weighted score happened to be higher while that
+    # other side was itself NEGATIVE-tier (disqualified) — only compare
+    # weighted scores between two sides that are both actually bettable.
+    if home_valid and (not away_valid or weighted_home > weighted_away):
         best_side = f"HOME -{runline_line}"
         best = home_analysis
-    elif away_analysis['tier_enum'] != ValueTier.NEGATIVE:
+    elif away_valid:
         best_side = f"AWAY +{runline_line}"
         best = away_analysis
     else:

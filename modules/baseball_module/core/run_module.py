@@ -148,47 +148,64 @@ def run_module(
                 games_today = api.get_todays_games() or []
                 games_tomorrow = api.get_games_by_date(tomorrow.strftime("%Y-%m-%d")) or []
                 games = games_today + games_tomorrow
-
-                if not games:
-                    logger.error("❌ No hay juegos disponibles hoy ni mañana")
-                    results["status"] = "no_games"
-                    return results
-
-                logger.info(f"✅ {len(games)} juegos encontrados (hoy + mañana combinados)")
-
-                # ===== Selector Streamlit =====
-                try:
-                    import streamlit as st
-
-                    options = []
-                    mapping = {}
-
-                    for g in games:
-                        home = g['home_team']
-                        away = g['away_team']
-                        date_str = datetime.fromisoformat(g['game_date'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M")
-                        label = f"{away} @ {home} — {date_str}"
-                        options.append(label)
-                        mapping[label] = g['game_pk']
-
-                    selected_label = st.selectbox(
-                        "🎯 Selecciona el partido a analizar:",
-                        options=options,
-                        index=0
-                    )
-                    game_id = mapping[selected_label]
-                    st.info(f"📊 Analizando: {selected_label}")
-                    logger.info(f"   Juego seleccionado: {game_id}")
-
-                except ImportError:
-                    # Terminal mode — no Streamlit
-                    game_id = games[0]['game_pk']
-                    logger.info(f"   Streamlit no disponible, usando primer juego: {game_id}")
-
             except Exception as e:
                 logger.error(f"❌ Error obteniendo juegos: {e}")
                 results['status'] = 'no_games'
                 return results
+
+            if not games:
+                logger.error("❌ No hay juegos disponibles hoy ni mañana")
+                results["status"] = "no_games"
+                return results
+
+            logger.info(f"✅ {len(games)} juegos encontrados (hoy + mañana combinados)")
+
+            # ===== Selector Streamlit =====
+            # NOTE: only ImportError (Streamlit not installed) falls back to
+            # terminal mode. Any OTHER exception while building the selector
+            # (e.g. a malformed game_date) is a real bug, not "no games" —
+            # it must NOT be caught here. It propagates to this function's
+            # outer handler below, which correctly reports status='error'
+            # with the real message instead of silently mislabeling a bug
+            # as "no games available today".
+            try:
+                import streamlit as st
+            except ImportError:
+                st = None
+
+            if st is not None:
+                options = []
+                mapping = {}
+
+                for g in games:
+                    home = g['home_team']
+                    away = g['away_team']
+                    date_str = datetime.fromisoformat(g['game_date'].replace('Z', '+00:00')).strftime("%Y-%m-%d %H:%M")
+                    label = f"{away} @ {home} — {date_str}"
+                    if label in mapping:
+                        # Doubleheader / duplicate matchup with an identical
+                        # formatted label — disambiguate instead of silently
+                        # overwriting the earlier game (it would become
+                        # unreachable from the selector).
+                        suffix = 2
+                        while f"{label} ({suffix})" in mapping:
+                            suffix += 1
+                        label = f"{label} ({suffix})"
+                    options.append(label)
+                    mapping[label] = g['game_pk']
+
+                selected_label = st.selectbox(
+                    "🎯 Selecciona el partido a analizar:",
+                    options=options,
+                    index=0
+                )
+                game_id = mapping[selected_label]
+                st.info(f"📊 Analizando: {selected_label}")
+                logger.info(f"   Juego seleccionado: {game_id}")
+            else:
+                # Terminal mode — no Streamlit
+                game_id = games[0]['game_pk']
+                logger.info(f"   Streamlit no disponible, usando primer juego: {game_id}")
         # ====================================================
 
         _integrator = MLBDataIntegrator()
@@ -443,7 +460,11 @@ def run_module(
         # defense_away was also tried and removed (see original NOTE Fase 2.1):
         # overlap with Pitcher/Bullpen engines at Pearson r=0.25.
 
-        results['lambdas_history']['base'] = {'lh': lh, 'la': la}
+        # Named for what this actually is (post Kalman-offense-adjustment),
+        # not "base" — the true pre-adjustment λ is `lh`/`la` right after
+        # the True Talent Engine / legacy fallback above, which isn't
+        # separately stamped here.
+        results['lambdas_history']['kalman_offense'] = {'lh': lh, 'la': la}
         logger.info(f"   Lambda base (Kalman off+def): λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})")
 
         # ── Team bias (LearningEngine) — corrects systematic model error per team ──
@@ -456,10 +477,26 @@ def run_module(
             _game_month = int(str(game_data.get('game_date', ''))[5:7])
         except (ValueError, TypeError):
             _game_month = None
+        # Diagnostic only (2026-07-11, revised 2026-07-12) — λ right before
+        # bias is applied (i.e. AFTER Kalman, before the 6 downstream
+        # engines). NOT used as a bias-learning denominator: an earlier
+        # version of this fix divided actual runs by this value, which
+        # implicitly attributed the 6 downstream engines' entire combined
+        # effect to "team bias" (double-counting anything they already
+        # corrected, notably hfa_engine.py's uniform home multiplier —
+        # confirmed via a real backtest regression, see learning_engine.py's
+        # compute_team_bias_kalman_adjusted docstring for the postmortem).
+        # The bias-learning code instead divides λ_final by ONLY the bias's
+        # own applied multiplier (bias_on_*_lambda, logged right below).
+        _stage_factors['l0_home_lambda'] = lh
+        _stage_factors['l0_away_lambda'] = la
+
         _home_bias = _learning.compute_team_bias_kalman_adjusted(home_team, _season, "offense_home", month=_game_month)
         _away_bias = _learning.compute_team_bias_kalman_adjusted(away_team, _season, "offense_away", month=_game_month)
         lh *= _home_bias
         la *= _away_bias
+        _stage_factors['bias_on_home_lambda'] = _home_bias
+        _stage_factors['bias_on_away_lambda'] = _away_bias
         if _home_bias != 1.0 or _away_bias != 1.0:
             logger.info(
                 f"   Bias correction: λ_h×{_home_bias:.4f}={lh:.3f}  λ_a×{_away_bias:.4f}={la:.3f}"
