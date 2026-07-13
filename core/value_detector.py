@@ -192,17 +192,28 @@ def bootstrap_confidence_interval(
 def calculate_ev_stats(
     model_prob: float,
     odds: float,
-    prob_ci: Optional[Tuple[float, float]] = None
+    prob_ci: Optional[Tuple[float, float]] = None,
+    push_prob: float = 0.0,
 ) -> Dict[str, float]:
-    """Calcula EV con intervalos de confianza."""
-    ev = calculate_ev(model_prob, odds)
+    """Calcula EV con intervalos de confianza.
+
+    push_prob — probability mass that neither wins nor loses (stake
+    refunded), excluded from model_prob/prob_ci. Only real for integer
+    total lines (e.g. total_line=9.0 can push at exactly 9 runs; a
+    half-integer line like 9.5 never pushes). calculate_ev()'s
+    (prob*odds - 1) formula implicitly treats "not win" as "full loss" —
+    without this correction, a push silently gets scored as a loss instead
+    of a stake return, understating EV. Zero (default) for every other
+    market, where it's a no-op.
+    """
+    ev = calculate_ev(model_prob, odds) + push_prob * 100
 
     if prob_ci:
-        ev_lower = calculate_ev(prob_ci[0], odds)
-        ev_upper = calculate_ev(prob_ci[1], odds)
+        ev_lower = calculate_ev(prob_ci[0], odds) + push_prob * 100
+        ev_upper = calculate_ev(prob_ci[1], odds) + push_prob * 100
     else:
         ev_lower = ev_upper = ev
-    
+
     return {
         'ev': round(ev, 3),
         'ev_lower': round(ev_lower, 3),
@@ -278,7 +289,27 @@ _EV_SCORE_ANCHOR = 8.86
 #     RE-refit 2026-07-06 alongside _EV_SCORE_ANCHOR (8.83->9.47, ~7% shift,
 #     same batched-backtest population); ev/sharpe correlation confirmed
 #     stable (r=0.818, was 0.816) -- the redundancy finding still holds.
-_SHARPE_SCORE_ANCHOR = 9.47
+#
+#     RE-refit 2026-07-12: the "early-stopping SE<0.003" assumption above
+#     was the backtest's precision (n_max=50_000, no early-stop override --
+#     backtest_and_retrain.py always hits that cap before early_stop_se's
+#     default 0.0005 target is reachable, so its *effective* SE is whatever
+#     50_000 sims gives: sqrt(0.25/50_000)=0.00224 at the worst-case p=0.5,
+#     close to the comment's rounded 0.003). Live runs (run_module.py,
+#     n_max=5_000_000) DO reach the 0.0005 early-stop target for virtually
+#     every game -- live SE is ~4.47x tighter than backtest SE. Since
+#     ev_std is directly proportional to SE (same physics-derived proxy
+#     noted above), live sharpe values run ~4.47x hotter than the backtest
+#     population this anchor was fit against for the same EV -- confirmed
+#     as the likely cause of sharpe_score saturating at 100 for nearly
+#     every live positive-EV bet (contributing to today's 6/7 moneyline
+#     picks landing ULTRA tier). Rescaled by that same ratio:
+#     9.47 * (sqrt(0.25/50_000) / 0.0005) = 9.47 * 4.472 = 42.35. This is a
+#     tier/composite-score constant only -- it does not touch lambda,
+#     probability, or the moneyline Brier/accuracy backtest metric at all,
+#     so validate by checking the live tier distribution, not by re-running
+#     backtest_and_retrain.py (which would correctly show zero change).
+_SHARPE_SCORE_ANCHOR = 42.35
 
 def calculate_composite_score(
     ev: float,
@@ -429,15 +460,19 @@ def analyze_market_generic(
     fractional_kelly: float,
     market_name: str,
     confidence: float,
+    push_prob: float = 0.0,
 ) -> Dict[str, Any]:
     """Análisis genérico para cualquier mercado.
 
     confidence — real epistemic-confidence score for this GAME (not this
     market), from compute_data_quality_confidence(). Same value across
     every market of the same game; computed once by the caller.
+
+    push_prob — see calculate_ev_stats()'s docstring. Zero for every
+    market except integer-line totals.
     """
 
-    ev_stats = calculate_ev_stats(model_prob, odds, prob_ci)
+    ev_stats = calculate_ev_stats(model_prob, odds, prob_ci, push_prob)
     edge = (model_prob - true_implied) * 100
     kelly = kelly_criterion(model_prob, odds, fractional_kelly)
     sharpe = sharpe_ratio(ev_stats['ev'], ev_stats['ev_std'])
@@ -853,7 +888,11 @@ def evaluate_value_ultra(
         if total_samples is not None:
             p_over = np.mean(total_samples > odds.total_line)
             p_under = np.mean(total_samples < odds.total_line)
-            
+            # Only nonzero for an integer line (total runs are always
+            # integer-valued, so a half-integer line like 9.5 can never
+            # push) — see calculate_ev_stats()'s push_prob docstring.
+            p_push = float(np.mean(total_samples == odds.total_line))
+
             if bootstrap_ci:
                 _, p_over_lower, p_over_upper = bootstrap_confidence_interval(
                     (total_samples > odds.total_line).astype(int), CONFIG.BOOTSTRAP_SAMPLES, CONFIG.CI_LEVEL
@@ -880,6 +919,7 @@ def evaluate_value_ultra(
                 poisson.cdf(line_floor - 1, lam_total) if is_integer_line
                 else poisson.cdf(line_floor, lam_total)
             )
+            p_push = float(poisson.pmf(line_floor, lam_total)) if is_integer_line else 0.0
 
             se = math.sqrt(p_over * (1 - p_over) / max(n_sims, 1))
             margin = 1.96 * se
@@ -892,12 +932,14 @@ def evaluate_value_ultra(
         
         over_total = analyze_market_generic(
             p_over, odds.total_over, over_ci, overround,
-            true_implied['over'], fractional_kelly, f"OVER {odds.total_line}", confidence
+            true_implied['over'], fractional_kelly, f"OVER {odds.total_line}", confidence,
+            push_prob=p_push,
         )
 
         under_total = analyze_market_generic(
             p_under, odds.total_under, under_ci, overround,
-            true_implied['under'], fractional_kelly, f"UNDER {odds.total_line}", confidence
+            true_implied['under'], fractional_kelly, f"UNDER {odds.total_line}", confidence,
+            push_prob=p_push,
         )
         
         all_markets['total'] = {'over': over_total, 'under': under_total, 'line': odds.total_line}

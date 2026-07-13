@@ -769,11 +769,22 @@ def run_module(
         # checked 'contextual', PASO 3, before 'hfa', the real last stage).
         results['lambdas_history']['final'] = {'lh': lh, 'la': la}
 
+        # Checks the RAW home_ps/away_ps dicts (before the league-average
+        # fallback chain at line ~267-273 fills them in), not
+        # game_data['pitcher_home']['fip'] — that field always ends up
+        # truthy (it falls back through _home_era -> team_era ->
+        # LEAGUE_AVG_ERA, a nonzero constant), so checking it made
+        # _has_real_pitcher permanently True regardless of whether real
+        # pitcher-specific data was actually fetched for this game.
         _has_real_pitcher = bool(
-            game_data.get('pitcher_home', {}).get('fip') or
-            game_data.get('pitcher_away', {}).get('fip')
+            home_ps.get('fip') or home_ps.get('era') or
+            away_ps.get('fip') or away_ps.get('era')
         )
-        _lambda_noise = _compute_lambda_noise(_TTE_AVAILABLE, _ENRICHMENT_AVAILABLE, _has_real_pitcher)
+        # _tte_active (this game's actual TTE success/fallback outcome,
+        # set above), not _TTE_AVAILABLE (whether the module could be
+        # imported at all — fixed at process start, doesn't reflect a
+        # per-game fallback to legacy lambda when TTE throws).
+        _lambda_noise = _compute_lambda_noise(_tte_active, _ENRICHMENT_AVAILABLE, _has_real_pitcher)
         logger.info(
             f"   λ finales pre-MC: λ_h={lh:.3f}  λ_a={la:.3f}  "
             f"total={lh+la:.3f}  noise={_lambda_noise:.2f}"
