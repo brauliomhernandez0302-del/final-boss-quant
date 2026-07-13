@@ -100,6 +100,7 @@ class BaseAnalyzer:
                 rating        = rating,
                 model_version = f"{self.config.name} {CONFIG.APP_VERSION}",
                 notes         = notes,
+                odds          = bet.get("odds"),
             ))
             saved += 1
 
@@ -184,6 +185,7 @@ class MLBAnalyzer(BaseAnalyzer):
             return result
 
         except ImportError as exc:
+            logger.exception("Módulo MLB no disponible")
             return AnalysisResult(status="error", error=f"Módulo no disponible: {exc}")
         except Exception as exc:
             logger.exception("Error en análisis MLB")
@@ -235,7 +237,16 @@ def render_mlb_results(
     settings: Dict[str, float],
     db: PredictionsDB,
     sport_config: SportConfig,
+    save_picks: bool = True,
 ) -> None:
+    """Render an MLB analysis result.
+
+    save_picks — write best_bets to PredictionsDB. Must be False when
+    re-rendering a result already stored in st.session_state (e.g. on a
+    Streamlit rerun triggered by an unrelated widget) — otherwise the same
+    picks get re-inserted on every rerun. Only the caller that just computed
+    a fresh `result` should pass True.
+    """
     if result.get("status") != "success":
         if result.get("status") == "no_games":
             st.warning("⚠️ No hay juegos disponibles")
@@ -264,7 +275,7 @@ def render_mlb_results(
         _hist.get("final")        or _hist.get("hfa") or
         _hist.get("defense")      or _hist.get("park_weather") or
         _hist.get("bullpen")      or _hist.get("contextual") or
-        _hist.get("pitcher")      or _hist.get("base") or {}
+        _hist.get("pitcher")      or _hist.get("kalman_offense") or {}
     )
     lh = float(lambdas.get("lh", 0.0))
     la = float(lambdas.get("la", 0.0))
@@ -293,31 +304,38 @@ def render_mlb_results(
 
     st.markdown("---")
 
-    # Show ML EV cards using the odds from the selector (quick visual reference)
-    render_value_analysis(
-        home=home, away=away,
-        p_home=p_home, p_away=p_away,
-        home_odds=game_data.get("home_odds", 2.0),
-        away_odds=game_data.get("away_odds", 2.0),
-        settings=settings,
-    )
+    # Show ML EV cards using the odds from the selector (quick visual reference).
+    # Skip entirely rather than fabricate even-money odds — a made-up 2.0
+    # price would render an EV/Kelly card indistinguishable from a real one.
+    if game_data.get("home_odds") and game_data.get("away_odds"):
+        render_value_analysis(
+            home=home, away=away,
+            p_home=p_home, p_away=p_away,
+            home_odds=game_data["home_odds"],
+            away_odds=game_data["away_odds"],
+            settings=settings,
+        )
+    else:
+        st.caption("💵 Odds de mercado no disponibles para la tarjeta rápida de EV.")
 
     # Best bets from the pipeline's full value detector (all markets)
     best_bets = result.get("best_bets", [])
 
-    # Save positive-EV picks driven by the pipeline's value detector
-    analyzer    = MLBAnalyzer(sport_config, settings, db)
-    picks_saved = analyzer.save_value_picks(
-        game_info     = {"home": home, "away": away},
-        best_bets     = best_bets,
-        probabilities = {"home_win": p_home, "away_win": p_away},
-        notes         = f"λh={lh:.3f}, λa={la:.3f}",
-    )
+    # Save positive-EV picks driven by the pipeline's value detector — only
+    # on the run that actually computed this result, never on a re-render.
+    if save_picks:
+        analyzer    = MLBAnalyzer(sport_config, settings, db)
+        picks_saved = analyzer.save_value_picks(
+            game_info     = {"home": home, "away": away},
+            best_bets     = best_bets,
+            probabilities = {"home_win": p_home, "away_win": p_away},
+            notes         = f"λh={lh:.3f}, λa={la:.3f}",
+        )
 
-    if picks_saved:
-        st.success(f"✅ {picks_saved} picks guardadas en base de datos")
-    else:
-        st.info("ℹ️ No se encontraron value bets que cumplan los criterios mínimos")
+        if picks_saved:
+            st.success(f"✅ {picks_saved} picks guardadas en base de datos")
+        else:
+            st.info("ℹ️ No se encontraron value bets que cumplan los criterios mínimos")
 
     if best_bets:
         st.markdown("---")

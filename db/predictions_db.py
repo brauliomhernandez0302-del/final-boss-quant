@@ -71,6 +71,10 @@ class PredictionData(TypedDict, total=False):
     rating: float
     model_version: str
     notes: str
+    # Decimal price of the specific side named in pick_type/pick_value —
+    # without this, a saved pick's EV/rating can never be re-verified
+    # against what the market actually offered at the time.
+    odds: float
 
 
 class AnalysisResult(TypedDict, total=False):
@@ -127,6 +131,7 @@ class PredictionsDB:
                     rating        REAL,
                     model_version TEXT,
                     notes         TEXT,
+                    odds          REAL,
                     created_at    TEXT    DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -139,6 +144,13 @@ class PredictionsDB:
                 CREATE INDEX IF NOT EXISTS idx_predictions_rating
                     ON predictions(rating);
             """)
+            # CREATE TABLE IF NOT EXISTS is a no-op against an existing table
+            # from an older schema (this repo's live predictions_history.db
+            # predates the `odds` column) — add it if missing so both fresh
+            # and pre-existing databases end up with the same shape.
+            existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(predictions)")}
+            if "odds" not in existing_cols:
+                conn.execute("ALTER TABLE predictions ADD COLUMN odds REAL")
 
     def save(self, pred: PredictionData) -> int:
         """Insert a prediction row; returns the new row id."""
@@ -148,8 +160,8 @@ class PredictionsDB:
                 INSERT INTO predictions (
                     timestamp, sport, league, home_team, away_team,
                     p_home, p_draw, p_away, pick_type, pick_value,
-                    ev, kelly, confidence, rating, model_version, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ev, kelly, confidence, rating, model_version, notes, odds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     pred.get("timestamp", datetime.now().isoformat()),
@@ -168,6 +180,7 @@ class PredictionsDB:
                     pred.get("rating"),
                     pred.get("model_version", _cfg.APP_VERSION),
                     pred.get("notes", ""),
+                    pred.get("odds"),
                 ),
             )
             return int(cursor.lastrowid or 0)

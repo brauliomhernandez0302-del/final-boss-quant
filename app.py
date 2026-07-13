@@ -96,16 +96,9 @@ class _NBAAnalyzer:
                 "n_simulations": self.config.simulations,
             }
             with st.spinner("⚡ Ejecutando NBA MODULE G8+..."):
-                try:
-                    return basketball_module.run_module(data=payload)
-                except TypeError:
-                    return basketball_module.run_module(
-                        home_team    = payload["home_team"],
-                        away_team    = payload["away_team"],
-                        game_context = payload["game_context"],
-                        n_simulations = payload["n_simulations"],
-                    )
+                return basketball_module.run_module(data=payload)
         except ImportError as exc:
+            logger.exception("Módulo NBA no disponible")
             return AnalysisResult(status="error", error=f"Módulo no disponible: {exc}")
         except Exception as exc:
             logger.exception("Error en análisis NBA")
@@ -130,6 +123,7 @@ class _UFCAnalyzer:
                     n_simulations  = self.config.simulations,
                 )
         except ImportError as exc:
+            logger.exception("Módulo UFC no disponible")
             return AnalysisResult(status="error", error=f"Módulo no disponible: {exc}")
         except Exception as exc:
             logger.exception("Error en análisis UFC")
@@ -141,9 +135,12 @@ def _render_nba_results(result: AnalysisResult, game_data: GameData, settings: D
         st.error(f"❌ Error en módulo NBA: {result.get('error', 'Unknown')}")
         return
     st.success("✅ Análisis NBA completado")
+    st.caption(
+        "⚠️ Módulo NBA en desarrollo — corre con datos de contexto por defecto "
+        "(sin lesiones, descanso, back-to-back reales), no con odds ni stats en vivo."
+    )
     info  = result["game_info"]
     preds = result["predictions"]
-    probs = result["probabilities"]
     home, away = info["home_team"], info["away_team"]
     st.markdown(f"### 🏀 {away} @ {home} ({info.get('game_date', '')})")
     c1, c2, c3 = st.columns(3)
@@ -159,6 +156,11 @@ def _render_ufc_results(result: AnalysisResult, game_data: GameData, settings: D
         st.error(f"❌ Error en módulo UFC: {result.get('error', 'Unknown')}")
         return
     st.success("✅ Análisis UFC completado")
+    st.caption(
+        "⚠️ Módulo UFC en desarrollo — ambos peleadores corren con los mismos "
+        "datos por defecto (sin stats reales de cada uno), la probabilidad mostrada "
+        "no refleja un análisis real de la pelea todavía."
+    )
     fight_info = result.get("fight_info", {})
     probs      = result.get("probabilities", {})
     f1 = fight_info.get("fighter1", game_data["home"])
@@ -231,28 +233,31 @@ def _render_analysis_tab(settings: Dict[str, Any]) -> None:
     st.info(f"**{selected_game}**")
 
     c1, c2 = st.columns(2)
-    with c1: st.metric(f"💵 {game_data['away']} Odds", f"{game_data['away_odds']:.2f}")
-    with c2: st.metric(f"💵 {game_data['home']} Odds", f"{game_data['home_odds']:.2f}")
+    away_odds_display = f"{game_data['away_odds']:.2f}" if game_data.get("away_odds") else "N/D"
+    home_odds_display = f"{game_data['home_odds']:.2f}" if game_data.get("home_odds") else "N/D"
+    with c1: st.metric(f"💵 {game_data['away']} Odds", away_odds_display)
+    with c2: st.metric(f"💵 {game_data['home']} Odds", home_odds_display)
 
     st.markdown("---")
 
+    just_analyzed = False
     if st.button(f"{sport_config.icon} Analizar Evento ({sport_name})", use_container_width=True):
         try:
-            if sport_name == "MLB":
-                analyzer = MLBAnalyzer(sport_config, settings, db)
+            if sport_name in ("MLB", "NBA", "UFC"):
+                analyzer_cls = {"MLB": MLBAnalyzer, "NBA": _NBAAnalyzer, "UFC": _UFCAnalyzer}[sport_name]
+                analyzer = analyzer_cls(sport_config, settings, db)
                 result   = analyzer.analyze(game_data)
-                render_mlb_results(result, game_data, settings, db, sport_config)
-
-            elif sport_name == "NBA":
-                analyzer = _NBAAnalyzer(sport_config, settings, db)
-                result   = analyzer.analyze(game_data)
-                _render_nba_results(result, game_data, settings)
-
-            elif sport_name == "UFC":
-                analyzer = _UFCAnalyzer(sport_config, settings, db)
-                result   = analyzer.analyze(game_data)
-                _render_ufc_results(result, game_data, settings)
-
+                # Stored so the result survives the next Streamlit rerun —
+                # any button/widget interaction elsewhere on the page reruns
+                # this whole function, and a result that only lived in a
+                # local variable inside this `if` block would vanish,
+                # forcing a full re-analysis just to see it again.
+                st.session_state["last_analysis"] = {
+                    "sport_name": sport_name,
+                    "game_data":  game_data,
+                    "result":     result,
+                }
+                just_analyzed = True
             else:
                 st.warning(f"Analizador para {sport_name} no implementado")
 
@@ -260,6 +265,25 @@ def _render_analysis_tab(settings: Dict[str, Any]) -> None:
             st.error(f"❌ Error ejecutando análisis: {exc}")
             logger.exception("Error en análisis %s", sport_name)
             st.exception(exc)
+
+    st.markdown("---")
+
+    last = st.session_state.get("last_analysis")
+    if last:
+        last_sport, last_game_data, last_result = last["sport_name"], last["game_data"], last["result"]
+        if last_sport == "MLB":
+            # save_picks only True on the run that just computed this result
+            # (just_analyzed) — every OTHER rerun re-renders the same stored
+            # result and must not re-insert the same picks. See
+            # render_mlb_results()'s docstring.
+            render_mlb_results(
+                last_result, last_game_data, settings, db, SPORT_CONFIGS[last_sport],
+                save_picks=just_analyzed,
+            )
+        elif last_sport == "NBA":
+            _render_nba_results(last_result, last_game_data, settings)
+        elif last_sport == "UFC":
+            _render_ufc_results(last_result, last_game_data, settings)
 
     st.markdown("---")
     if st.session_state.get("show_history", False):

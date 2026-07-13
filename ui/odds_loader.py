@@ -145,13 +145,26 @@ def build_game_selector(
         date_str = parse_game_datetime(commence)
 
         label = f"{away} @ {home} — {date_str}"
+        if label in mapping:
+            # Doubleheader / duplicate event with an identical formatted
+            # label — disambiguate instead of silently overwriting the
+            # earlier game in the mapping (it would become unreachable).
+            suffix = 2
+            while f"{label} ({suffix})" in mapping:
+                suffix += 1
+            label = f"{label} ({suffix})"
         options.append(label)
 
         mapping[label] = GameData(
             home          = str(home),
             away          = str(away),
-            home_odds     = _safe_float(row.get("home_odds"))  or 2.0,
-            away_odds     = _safe_float(row.get("away_odds"))  or 2.0,
+            # No fallback here on purpose: a fabricated even-money price would
+            # be indistinguishable from a real one downstream — ui/mlb.py's
+            # `if game_data.get("home_odds") and ...` treats it as real market
+            # data and skips run_module()'s own live odds fetch entirely.
+            # Missing odds must stay None so callers know to fall back.
+            home_odds     = _safe_float(row.get("home_odds")),
+            away_odds     = _safe_float(row.get("away_odds")),
             pin_home      = _safe_float(row.get("pin_home")),
             pin_away      = _safe_float(row.get("pin_away")),
             total_line    = _safe_float(row.get("total_line")),
