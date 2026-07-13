@@ -45,8 +45,15 @@ logger = logging.getLogger(__name__)
 ROOT         = Path(__file__).parent
 ODDS_API_KEY = os.getenv("ODDS_API_KEY", "").strip()
 BASE_URL     = "https://api.the-odds-api.com/v4"
-REGION       = "us"
-MARKETS      = ["h2h", "totals", "spreads", "h2h_h1", "totals_h1", "spreads_h1"]
+REGION       = "us,eu"  # eu required for Pinnacle — see _PINNACLE_KEY below
+MARKETS      = ["h2h", "totals", "spreads"]
+# NOTE (2026-07-12): h2h_h1/totals_h1/spreads_h1 (F5 markets) were added here in
+# d170807 but the bulk /sports/{sport}/odds/ endpoint doesn't support period
+# markets — The Odds API returns 422 INVALID_MARKET for the WHOLE request when
+# any are included, breaking odds fetch for all 14 sports. F5 markets need the
+# per-event endpoint (/sports/{sport}/events/{eventId}/odds) instead; the
+# normalization branches for h2h_h1/totals_h1/spreads_h1 below are left in
+# place for when that's wired up.
 
 SPORTS_KEYS = [
     "baseball_mlb",
@@ -70,10 +77,21 @@ CACHE_DIR.mkdir(exist_ok=True)
 CACHE_FILE = CACHE_DIR / "odds_last.json"
 CACHE_TTL  = ODDS_FILE_CACHE_TTL   # seconds
 
-_PINNACLE_KEY = "pinnaclesports"
+# Was "pinnaclesports" — wrong key, never matched The Odds API's real
+# bookmaker key (confirmed against fetch_historical_odds.py's working
+# _PINNACLE_KEYS = {"pinnacle"}). Combined with REGION previously excluding
+# "eu" (Pinnacle isn't US-licensed), Pinnacle data has been 100% absent
+# from live production all season — which silently disabled Platt-2D
+# calibration (core/value_detector.py gates it on having a Pinnacle fair
+# line). Verified via data/predictions_history.db: game_outcomes.ml_home_pin
+# was NULL for every live row since at least 2026-07-04.
+_PINNACLE_KEY = "pinnacle"
 
 
 # ── HTTP helper ───────────────────────────────────────────────────────────
+
+
+_MAX_RETRY_AFTER = 30  # cap server-provided Retry-After so a bad header can't hang the caller
 
 
 def _get(url: str, max_retries: int = 3, delay: int = 2) -> Optional[Any]:
@@ -83,9 +101,12 @@ def _get(url: str, max_retries: int = 3, delay: int = 2) -> Optional[Any]:
             if resp.status_code == 200:
                 return resp.json()
             if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", delay * 2))
-                logger.warning("Rate limited — waiting %ds", wait)
-                time.sleep(wait)
+                if attempt < max_retries - 1:
+                    wait = min(int(resp.headers.get("Retry-After", delay * 2)), _MAX_RETRY_AFTER)
+                    logger.warning("Rate limited — waiting %ds", wait)
+                    time.sleep(wait)
+                else:
+                    logger.warning("Rate limited on final attempt — giving up")
                 continue
             if resp.status_code == 401:
                 logger.error("Invalid or expired API key")
@@ -148,9 +169,14 @@ def _load_cache() -> Optional[List[Dict]]:
 # ── Fetch ─────────────────────────────────────────────────────────────────
 
 
-def _fetch_all_sports() -> List[Dict]:
-    """Fetch raw events for all configured sports. Returns list of raw API dicts."""
+def _fetch_all_sports() -> tuple[List[Dict], bool]:
+    """Fetch raw events for all configured sports.
+
+    Returns (events, all_ok) — all_ok is False if any sport's fetch failed,
+    so the caller can avoid caching a partial result as if it were complete.
+    """
     all_events: List[Dict] = []
+    all_ok = True
 
     for sport_key in SPORTS_KEYS:
         url = (
@@ -161,36 +187,67 @@ def _fetch_all_sports() -> List[Dict]:
             f"&oddsFormat=decimal"
         )
         data = _get(url)
-        if not data:
+        if data is None:
+            # Real fetch failure (network/HTTP error) — distinct from a valid
+            # 200 response with an empty list (e.g. an off-season sport with
+            # no events right now, which is not a failure).
+            all_ok = False
+            logger.warning("%s: fetch failed — skipping this sport", sport_key)
             continue
         all_events.extend(data)
         logger.info("%s: %d events fetched", sport_key, len(data))
         time.sleep(0.3)   # gentle pacing
 
-    return all_events
+    return all_events, all_ok
+
+
+_last_full_failure_ts: float = 0.0
+_FULL_FAILURE_BACKOFF_SECONDS = 60  # avoid hammering the API on repeated calls during an outage
 
 
 def _get_raw_events() -> List[Dict]:
     """Return cached raw events, fetching fresh if expired or missing."""
+    global _last_full_failure_ts
+
     if not ODDS_API_KEY:
-        logger.warning("ODDS_API_KEY not set — trying stale cache")
         if CACHE_FILE.exists():
             try:
                 content = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
                 data = content if isinstance(content, list) else content.get("data", [])
+                ts = content.get("timestamp") if isinstance(content, dict) else None
+                if ts:
+                    logger.warning(
+                        "ODDS_API_KEY not set — serving cache %.0f min old (may be stale)",
+                        (time.time() - ts) / 60,
+                    )
+                else:
+                    logger.warning("ODDS_API_KEY not set — serving cache of unknown age")
                 return data
             except Exception:
                 pass
+        logger.warning("ODDS_API_KEY not set and no cache available")
         return []
 
     cached = _load_cache()
     if cached is not None:
         return cached
 
+    if time.time() - _last_full_failure_ts < _FULL_FAILURE_BACKOFF_SECONDS:
+        logger.warning(
+            "Skipping fetch — full failure %.0fs ago, backing off %ds",
+            time.time() - _last_full_failure_ts, _FULL_FAILURE_BACKOFF_SECONDS,
+        )
+        return []
+
     logger.info("Fetching fresh odds from The Odds API...")
-    events = _fetch_all_sports()
-    if events:
+    events, all_ok = _fetch_all_sports()
+    if events and all_ok:
         _save_cache(events)
+    elif events:
+        logger.warning("Partial fetch (some sports failed) — not caching, will retry next call")
+    else:
+        _last_full_failure_ts = time.time()
+        logger.warning("Full fetch failure — backing off %ds before retry", _FULL_FAILURE_BACKOFF_SECONDS)
     return events
 
 
@@ -263,10 +320,13 @@ def _normalize_event(event: Dict) -> Dict:
     best_f5_rl_home: float = 0.0
     best_f5_rl_away: float = 0.0
 
-    for bm in bookmakers:
-        if result["bookmaker"] is None:
-            result["bookmaker"] = bm.get("title", "Unknown")
+    # Prices below are shopped for the best price across ALL bookmakers, not
+    # any single one — "bookmaker" records how many books were compared, not
+    # the source of any individual price (it used to store just the first
+    # book's title, which misleadingly implied a single-book quote).
+    result["bookmaker"] = f"best of {len(bookmakers)} books"
 
+    for bm in bookmakers:
         bm_key = bm.get("key", "").lower()
         is_pinnacle = bm_key == _PINNACLE_KEY or "pinnacle" in bm.get("title", "").lower()
 
@@ -420,7 +480,7 @@ def get_best_odds_for_teams(
 
                 if mkey == "h2h":
                     for outcome in outcomes:
-                        name  = outcome.get("name", "")
+                        name  = outcome.get("name", "").strip()
                         price = outcome.get("price", 0.0) or 0.0
                         if name == g_home:
                             best_home = max(best_home, price)
@@ -446,7 +506,7 @@ def get_best_odds_for_teams(
 
                 elif mkey == "spreads":
                     for outcome in outcomes:
-                        name  = outcome.get("name", "")
+                        name  = outcome.get("name", "").strip()
                         price = outcome.get("price", 0.0) or 0.0
                         if name == g_home:
                             best_rl_home = max(best_rl_home, price)
@@ -455,7 +515,7 @@ def get_best_odds_for_teams(
 
                 elif mkey == "h2h_h1":
                     for outcome in outcomes:
-                        name  = outcome.get("name", "")
+                        name  = outcome.get("name", "").strip()
                         price = outcome.get("price", 0.0) or 0.0
                         if name == g_home:
                             best_f5_home = max(best_f5_home, price)
@@ -475,7 +535,7 @@ def get_best_odds_for_teams(
 
                 elif mkey == "spreads_h1":
                     for outcome in outcomes:
-                        name  = outcome.get("name", "")
+                        name  = outcome.get("name", "").strip()
                         price = outcome.get("price", 0.0) or 0.0
                         if name == g_home:
                             best_f5_rl_home = max(best_f5_rl_home, price)
