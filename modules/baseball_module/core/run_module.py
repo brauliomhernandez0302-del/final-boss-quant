@@ -901,6 +901,11 @@ def run_module(
                 total_under=_fetched_odds.get('total_under'),
                 runline_home=_fetched_odds.get('runline_home'),
                 runline_away=_fetched_odds.get('runline_away'),
+                # Real consensus line when the fetcher determined one;
+                # falls back to GameOdds' own 1.5 default otherwise (e.g.
+                # odds came from a caller-supplied dict predating this
+                # field, or no runline data was found at all).
+                runline_line=_fetched_odds.get('runline_line') or 1.5,
                 f5_ml_home=_fetched_odds.get('f5_ml_home'),
                 f5_ml_away=_fetched_odds.get('f5_ml_away'),
                 f5_total_line=_fetched_odds.get('f5_total_line'),

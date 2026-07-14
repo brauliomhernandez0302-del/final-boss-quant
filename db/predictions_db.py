@@ -35,9 +35,14 @@ class GameData(TypedDict, total=False):
     total_line: float
     total_over: float
     total_under: float
-    # Run line / spreads (±1.5 for MLB)
+    # Run line / spreads (±1.5 is the MLB standard, but runline_line carries
+    # the real consensus line magnitude when odds_fetcher.py determined one
+    # — see its _consensus_line_and_price() — so a game whose market
+    # genuinely settled on a different line isn't silently graded against
+    # 1.5 anyway. None falls back to GameOdds' own 1.5 default.)
     runline_home: float
     runline_away: float
+    runline_line: float
     # First 5 innings — added 2026-07-06. Previously GameData had no F5
     # fields at all, so the Streamlit-selector-driven analysis path (pick a
     # game from the dropdown -> MLBAnalyzer.analyze()) could never surface

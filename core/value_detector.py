@@ -519,29 +519,32 @@ def analyze_runline(
     confidence: float,
 ) -> Dict[str, Any]:
     """
-    Analiza Run Line (±1.5).
-    
-    Home -1.5 = Home gana por 2+ runs
-    Away +1.5 = Away gana o pierde por 1 run
+    Analiza Run Line (±runline_line — 1.5 es el estándar MLB, pero se
+    respeta el valor real recibido: la cobertura se calcula contra
+    runline_line, no contra un umbral 1.5 fijo).
+
+    Home -runline_line = Home gana por más que la línea
+    Away +runline_line = Away cubre si el diferencial no llega a la línea
     """
     logger.info(f"📊 Analizando Run Line ±{runline_line}")
     
     if home_samples is not None and away_samples is not None:
         # Diferencial de runs
         diff = home_samples - away_samples
-        
-        # Home -1.5: necesita ganar por 2+
-        p_home_cover = np.mean(diff >= 2)
-        
-        # Away +1.5: cubre si gana o pierde por 1
-        p_away_cover = np.mean(diff <= 1)
-        
+
+        # Home -runline_line: gana por más que la línea (diff es entero,
+        # runline_line es un medio-entero típico de MLB, ej. 1.5 -> diff>=2)
+        p_home_cover = np.mean(diff > runline_line)
+
+        # Away +runline_line: cubre si el diferencial no llega a la línea
+        p_away_cover = np.mean(diff < runline_line)
+
         if bootstrap_ci:
             _, p_home_lower, p_home_upper = bootstrap_confidence_interval(
-                (diff >= 2).astype(int), CONFIG.BOOTSTRAP_SAMPLES, CONFIG.CI_LEVEL
+                (diff > runline_line).astype(int), CONFIG.BOOTSTRAP_SAMPLES, CONFIG.CI_LEVEL
             )
             _, p_away_lower, p_away_upper = bootstrap_confidence_interval(
-                (diff <= 1).astype(int), CONFIG.BOOTSTRAP_SAMPLES, CONFIG.CI_LEVEL
+                (diff < runline_line).astype(int), CONFIG.BOOTSTRAP_SAMPLES, CONFIG.CI_LEVEL
             )
             home_ci = (p_home_lower, p_home_upper)
             away_ci = (p_away_lower, p_away_upper)
@@ -555,18 +558,21 @@ def analyze_runline(
     else:
         # Fallback sin samples: use Skellam distribution (difference of two independent
         # Poisson variables) which is exact for integer run differentials.
-        # P(home-away >= 2) = 1 - P(D <= 1)  where D ~ Skellam(lh, la)
+        # P(home-away > runline_line) = 1 - P(D <= floor(runline_line))
+        # where D ~ Skellam(lh, la). floor() is exact for the conventional
+        # half-integer MLB runline (1.5 -> 1, 2.5 -> 2, ...).
         logger.warning("⚠️ Sin samples para Run Line, usando Skellam CDF")
         lh = mc_result.get('mean_home', 4.5)
         la = mc_result.get('mean_away', 4.5)
         lh = max(lh, 0.01)
         la = max(la, 0.01)
+        _rl_floor = math.floor(runline_line)
 
-        p_home_cover = float(1 - skellam.cdf(1, lh, la))
-        p_away_cover = float(skellam.cdf(1, lh, la))
+        p_home_cover = float(1 - skellam.cdf(_rl_floor, lh, la))
+        p_away_cover = float(skellam.cdf(_rl_floor, lh, la))
 
         # Bernoulli SE for the probability estimate (same formula as the samples path).
-        # Note: Var(D) = lh + la is the run-differential variance, NOT the SE of P(D≥2).
+        # Note: Var(D) = lh + la is the run-differential variance, NOT the SE of P(D>runline_line).
         se_home = math.sqrt(p_home_cover * (1 - p_home_cover) / n_sims)
         se_away = math.sqrt(p_away_cover * (1 - p_away_cover) / n_sims)
         home_ci = (max(0.0, p_home_cover - 1.96 * se_home), min(1.0, p_home_cover + 1.96 * se_home))

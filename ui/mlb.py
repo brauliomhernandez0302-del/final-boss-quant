@@ -161,6 +161,7 @@ class MLBAnalyzer(BaseAnalyzer):
                     "total_under":  game_data.get("total_under"),
                     "runline_home": game_data.get("runline_home"),
                     "runline_away": game_data.get("runline_away"),
+                    "runline_line": game_data.get("runline_line"),
                     # F5 — added 2026-07-06 alongside GameData; previously
                     # missing entirely, so the UI-selector-driven analysis
                     # path could never surface F5 markets regardless of the

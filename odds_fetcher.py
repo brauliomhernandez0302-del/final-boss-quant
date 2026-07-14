@@ -317,6 +317,7 @@ def _normalize_event(event: Dict) -> Dict:
         "under_odds":    None,
         "runline_home":  None,
         "runline_away":  None,
+        "runline_line":  None,
         # F5 (first 5 innings) — NAMING NOTE (2026-07-06): this is a THIRD
         # F5 naming scheme, distinct from both get_best_odds_for_teams()'s
         # (f5_ml_home/f5_total_over, matching GameOdds' convention) and each
@@ -475,6 +476,17 @@ def _normalize_event(event: Dict) -> Dict:
     result["under_odds"]   = under_price
     result["runline_home"] = rl_home_price
     result["runline_away"] = rl_away_price
+    # Magnitude only (not signed) — the home/away sign convention
+    # ("home is always -line") is a separate, pre-existing assumption
+    # elsewhere in the pipeline (GameOdds/analyze_runline), not something
+    # this fetcher decides. rl_home_point and rl_away_point aren't
+    # guaranteed to agree in sign if books disagree on which side is
+    # favored (see _consensus_line_and_price's docstring) — magnitude is
+    # what actually matters for the cover-probability math.
+    result["runline_line"] = (
+        abs(rl_home_point) if rl_home_point is not None
+        else (abs(rl_away_point) if rl_away_point is not None else None)
+    )
     result["f5_home_odds"] = best_f5_home   or None
     result["f5_away_odds"] = best_f5_away   or None
     result["f5_total_line"] = f5_total_line
@@ -629,8 +641,8 @@ def get_best_odds_for_teams(
 
         total_line, total_over = _consensus_line_and_price(over_by_point, over_point_counts, pin_total_point)
         _, total_under = _consensus_line_and_price(under_by_point, over_point_counts, pin_total_point)
-        _, best_rl_home = _consensus_line_and_price(rl_home_by_point, rl_home_point_counts, pin_rl_home_point)
-        _, best_rl_away = _consensus_line_and_price(rl_away_by_point, rl_away_point_counts, pin_rl_away_point)
+        rl_home_point, best_rl_home = _consensus_line_and_price(rl_home_by_point, rl_home_point_counts, pin_rl_home_point)
+        rl_away_point, best_rl_away = _consensus_line_and_price(rl_away_by_point, rl_away_point_counts, pin_rl_away_point)
         f5_total_line, best_f5_over = _consensus_line_and_price(f5_over_by_point, f5_over_point_counts, None)
         _, best_f5_under = _consensus_line_and_price(f5_under_by_point, f5_over_point_counts, None)
         _, best_f5_rl_home = _consensus_line_and_price(f5_rl_home_by_point, f5_rl_home_point_counts, None)
@@ -650,6 +662,13 @@ def get_best_odds_for_teams(
             "total_under":   total_under,
             "runline_home":  best_rl_home,
             "runline_away":  best_rl_away,
+            # Magnitude only — see _normalize_event()'s identical field for
+            # why (home/away sign convention is decided elsewhere, and the
+            # two points aren't guaranteed to agree in sign).
+            "runline_line": (
+                abs(rl_home_point) if rl_home_point is not None
+                else (abs(rl_away_point) if rl_away_point is not None else None)
+            ),
             # f5_ml_home/f5_ml_away/f5_total_over/f5_total_under: named to
             # match GameOdds' established convention (core/value_detector.py)
             # and run_module.py's read side. Previously these were

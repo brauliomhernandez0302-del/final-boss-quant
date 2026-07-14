@@ -172,6 +172,7 @@ def build_game_selector(
             total_under   = _safe_float(row.get("under_odds")),
             runline_home  = _safe_float(row.get("runline_home")),
             runline_away  = _safe_float(row.get("runline_away")),
+            runline_line  = _safe_float(row.get("runline_line")),
             # odds_fetcher.py::_normalize_event()'s own F5 naming scheme
             # (f5_home_odds/f5_over_odds/f5_under_odds) is a THIRD,
             # independent convention from GameOdds' f5_ml_home/f5_total_over
