@@ -196,10 +196,17 @@ def publish_mlb_picks(
             pass
 
         if not best_bets:
-            # If value_detector produced nothing, synthesise a minimal ML pick
+            # If value_detector produced nothing, synthesise a minimal ML pick.
+            # ml_home_odds comes from get_best_odds_for_teams() (odds_fetcher.py
+            # requests oddsFormat=decimal), so it's ALWAYS decimal already —
+            # unlike odds_raw below (line ~244), which may come from a bet
+            # dict of unknown provenance and genuinely needs the >=100 guard.
+            # Running it through _american_to_decimal() unconditionally here
+            # treated a real decimal price (e.g. 1.91) as if it were American,
+            # producing dec=53.36 and a wildly inflated fake EV.
             ml_home_odds = market_odds.get("ml_home")
             if ml_home_odds and p_home > 0.5:
-                dec = _american_to_decimal(ml_home_odds)
+                dec = float(ml_home_odds)
                 ev = (p_home * (dec - 1)) - (1 - p_home)
                 if ev > 0.02:
                     best_bets = [{

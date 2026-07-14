@@ -137,6 +137,14 @@ STADIUM_DATABASE: Dict[str, StadiumFactors] = {
     "Camden Yards":
         StadiumFactors(runs_factor=0.99, hr_factor=0.99, hits_factor=0.99,
                        altitude=30,  cf_direction=350),
+    # Same sponsorship/naming-drift situation as Daikin Park / UNIQLO Field
+    # below: live MLB API reports "Oriole Park at Camden Yards" (confirmed
+    # 2026-07-13 via game_outcomes), historical game_data uses "Camden
+    # Yards". Without this key, live Orioles home games fell back to
+    # neutral park_mult=1.00 and lost cf_direction.
+    "Oriole Park at Camden Yards":
+        StadiumFactors(runs_factor=0.99, hr_factor=0.99, hits_factor=0.99,
+                       altitude=30,  cf_direction=350),
     "Tropicana Field":
         StadiumFactors(runs_factor=0.96, hr_factor=0.96, hits_factor=0.96,
                        altitude=3,   cf_direction=0,   has_roof=True),
@@ -145,6 +153,12 @@ STADIUM_DATABASE: Dict[str, StadiumFactors] = {
                        altitude=76,  cf_direction=350, has_roof=True),
     # ── American League Central ───────────────────────────────────────────────
     "Guaranteed Rate Field":
+        StadiumFactors(runs_factor=1.00, hr_factor=1.05, hits_factor=1.00,
+                       altitude=181, cf_direction=345),
+    # Renamed "Rate Field" for 2026 (sponsorship change) — live MLB API
+    # confirmed reporting the new name via game_outcomes 2026-07-13. Same
+    # building/factors as Guaranteed Rate Field; kept both keys.
+    "Rate Field":
         StadiumFactors(runs_factor=1.00, hr_factor=1.05, hits_factor=1.00,
                        altitude=181, cf_direction=345),
     "Progressive Field":
