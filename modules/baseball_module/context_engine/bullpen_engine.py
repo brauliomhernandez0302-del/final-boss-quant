@@ -310,16 +310,21 @@ def _fetch_reliever_ids(team_id: int, season: int, roster: Dict[int, str]) -> Op
 
     reliever_ids: set = set()
     n_classified = 0
+    n_failed = 0
     for pid in roster:
         data = _get_json(
             f"{MLB_BASE}/people/{pid}/stats",
             params={"stats": "season", "group": "pitching", "season": season, "sportId": 1},
         )
         if not data:
+            n_failed += 1
             continue
         stats_list = data.get("stats") or [{}]
         splits = stats_list[0].get("splits", [])
         if not splits:
+            # No pitching stats this season (e.g. position player, or a
+            # pitcher who hasn't debuted yet) — legitimately not a
+            # reliever to classify, not a fetch failure.
             continue
         stat = splits[0].get("stat", {})
         games_played = stat.get("gamesPlayed", 0) or 0
@@ -334,6 +339,14 @@ def _fetch_reliever_ids(team_id: int, season: int, roster: Dict[int, str]) -> Op
         # Every per-player fetch failed (rate limit, outage, etc.) — don't
         # cache a spurious empty result, and let the caller fall back.
         return None
+    if n_failed > 0:
+        # A PARTIAL fetch failure — some pitchers got classified, some
+        # didn't. Caching this would silently exclude the unclassified
+        # ones (who may be real relievers) from the aggregate for a full
+        # day. Return the partial result for this call (better than
+        # nothing), but don't cache it, so the next call retries the
+        # missing players instead of being stuck with an incomplete set.
+        return reliever_ids
 
     cache.write_text(json.dumps(list(reliever_ids)))
     return reliever_ids

@@ -714,24 +714,29 @@ def analyze_first5(
             poisson.cdf(line_floor - 1, lam_total) if is_integer_line
             else poisson.cdf(line_floor, lam_total)
         )
+        # Same integer-line push handling as evaluate_value_ultra()'s main
+        # totals section — see calculate_ev_stats()'s push_prob docstring.
+        p_push = float(poisson.pmf(line_floor, lam_total)) if is_integer_line else 0.0
 
         se = math.sqrt(p_over * (1 - p_over) / max(n_sims, 1))
         margin = 1.96 * se
         over_ci = (max(0.0, p_over - margin), min(1.0, p_over + margin))
         under_ci = (max(0.0, p_under - margin), min(1.0, p_under + margin))
-        
+
         odds_dict = {'over': f5_odds.f5_total_over, 'under': f5_odds.f5_total_under}
         true_implied = adjust_for_vig(odds_dict, method=vig_method)
         overround = (1/f5_odds.f5_total_over + 1/f5_odds.f5_total_under - 1) * 100
-        
+
         over_total = analyze_market_generic(
             p_over, f5_odds.f5_total_over, over_ci, overround,
-            true_implied['over'], fractional_kelly, f"F5 OVER {f5_odds.f5_total_line}", confidence
+            true_implied['over'], fractional_kelly, f"F5 OVER {f5_odds.f5_total_line}", confidence,
+            push_prob=p_push,
         )
 
         under_total = analyze_market_generic(
             p_under, f5_odds.f5_total_under, under_ci, overround,
-            true_implied['under'], fractional_kelly, f"F5 UNDER {f5_odds.f5_total_line}", confidence
+            true_implied['under'], fractional_kelly, f"F5 UNDER {f5_odds.f5_total_line}", confidence,
+            push_prob=p_push,
         )
         
         result['total'] = {

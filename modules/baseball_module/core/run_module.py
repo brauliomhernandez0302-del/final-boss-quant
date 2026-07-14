@@ -721,10 +721,20 @@ def run_module(
         # Priority: odds passed by caller (from UI selector, already validated) >
         # fresh fetch by team-name fuzzy match (may miss if names differ).
         _fetched_odds: Optional[Dict] = None
-        if market_odds and market_odds.get('ml_home') and market_odds.get('ml_away'):
+        # Same "any one usable market" standard as PASO 9's value-detection
+        # gate below — a caller (e.g. the UI selector) that only has
+        # totals/runline odds for this game shouldn't have that silently
+        # discarded and replaced by a fresh, possibly different-snapshot
+        # fetch just because moneyline wasn't also available.
+        _market_odds_usable = market_odds and (
+            (market_odds.get('ml_home') and market_odds.get('ml_away')) or
+            (market_odds.get('total_line') and market_odds.get('total_over') and market_odds.get('total_under')) or
+            (market_odds.get('runline_home') and market_odds.get('runline_away'))
+        )
+        if _market_odds_usable:
             _fetched_odds = market_odds
             logger.info(
-                f"   ✅ Odds del selector: ML {_fetched_odds['ml_home']}/{_fetched_odds['ml_away']}"
+                f"   ✅ Odds del selector: ML {_fetched_odds.get('ml_home')}/{_fetched_odds.get('ml_away')}"
                 + (f"  Pinnacle: {_fetched_odds.get('pin_home')}/{_fetched_odds.get('pin_away')}" if _fetched_odds.get('pin_home') else "")
                 + (f"  Total: {_fetched_odds.get('total_line')}" if _fetched_odds.get('total_line') else "")
             )
