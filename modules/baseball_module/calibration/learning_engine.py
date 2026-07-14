@@ -118,6 +118,8 @@ class LearningEngine:
                     lambda_away      REAL,
                     p_home           REAL,
                     p_away           REAL,
+                    ml_home_pin      REAL,
+                    ml_away_pin      REAL,
                     stage_factors_json TEXT,
                     actual_home_runs INTEGER,
                     actual_away_runs INTEGER,
@@ -161,6 +163,16 @@ class LearningEngine:
                 ("stage_factors_json", "TEXT"),
                 ("p_home_raw", "REAL"),   # pre-Platt MC probability (for clean Platt refitting)
                 ("p_away_raw", "REAL"),
+                # Pinnacle moneyline price at prediction time — without these,
+                # recalibrate_platt_2d()'s query (which reads them) raises
+                # OperationalError on a fresh DB, silently caught by its
+                # caller, permanently disabling Platt-2D with only a log
+                # warning. On this repo's actual DB these already exist
+                # (added ad-hoc by fetch_historical_odds.py for backfilled
+                # historical seasons) — this ALTER is then a no-op, caught
+                # below same as any other already-present column.
+                ("ml_home_pin", "REAL"),
+                ("ml_away_pin", "REAL"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE game_outcomes ADD COLUMN {col} {typedef}")
@@ -186,6 +198,8 @@ class LearningEngine:
         stage_factors: Optional[Dict[str, Any]] = None,
         p_home_raw: Optional[float] = None,  # pre-Platt MC probability
         p_away_raw: Optional[float] = None,
+        ml_home_pin: Optional[float] = None,  # Pinnacle moneyline price at prediction time
+        ml_away_pin: Optional[float] = None,
     ) -> bool:
         """Insert a pre-game prediction row. Returns True if newly inserted.
 
@@ -193,6 +207,12 @@ class LearningEngine:
         p_home_raw / p_away_raw — raw Monte Carlo probabilities before Platt
             scaling.  recalibrate_platt() prefers these so Platt is fitted on
             its own input signal rather than its own output (circular dependency).
+        ml_home_pin / ml_away_pin — Pinnacle's moneyline price, if fetched for
+            this game. Without persisting these, recalibrate_platt_2d()'s
+            expanding-window query (season < ? AND ml_home_pin IS NOT NULL)
+            can only ever see backfilled historical seasons — no live season
+            ever accumulates enough rows to be included in a future refit,
+            regardless of how long the app runs.
 
         For rows that already exist (historical bulk imports), we backfill any
         NULL fields that we now have values for — crucially stage_factors_json
@@ -214,12 +234,12 @@ class LearningEngine:
                 INSERT OR IGNORE INTO game_outcomes
                     (game_pk, game_date, season, home_team, away_team, venue, month,
                      lambda_home, lambda_away, p_home, p_away,
-                     p_home_raw, p_away_raw, stage_factors_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     p_home_raw, p_away_raw, ml_home_pin, ml_away_pin, stage_factors_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (game_pk, game_date, season, home_team, away_team, venue, month,
                  lambda_home, lambda_away, p_home, p_away,
-                 p_home_raw, p_away_raw, sf_json),
+                 p_home_raw, p_away_raw, ml_home_pin, ml_away_pin, sf_json),
             )
             inserted = cursor.rowcount == 1
             if not inserted:
@@ -230,10 +250,12 @@ class LearningEngine:
                     UPDATE game_outcomes SET
                         stage_factors_json = COALESCE(stage_factors_json, ?),
                         p_home_raw         = COALESCE(p_home_raw, ?),
-                        p_away_raw         = COALESCE(p_away_raw, ?)
+                        p_away_raw         = COALESCE(p_away_raw, ?),
+                        ml_home_pin        = COALESCE(ml_home_pin, ?),
+                        ml_away_pin        = COALESCE(ml_away_pin, ?)
                     WHERE game_pk = ?
                     """,
-                    (sf_json, p_home_raw, p_away_raw, game_pk),
+                    (sf_json, p_home_raw, p_away_raw, ml_home_pin, ml_away_pin, game_pk),
                 )
         logger.debug(f"[learning] recorded prediction game_pk={game_pk} inserted={inserted}")
         return inserted
@@ -274,6 +296,26 @@ class LearningEngine:
                 away_runs = data.get("teams", {}).get("away", {}).get("runs")
                 if home_runs is None or away_runs is None:
                     continue
+
+                # /linescore alone never says whether the game is actually
+                # over — it updates live, mid-game. A West Coast night game
+                # still in progress past UTC midnight would otherwise have
+                # its PARTIAL score locked in here, and update_outcome()'s
+                # own idempotency guard (WHERE actual_home_runs IS NULL)
+                # means that wrong score can never be corrected afterward.
+                # Same two-step pattern as track_record/reconciler.py's
+                # _fetch_mlb_final_v2().
+                sched = session.get(
+                    f"{_MLB_API_BASE}/schedule?gamePk={row['game_pk']}&hydrate=linescore",
+                    timeout=8,
+                )
+                sched.raise_for_status()
+                sdates = sched.json().get("dates", [])
+                sgames = sdates[0].get("games", []) if sdates else []
+                state = sgames[0].get("status", {}).get("abstractGameState", "") if sgames else ""
+                if state != "Final":
+                    continue
+
                 if self.update_outcome(row["game_pk"], int(home_runs), int(away_runs)):
                     updated += 1
                     logger.info(f"[learning] game {row['game_pk']}: {away_runs}–{home_runs}")

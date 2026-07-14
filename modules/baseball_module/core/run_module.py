@@ -854,6 +854,11 @@ def run_module(
                     p_away_raw=float(_p_away_mc),
                     venue=game_data.get('venue'),
                     stage_factors=_stage_factors,
+                    # Without this, recalibrate_platt_2d()'s expanding window
+                    # never accumulates any live-season data — see
+                    # record_prediction()'s docstring.
+                    ml_home_pin=(_fetched_odds or {}).get('pin_home'),
+                    ml_away_pin=(_fetched_odds or {}).get('pin_away'),
                 )
             except Exception as _e:
                 logger.debug(f"[learning] record_prediction failed: {_e}")
