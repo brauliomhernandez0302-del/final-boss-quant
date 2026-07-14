@@ -24,10 +24,20 @@ same tier of advanced metrics as the Pitcher Engine for starters:
 Data sources:
   MLB Stats API pitcherType=R  → ERA, WHIP, K%, BB%, TBF (reliever-only ✓)
   Baseball Savant pitcher leaderboard → xwOBA against, barrel% against
-    (team-aggregate over all pitchers who appear in Savant; relievers
-     dominate by volume once starters are at 25–30 starts)
-  FanGraphs pitcher leaderboard → SIERA/xFIP, IP-weighted across the
-    roster's pitchers found in Savant (same relievers-dominate-by-volume logic)
+    (team-aggregate, PA-weighted)
+  FanGraphs pitcher leaderboard → SIERA/xFIP, IP-weighted across the roster
+
+  Both aggregates above are restricted to actual relievers (zero starts
+  this season, via _fetch_reliever_ids — one MLB Stats API call per
+  roster pitcher, cached 24h) rather than the whole roster. Found
+  2026-07-13: the aggregate previously ran over every pitcher who appears
+  in Savant/FanGraphs regardless of role, on the premise that "relievers
+  dominate by volume" once the rotation is deep into its innings — that
+  premise doesn't hold in general (starters throw a large, often majority
+  share of team IP/PA across a season, more so early), so this signal was
+  partly re-pricing the same day's actual starter, already priced by the
+  Pitcher Engine (PASO 2). Falls back to the old whole-roster behavior
+  when role data isn't available (fetch failure), never worse than before.
 
 Pipeline position: PASO 4 — after Pitcher Engine and Contextual Engine, before Park+Weather.
 Convention (same as Pitcher Engine):
@@ -273,6 +283,62 @@ def _fetch_team_roster(team_id: int, season: int) -> Dict[int, str]:
     return roster
 
 
+def _fetch_reliever_ids(team_id: int, season: int, roster: Dict[int, str]) -> Optional[set]:
+    """Player IDs on `roster` classified as pure relievers (zero starts this
+    season) — used to keep the SIERA/xwOBA aggregates below actually
+    bullpen-specific instead of diluted by the starting rotation.
+
+    No bulk per-player endpoint exists (the team-stats endpoint only
+    returns a team aggregate), so this costs one Stats API call per
+    roster pitcher — cached 24h, same TTL as the roster itself, so it's
+    paid once per team per day, not per game.
+
+    Returns None (not an empty set) on total failure, so callers can tell
+    "couldn't classify roles this time" apart from "classified zero
+    relievers" and fall back to the old whole-roster aggregate rather than
+    aggregating over nothing.
+    """
+    if not roster:
+        return None
+
+    cache = CACHE_DIR / f"bullpen_reliever_ids_{team_id}_{season}.json"
+    if _cache_valid(cache, ttl=86400):
+        try:
+            return set(json.loads(cache.read_text()))
+        except Exception:
+            pass
+
+    reliever_ids: set = set()
+    n_classified = 0
+    for pid in roster:
+        data = _get_json(
+            f"{MLB_BASE}/people/{pid}/stats",
+            params={"stats": "season", "group": "pitching", "season": season, "sportId": 1},
+        )
+        if not data:
+            continue
+        stats_list = data.get("stats") or [{}]
+        splits = stats_list[0].get("splits", [])
+        if not splits:
+            continue
+        stat = splits[0].get("stat", {})
+        games_played = stat.get("gamesPlayed", 0) or 0
+        games_started = stat.get("gamesStarted", 0) or 0
+        if games_played <= 0:
+            continue
+        n_classified += 1
+        if games_started == 0:
+            reliever_ids.add(pid)
+
+    if n_classified == 0:
+        # Every per-player fetch failed (rate limit, outage, etc.) — don't
+        # cache a spurious empty result, and let the caller fall back.
+        return None
+
+    cache.write_text(json.dumps(list(reliever_ids)))
+    return reliever_ids
+
+
 # ── Bayesian regression helper ─────────────────────────────────────────────────
 
 def _regress(observed: float, mean: float, n: float, k: float) -> float:
@@ -288,11 +354,20 @@ def _aggregate_team_savant(
     roster: Dict[int, str],
     savant_exp: Dict[int, dict],
     savant_ev:  Dict[int, dict],
+    reliever_ids: Optional[set] = None,
 ) -> dict:
     """
-    PA-weighted Statcast aggregation for all team pitchers found in Savant.
-    Relievers dominate by volume once the team has 80+ games (starters cap
-    out at ~25 appearances while the bullpen accumulates 200+ combined).
+    PA-weighted Statcast aggregation for a team's relief corps.
+
+    reliever_ids — when available (see _fetch_reliever_ids), restricts the
+    aggregate to actual relievers (zero starts this season) instead of the
+    full roster. Without it, the aggregate was silently dominated by
+    starters early in the season (starters accumulate PA faster per game
+    than any single reliever, and the "relievers dominate by volume"
+    premise this docstring used to state as fact only holds, if at all,
+    very late in a season) — re-pricing starter quality the Pitcher Engine
+    (PASO 2) already applied to that same day's actual starter. None means
+    role data wasn't available this call; falls back to the full roster.
     """
     xwoba_sum    = 0.0
     total_pa     = 0.0
@@ -300,7 +375,16 @@ def _aggregate_team_savant(
     attempts_sum = 0.0
     n_found      = 0
 
-    for pid in roster:
+    pitchers = roster
+    if reliever_ids is not None:
+        filtered = {pid: name for pid, name in roster.items() if pid in reliever_ids}
+        if filtered:
+            pitchers = filtered
+        # else: classification found no overlap with this roster (shouldn't
+        # normally happen) — fall back to the full roster rather than
+        # degrading all the way to the league-average branch below.
+
+    for pid in pitchers:
         exp = savant_exp.get(pid)
         ev  = savant_ev.get(pid)
         if exp:
@@ -329,13 +413,15 @@ def _aggregate_team_savant(
 def _aggregate_team_siera(
     roster: Dict[int, str],
     fg_pitchers: Dict[int, dict],
+    reliever_ids: Optional[set] = None,
 ) -> dict:
     """
-    IP-weighted SIERA (falls back to xFIP per-pitcher) across a team's bullpen
-    roster — the same luck-stripping signal Pitcher Engine uses for starters
-    (SIERA/xFIP > raw ERA), aggregated the same way _aggregate_team_savant
-    aggregates xwOBA/barrel%: relievers dominate by volume once starters are
-    deep into their season IP totals.
+    IP-weighted SIERA (falls back to xFIP per-pitcher) across a team's relief
+    corps — the same luck-stripping signal Pitcher Engine uses for starters
+    (SIERA/xFIP > raw ERA).
+
+    reliever_ids — see _aggregate_team_savant()'s docstring; same reasoning
+    and same fallback-to-full-roster behavior when unavailable.
 
     Returns {siera_ag, total_ip, n_pitchers}. total_ip=0 (and siera_ag=None)
     when no roster pitcher has FanGraphs coverage — caller falls back to raw ERA.
@@ -344,7 +430,13 @@ def _aggregate_team_siera(
     total_ip  = 0.0
     n_found   = 0
 
-    for pid in roster:
+    pitchers = roster
+    if reliever_ids is not None:
+        filtered = {pid: name for pid, name in roster.items() if pid in reliever_ids}
+        if filtered:
+            pitchers = filtered
+
+    for pid in pitchers:
         fg = fg_pitchers.get(pid) or fg_pitchers.get(str(pid))
         if not fg:
             continue
@@ -463,6 +555,14 @@ class BullpenEngine:
 
         # ── Roster (shared by the SIERA/xFIP and Savant aggregations below) ──
         roster = _fetch_team_roster(int(team_id), season) if team_id else {}
+        # Restricts the aggregates below to actual relievers (zero starts)
+        # instead of the whole roster — see _fetch_reliever_ids()'s and
+        # _aggregate_team_savant()'s docstrings for why: without it, this
+        # "bullpen quality" signal was silently dominated by the starting
+        # rotation and re-priced quality the Pitcher Engine (PASO 2) already
+        # applied to that day's actual starter. None (fetch failed) falls
+        # back to the pre-existing whole-roster behavior, never worse.
+        reliever_ids = _fetch_reliever_ids(int(team_id), season, roster) if team_id and roster else None
 
         # ── MLB API metrics (reliever-specific) ───────────────────────────
         _era  = bullpen.get("era");          era_raw = float(_era if _era is not None else _LG_BP_ERA)
@@ -474,7 +574,7 @@ class BullpenEngine:
         # roster, luck-stripped) preferred over raw pitcherType=R ERA — same
         # override philosophy as Pitcher Engine's quality_mult fallback chain,
         # applied here as a team aggregate instead of per-starter.
-        siera_info = _aggregate_team_siera(roster, self._fg_pitchers) if roster else {"siera_ag": None, "total_ip": 0.0, "n_pitchers": 0}
+        siera_info = _aggregate_team_siera(roster, self._fg_pitchers, reliever_ids) if roster else {"siera_ag": None, "total_ip": 0.0, "n_pitchers": 0}
         used_siera = siera_info["siera_ag"] is not None
         if used_siera:
             primary_era, primary_n, primary_k, primary_lg = (
@@ -522,7 +622,7 @@ class BullpenEngine:
         n_pitchers = 0
 
         if roster:
-            sv = _aggregate_team_savant(roster, self._savant_exp, self._savant_ev)
+            sv = _aggregate_team_savant(roster, self._savant_exp, self._savant_ev, reliever_ids)
             xwoba_ag      = sv["xwoba_against"]
             barrel_ag     = sv["barrel_pa_against"]
             savant_pa     = sv["total_pa"]
