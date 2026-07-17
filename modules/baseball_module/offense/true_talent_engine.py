@@ -51,6 +51,7 @@ from typing import Dict, Optional, Tuple
 import requests
 
 from config import CACHE_DIR, LEAGUE_AVG_RUNS, LEAGUE_AVG_WOBA, LEAGUE_AVG_XWOBA
+from .tte_formula import regress as _regress, season_lambda, blend_current_prior, composite_score
 
 log = logging.getLogger(__name__)
 
@@ -122,18 +123,6 @@ def _cache_valid(path: Path, ttl_seconds: int = 86400) -> bool:
 
 
 # ── Bayesian regression to mean ───────────────────────────────────────────────
-
-
-def _regress(observed: float, mean: float, n: float, k: float) -> float:
-    """
-    Bayesian shrinkage toward the population mean.
-    At n=0  → returns mean (pure prior).
-    At n=k  → returns (observed + mean) / 2  (50% signal).
-    At n=∞  → returns observed (full trust).
-    """
-    if n <= 0:
-        return mean
-    return (observed * n + mean * k) / (n + k)
 
 
 # ── Baseball Savant data fetchers ─────────────────────────────────────────────
@@ -532,30 +521,13 @@ def _aggregate_plate_discipline_for_team(
 
 
 # ── Composite True Talent computation ────────────────────────────────────────
-
-
-def _composite_score(
-    xwoba_reg:  float,
-    barrel_reg: float,
-    plate_reg:  float,
-) -> float:
-    """
-    Weighted composite of three orthogonal, regressed, normalised factors.
-    Each factor is centred at 1.0 = league average.
-
-    f_xwoba  (0.50) — contact quality stripped of BABIP luck (Statcast)
-    f_barrel (0.30) — power/exit-velocity; predicts future HR; stabilises ~80 BIP
-    f_plate  (0.20) — BB%−K% discipline; most stable signal (k=60–120 PA)
-
-    wRC+ derived from raw wOBA was removed: it was collinear with xwOBA
-    (same contact-quality signal) but added BABIP noise xwOBA was designed
-    to remove. Its 0.30 weight redistributed to barrel (+0.15) and plate (+0.10).
-    """
-    return (
-        xwoba_reg  * 0.50 +
-        barrel_reg * 0.30 +
-        plate_reg  * 0.20
-    )
+#
+# 2026-07-12: the composite-score math (weights 0.50/0.30/0.20, plate-factor
+# clamp, current/prior blend) moved to the shared `tte_formula` module — see
+# its docstring for why (unifying it with the PIT-path adapter, which had
+# drifted into an independently-maintained copy). This file now only owns
+# WHERE its inputs come from (player-roster Statcast/FanGraphs aggregation),
+# not the formula itself.
 
 
 # ── Public interface ──────────────────────────────────────────────────────────
@@ -698,39 +670,35 @@ class TrueTalentOffenseEngine:
         bb_reg     = _regress(bb_cur,     LG_BB_PCT,    pa_cur, _K_BB)
         k_reg      = _regress(k_cur,      LG_K_PCT,     pa_cur, _K_K)
 
-        # Plate discipline: (BB% − K%) differential vs league baseline.
-        # Positive → more walks, fewer Ks; normalised so 1.0 = league average.
-        disc_cur      = (bb_reg - k_reg) - (LG_BB_PCT - LG_K_PCT)
-        plate_reg_val = max(0.85, min(1.15, 1.0 + disc_cur * 3.5))
-
-        # ── Normalise factors (1.0 = league average) ──────────────────────
-        f_xwoba  = xwoba_reg  / LG_XWOBA
-        f_barrel = barrel_reg / LG_BARREL_PA
-        f_plate  = plate_reg_val
-
-        # ── Composite score → current season λ ────────────────────────────
-        composite  = _composite_score(f_xwoba, f_barrel, f_plate)
-        lambda_cur = composite * LG_RPG
+        # ── Composite score → current season λ (shared tte_formula math) ──
+        # disc_cur kept for the log line below (BB%-K% differential, pre-clamp).
+        disc_cur = (bb_reg - k_reg) - (LG_BB_PCT - LG_K_PCT)
+        lambda_cur, cur_factors = season_lambda(
+            xwoba_reg=xwoba_reg, barrel_reg=barrel_reg, bb_reg=bb_reg, k_reg=k_reg,
+            lg_xwoba=LG_XWOBA, lg_barrel_rate=LG_BARREL_PA,
+            lg_bb_pct=LG_BB_PCT, lg_k_pct=LG_K_PCT, lg_rpg=LG_RPG,
+        )
+        f_xwoba, f_barrel, f_plate = cur_factors["f_xwoba"], cur_factors["f_barrel"], cur_factors["f_plate"]
+        # For metadata/log only — calls the shared formula instead of
+        # hardcoding weights a second time (2026-07-12 fix: this line had
+        # silently re-duplicated the 0.50/0.30/0.20 weights right after the
+        # unification refactor that was supposed to eliminate exactly that,
+        # caught before it could drift from a future weight change).
+        composite = composite_score(f_xwoba, f_barrel, f_plate)
 
         # ── Prior season λ (using same formula on prior-season metrics) ────
-        disc_pri  = (bb_pri - k_pri) - (LG_BB_PCT - LG_K_PCT)
-        plate_pri = max(0.85, min(1.15, 1.0 + disc_pri * 3.5))
-        composite_pri = _composite_score(
-            xwoba_pri / LG_XWOBA,
-            barrel_pri / LG_BARREL_PA,
-            plate_pri,
+        lambda_pri, _pri_factors = season_lambda(
+            xwoba_reg=xwoba_pri, barrel_reg=barrel_pri, bb_reg=bb_pri, k_reg=k_pri,
+            lg_xwoba=LG_XWOBA, lg_barrel_rate=LG_BARREL_PA,
+            lg_bb_pct=LG_BB_PCT, lg_k_pct=LG_K_PCT, lg_rpg=LG_RPG,
         )
-        lambda_pri = composite_pri * LG_RPG
 
         # ── Blend current + prior — Bayesian inverse-proportional update ────
         # prior_w = k / (k + PA): at PA=0 → 100% prior; at PA=k → 50/50; at PA=∞ → 0%
         # No arbitrary floor: the formula is naturally correct at all sample sizes.
-        prior_w   = _PRIOR_PA_EQUIVALENT / (_PRIOR_PA_EQUIVALENT + pa_cur)
-        current_w = pa_cur / (_PRIOR_PA_EQUIVALENT + pa_cur)
-        lambda_talent = round(current_w * lambda_cur + prior_w * lambda_pri, 4)
-
-        # Guard against extreme values
-        lambda_talent = max(3.0, min(7.0, lambda_talent))
+        lambda_talent, current_w, prior_w = blend_current_prior(
+            lambda_cur, lambda_pri, pa_cur, _PRIOR_PA_EQUIVALENT,
+        )
 
         metadata = {
             "team_id":      team_id,

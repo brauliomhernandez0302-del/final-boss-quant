@@ -1,0 +1,151 @@
+{
+  "run_at": "2026-06-28T22:36:15.836815+00:00",
+  "total_games": 5422,
+  "seasons": [
+    2024,
+    2025,
+    2026
+  ],
+  "overall": {
+    "accuracy_pct": 56.47,
+    "brier_model": 0.24267,
+    "brier_random": 0.25,
+    "brier_vs_random_pct": 2.93,
+    "logloss_model": 0.67818
+  },
+  "vs_pinnacle": {
+    "n_games_with_pin": 4654,
+    "brier_pinnacle": 0.24051,
+    "brier_model_vs_pin_pct": -0.9,
+    "logloss_pinnacle": 0.67362,
+    "model_pin_agreement_pct": 77.35,
+    "edge_vs_pin": {
+      "mean": -2.718,
+      "std": 5.902,
+      "p10": -9.9,
+      "p25": -6.4,
+      "p50": -2.72,
+      "p75": 1.13,
+      "p90": 4.47
+    }
+  },
+  "calibration": {
+    "<40%": {
+      "n": 535,
+      "predicted_win_pct": 36.1,
+      "actual_win_pct": 39.1
+    },
+    "40-45%": {
+      "n": 857,
+      "predicted_win_pct": 42.8,
+      "actual_win_pct": 48.1
+    },
+    "45-50%": {
+      "n": 1166,
+      "predicted_win_pct": 47.5,
+      "actual_win_pct": 48.9
+    },
+    "50-55%": {
+      "n": 1271,
+      "predicted_win_pct": 52.5,
+      "actual_win_pct": 53.9
+    },
+    "55-60%": {
+      "n": 900,
+      "predicted_win_pct": 57.4,
+      "actual_win_pct": 59.9
+    },
+    "60-70%": {
+      "n": 615,
+      "predicted_win_pct": 63.5,
+      "actual_win_pct": 66.3
+    },
+    ">70%": {
+      "n": 78,
+      "predicted_win_pct": 73.2,
+      "actual_win_pct": 80.8
+    }
+  },
+  "roi_simulation": {
+    "edge>=0%": {
+      "bets": 4631,
+      "staked": 4631.0,
+      "profit": 28.95,
+      "roi_pct": 0.63,
+      "n_extreme_filtered": 23,
+      "mean_clv_pct": 11.77,
+      "pos_clv_pct": 100.0
+    },
+    "edge>=2%": {
+      "bets": 3513,
+      "staked": 3513.0,
+      "profit": 83.45,
+      "roi_pct": 2.38,
+      "n_extreme_filtered": 23,
+      "mean_clv_pct": 14.858,
+      "pos_clv_pct": 100.0
+    },
+    "edge>=5%": {
+      "bets": 1984,
+      "staked": 1984.0,
+      "profit": 65.96,
+      "roi_pct": 3.32,
+      "n_extreme_filtered": 23,
+      "mean_clv_pct": 20.48,
+      "pos_clv_pct": 100.0
+    },
+    "edge>=8%": {
+      "bets": 906,
+      "staked": 906.0,
+      "profit": 41.95,
+      "roi_pct": 4.63,
+      "n_extreme_filtered": 23,
+      "mean_clv_pct": 27.464,
+      "pos_clv_pct": 100.0
+    },
+    "edge>=10%": {
+      "bets": 506,
+      "staked": 506.0,
+      "profit": 11.55,
+      "roi_pct": 2.28,
+      "n_extreme_filtered": 23,
+      "mean_clv_pct": 32.387,
+      "pos_clv_pct": 100.0
+    }
+  },
+  "by_season": {
+    "2024": {
+      "n": 2429,
+      "accuracy_pct": 57.43,
+      "brier": 0.24188
+    },
+    "2025": {
+      "n": 2430,
+      "accuracy_pct": 55.93,
+      "brier": 0.24278
+    },
+    "2026": {
+      "n": 563,
+      "accuracy_pct": 54.71,
+      "brier": 0.2456
+    }
+  },
+  "lambda_distribution": {
+    "lh": {
+      "p10": 3.711,
+      "p25": 3.994,
+      "median": 4.346,
+      "p75": 4.742,
+      "p90": 5.113,
+      "mean": 4.387
+    },
+    "la": {
+      "p10": 3.619,
+      "p25": 3.928,
+      "median": 4.284,
+      "p75": 4.68,
+      "p90": 5.08,
+      "mean": 4.336
+    }
+  }
+}

@@ -58,7 +58,7 @@ Each sport has a `run_module()` function that returns `Dict[str, Any]` with keys
 6. **`adjust_for_bullpen`** (`context_engine/bullpen_engine.py`, PASO 4) — bullpen quality (SIERA/ERA) and workload, tier-weighted by starter's expected innings
 7. **`get_adjusted_lambdas`** (`hfa/park_weather_engine.py`, PASO 5) — park run-environment factor, weather (temp/wind/rain), retractable-roof status
 8. **`adjust_for_defense`** (`context_engine/defensive_efficiency_engine.py`, PASO 6) — fielding-pure adjustment via DER (1 − BABIP) and OAA, independent of pitching
-9. **`get_adjusted_lambdas`** (`hfa/hfa_engine.py`, PASO 7) — away-team travel fatigue only (home crowd boost removed, confirmed noise)
+9. **`get_adjusted_lambdas`** (`hfa/hfa_engine.py`, PASO 7) — away-team travel fatigue, plus a small uniform (not per-park) home-win-probability correction (`_UNIFORM_HOME_MULT`, added 2026-07-11 from a calibration diagnostic; the old per-park crowd-boost lookup stays removed, confirmed noise)
 10. **`monte_carlo_advanced`** (`montecarlo/simulator.py`, PASO 8) — runs up to 5,000,000 Poisson/Negative-Binomial simulations with early stopping at `SE < 0.003`; outputs win/total/run-line probabilities
 11. **`evaluate_value_ultra`** (`core/value_detector.py`, repo root — shared across sports, not under `modules/baseball_module/`, PASO 9) — Platt-2D corrects the model probability against the market before comparing to odds; calculates EV, Kelly fraction, confidence (real epistemic data-quality score, not MC sampling precision), composite score and tiers (ULTRA/HIGH/MEDIUM/SLIGHT)
 
@@ -98,3 +98,21 @@ Nota adicional: la temporada 2024 de este backtest corre con calibración Platt 
 **Consecuencia real, no solo cosmética**: al remover el leak, accuracy cayó de 56.27% a 54.35% y el ROI se volvió negativo para edge<10% (antes positivo desde edge≥8%). La conclusión "el sistema es rentable" que sostenían los números anteriores ya no está validada — sigue siendo una pregunta abierta con el número honesto actual.
 
 Auditoría completa (solo lectura, componente por componente) realizada el 2026-07-06 — reporte completo en `docs/AUDITORIA_MLB_2026-07.md` (su baseline citado, 0.24242, está superseded por lo de arriba, ver nota al inicio del documento). Resumen aún válido: el pipeline de lambda (los 7 motores) está en su mejor estado histórico tras la revisión exhaustiva de esa sesión. `CONTRACTS.md` ya fue reescrito (2026-07-06, ya no es un riesgo pendiente). Ver `docs/FBQ_MASTER_BLUEPRINT.md` (v1.2) para la hoja de ruta completa.
+
+### Actualización 2026-07-11/12 — higiene de motores + descubrimiento de caché de TTE incompleta
+
+**Baseline vigente: Brier 0.24486 / accuracy 55.42%** (mismo comando, mismos 4,830 juegos, 453 tests) — supersede el 0.24525/55.30% de arriba. Nueve bugs reales encontrados y corregidos, cada uno validado con una corrida de backtest completa antes/después:
+
+1. Proxy de defensa PIT (`team_defense_pit_builder.py`): `force_out` mal clasificado como "batter safe" — la defensa sí convierte el out (sobre el corredor forzado). Explicaba casi todo un sesgo de -3pp a nivel liga.
+2. Tres constantes de bullpen PIT sin calibrar contra datos reales (`_PIT_LG_K_BB`, `_PIT_LG_BARREL_PC`, `_PIT_NORMAL_IP_3D`) + un bono de fatiga por días consecutivos que saturaba en 23% de los casos (casi constante, no señal real).
+3. Constante de barrel% en `tte_pit_adapter.py` (`LG_BARREL_PA`) — mismo bug ya arreglado en el motor en vivo, pero esta copia independiente del path PIT nunca recibió el fix.
+4. Sub-predicción sistemática de la probabilidad de victoria de local (~1.6-1.7pp en ambas temporadas) — nuevo `_UNIFORM_HOME_MULT=0.028` en `hfa_engine.py` (uniforme, no por parque — distinto del crowd-boost por parque que sigue eliminado).
+5. Sesgo de truncamiento en la capa de aprendizaje (`learning_engine.py`): el Monte Carlo no modela el walk-off del 9no inning, pero los box scores reales sí están truncados — los learners (Kalman/bias/gradient-descent) entrenaban contra la observación truncada y peleaban contra el fix #4.
+6. Histéresis de warm-start de Platt entre corridas de backtest — cada corrida calibraba con el ajuste de la corrida ANTERIOR en vez del propio.
+7. `ml_state` sin protección contra escritura concurrente — nuevo lockfile de archivo (mismo tipo de incidente que corrompió Platt en una sesión anterior).
+8. Caché de Platt-2D en producción (`ml_state.platt2d_params`, temporada 2026) estaba ajustada sobre datos contaminados por los bugs de esta sesión — refrescada.
+9. **La más grande**: `savant.team_offense.rolling` (caché PIT de ofensa por equipo) nunca terminó de construirse — se detuvo a mitad de temporada (2024-06-27, 2025-05-25) mientras defensa/bullpen sí tienen cobertura completa. Sin límite de antigüedad en la búsqueda de "última instantánea válida", el 59% de los juegos del backtest insignia usó silenciosamente datos de ofensa congelados a mitad de temporada, sin que ningún reporte de cobertura lo detectara. Arreglado con un nuevo builder incremental (`scripts/build_offense_savant_rolling_incremental.py`, O(días) en vez de O(días²)) y reconstruyendo ambas temporadas completas — también se pobló por primera vez `savant.batter.rolling` (0 filas antes), necesaria para cualquier trabajo futuro de lineup confirmado.
+
+**Un fix diagnosticado pero revertido dos veces**: la fórmula de "dampening exacto" de `compute_team_bias_kalman_adjusted` tiene una premisa documentada como falsa, pero dos intentos de arreglarla en línea con esa premisa causaron regresiones reales del backtest (0.24479→0.24550→0.24636). Revertida a la fórmula original, que funciona como un estimador de retroalimentación cerrada con shrinkage implícito — no reintentar sin nueva información (ver postmortem completo en el docstring de la función).
+
+Memoria de la sesión: `project_mlb_engine_hygiene_20260711.md`.

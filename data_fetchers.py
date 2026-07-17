@@ -1488,6 +1488,11 @@ class WeatherAPI:
         "Yankee Stadium": {"lat": 40.8296, "lon": -73.9262, "city": "New York"},
         "Fenway Park": {"lat": 42.3467, "lon": -71.0972, "city": "Boston"},
         "Dodger Stadium": {"lat": 34.0739, "lon": -118.2400, "city": "Los Angeles"},
+        # Renamed "UNIQLO Field at Dodger Stadium" for 2026 (sponsorship change)
+        # — live MLB API reports the new name (same drift class fixed in
+        # park_weather_engine.py's STADIUM_DATABASE; this key was missed there,
+        # silently dropping weather + travel-distance for every Dodgers home game).
+        "UNIQLO Field at Dodger Stadium": {"lat": 34.0739, "lon": -118.2400, "city": "Los Angeles"},
         "Wrigley Field": {"lat": 41.9484, "lon": -87.6553, "city": "Chicago"},
         "Oracle Park": {"lat": 37.7786, "lon": -122.3893, "city": "San Francisco"},
         "Coors Field": {"lat": 39.7559, "lon": -104.9942, "city": "Denver"},
@@ -1496,6 +1501,8 @@ class WeatherAPI:
         "Rogers Center": {"lat": 43.6414, "lon": -79.3894, "city": "Toronto"},
         "T-Mobile Park": {"lat": 47.5914, "lon": -122.3325, "city": "Seattle"},
         "Minute Maid Park": {"lat": 29.7573, "lon": -95.3555, "city": "Houston"},
+        # Renamed "Daikin Park" for 2026 (sponsorship change) — see note above.
+        "Daikin Park": {"lat": 29.7573, "lon": -95.3555, "city": "Houston"},
         "Busch Stadium": {"lat": 38.6226, "lon": -90.1928, "city": "St. Louis"},
         "Progressive Field": {"lat": 41.4962, "lon": -81.6852, "city": "Cleveland"},
         "Truist Park": {"lat": 33.8907, "lon": -84.4685, "city": "Atlanta"},
@@ -1508,7 +1515,11 @@ class WeatherAPI:
         "Target Field": {"lat": 44.9817, "lon": -93.2779, "city": "Minneapolis"},
         "Kauffman Stadium": {"lat": 39.0517, "lon": -94.4803, "city": "Kansas City"},
         "Camden Yards": {"lat": 39.2838, "lon": -76.6216, "city": "Baltimore"},
+        # Renamed "Oriole Park at Camden Yards" — see note above.
+        "Oriole Park at Camden Yards": {"lat": 39.2838, "lon": -76.6216, "city": "Baltimore"},
         "Guaranteed Rate Field": {"lat": 41.8300, "lon": -87.6338, "city": "Chicago"},
+        # Renamed "Rate Field" for 2026 (sponsorship change) — see note above.
+        "Rate Field": {"lat": 41.8300, "lon": -87.6338, "city": "Chicago"},
         "Comerica Park": {"lat": 42.3390, "lon": -83.0489, "city": "Detroit"},
         "PNC Park": {"lat": 40.4468, "lon": -80.0057, "city": "Pittsburgh"},
         "Angel Stadium": {"lat": 33.8003, "lon": -117.8827, "city": "Anaheim"},

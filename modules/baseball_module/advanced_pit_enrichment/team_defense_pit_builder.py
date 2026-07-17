@@ -40,10 +40,20 @@ from .pit_cache import PITCache, PITCacheRecord
 from .raw_savant_events_cache import RawSavantEventsCache, RawSavantTeamDefenseEvent
 
 
-METRIC_VERSION = "contact_adjusted_defense_proxy_v1"
+METRIC_VERSION = "contact_adjusted_defense_proxy_v2"
 NON_MLB_TEAM_IDS = frozenset({"AL", "NL"})
 
-# Batter is recorded out on the contacted ball.
+# An out was recorded on the contacted ball — for this metric, "out" means
+# "the defense converted this BIP into an out," not "the batter personally
+# was retired." force_out moved here 2026-07-11: on a force play the
+# defense DID convert the ball into an out (on the forced runner); the
+# batter reaching 1B safely is irrelevant to whether the defense did its
+# job. Classifying it as batter-safe made the proxy compare an ~0.80
+# xBA-implied expected-out rate against an actual-out rate of 0 for every
+# force_out — empirically this single miscount explained nearly the entire
+# league-wide -3 to -4pp proxy bias (verified via decomposition by event
+# type against raw Savant events: reclassifying force_out alone moved the
+# league mean from -0.0315/-0.0281 to -0.0019/+0.0005 for 2024/2025).
 BATTER_OUT_EVENTS = frozenset(
     {
         "field_out",
@@ -54,10 +64,12 @@ BATTER_OUT_EVENTS = frozenset(
         "sac_fly",
         "sac_bunt",
         "sac_fly_double_play",
+        "force_out",
     }
 )
 
-# Batter reaches safely or is not retired, despite a fieldable contacted ball.
+# Batter reaches safely, or the defense failed to convert an out despite a
+# fieldable contacted ball (error / fielder's choice where no one is retired).
 BATTER_SAFE_EVENTS = frozenset(
     {
         "single",
@@ -65,7 +77,6 @@ BATTER_SAFE_EVENTS = frozenset(
         "triple",
         "field_error",
         "fielders_choice",
-        "force_out",
     }
 )
 BIP_EVENTS = BATTER_OUT_EVENTS | BATTER_SAFE_EVENTS

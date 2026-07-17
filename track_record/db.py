@@ -111,6 +111,27 @@ class TrackRecordDB:
                 conn.execute("ALTER TABLE picks ADD COLUMN total_line REAL")
             except Exception:
                 pass  # column already exists
+            # 2026-07-12: real closing-line value (CLV) capture. Added because
+            # the only prior "CLV" anywhere in this codebase (backtest_and_
+            # retrain.py's clv_home/clv_away) is edge-as-ratio, not a real
+            # bet-time-vs-closing-time price pair — see feedback_clv_misnomer
+            # memory. This is the actual thing: closing_pin_home/away are the
+            # Pinnacle price for each side captured shortly before first
+            # pitch; clv_pct compares the price this pick was published at to
+            # the closing price on the SAME side. CLV converges to a
+            # skill/no-skill answer in ~100 picks, an order of magnitude
+            # faster than live ROI (see project memory for the reasoning).
+            for ddl in (
+                "ALTER TABLE picks ADD COLUMN closing_odds_decimal REAL",
+                "ALTER TABLE picks ADD COLUMN closing_pin_home REAL",
+                "ALTER TABLE picks ADD COLUMN closing_pin_away REAL",
+                "ALTER TABLE picks ADD COLUMN closing_captured_at TEXT",
+                "ALTER TABLE picks ADD COLUMN clv_pct REAL",
+            ):
+                try:
+                    conn.execute(ddl)
+                except Exception:
+                    pass  # column already exists
 
     # ------------------------------------------------------------------ writes
 
@@ -215,6 +236,105 @@ class TrackRecordDB:
                     ),
                 )
             return True
+
+    # ------------------------------------------------------------------ CLV
+
+    def get_picks_needing_closing_capture(
+        self, sport: Optional[str] = None, game_date: Optional[str] = None,
+    ) -> List[sqlite3.Row]:
+        """Picks with no closing-line snapshot yet. Independent of `result` —
+        capture the close as soon as it's available (near first pitch), don't
+        wait for the game to resolve; CLV is meant to be known before the
+        outcome, that's the whole point of it as a faster skill signal."""
+        clauses = ["closing_captured_at IS NULL"]
+        params: list = []
+        if sport:
+            clauses.append("sport = ?"); params.append(sport)
+        if game_date:
+            clauses.append("game_date = ?"); params.append(game_date)
+        where = "WHERE " + " AND ".join(clauses)
+        with self._conn() as conn:
+            return conn.execute(
+                f"SELECT * FROM picks {where} ORDER BY game_date", params,
+            ).fetchall()
+
+    def capture_closing_line(
+        self,
+        pick_uid: str,
+        *,
+        closing_odds_decimal: Optional[float] = None,
+        closing_pin_home: Optional[float] = None,
+        closing_pin_away: Optional[float] = None,
+        captured_at: Optional[str] = None,
+    ) -> bool:
+        """Record the closing line for a pick and compute clv_pct.
+
+        clv_pct = (odds_decimal_at_publish / closing_price_same_side - 1) * 100
+        — positive means the pick was published at a better (higher decimal)
+        price than the market closed at, i.e. beat the close. Only computed
+        for ML_HOME/ML_AWAY, where the Pinnacle closing price on the matching
+        side is unambiguous; other markets store the closing snapshot for
+        future use but leave clv_pct NULL (v1 scope — see track_record
+        project memory).
+        """
+        ts = captured_at or datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT market, odds_decimal FROM picks WHERE pick_uid = ?",
+                (pick_uid,),
+            ).fetchone()
+            if row is None:
+                return False
+
+            clv_pct = None
+            odds_decimal = row["odds_decimal"]
+            market = row["market"]
+            closing_ref = None
+            if market == "ML_HOME":
+                closing_ref = closing_pin_home
+            elif market == "ML_AWAY":
+                closing_ref = closing_pin_away
+            if odds_decimal and closing_ref and closing_ref > 1.0:
+                clv_pct = round((odds_decimal / closing_ref - 1.0) * 100.0, 4)
+
+            cur = conn.execute(
+                """
+                UPDATE picks
+                SET closing_odds_decimal = ?,
+                    closing_pin_home     = ?,
+                    closing_pin_away     = ?,
+                    closing_captured_at  = ?,
+                    clv_pct              = ?
+                WHERE pick_uid = ? AND closing_captured_at IS NULL
+                """,
+                (closing_odds_decimal, closing_pin_home, closing_pin_away,
+                 ts, clv_pct, pick_uid),
+            )
+            return cur.rowcount > 0
+
+    def get_clv_stats(self, sport: Optional[str] = None) -> Dict[str, Any]:
+        """Aggregate CLV across all picks with a computed clv_pct (ML markets
+        only, v1). This is the fast skill signal — see capture_closing_line's
+        docstring; meaningful well before enough picks exist for an honest
+        ROI read."""
+        clauses = ["clv_pct IS NOT NULL"]
+        params: list = []
+        if sport:
+            clauses.append("sport = ?"); params.append(sport)
+        where = "WHERE " + " AND ".join(clauses)
+        with self._conn() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS n,
+                       AVG(clv_pct) AS mean_clv_pct,
+                       SUM(CASE WHEN clv_pct > 0 THEN 1 ELSE 0 END) AS n_positive
+                FROM picks {where}
+                """,
+                params,
+            ).fetchone()
+            d = dict(row)
+            d["pct_positive"] = round(100.0 * d["n_positive"] / d["n"], 2) if d["n"] else 0.0
+            return d
 
     # ------------------------------------------------------------------ reads
 

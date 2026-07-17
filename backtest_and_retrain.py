@@ -34,9 +34,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import logging
 import math
+import os
 import sqlite3
 import sys
 import time
@@ -55,7 +57,7 @@ from math import log as _log, exp as _exp
 from config import DATA_DIR, LEAGUE_AVG_ERA, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP
 from data_fetchers import MLBDataIntegrator, MLBStatsAPI
 from modules.baseball_module.hfa.park_weather_engine import STADIUM_DATABASE as _STADIUM_DB
-from modules.baseball_module.calibration.learning_engine import LearningEngine
+from modules.baseball_module.calibration.learning_engine import LearningEngine, untruncate_home_runs
 from modules.baseball_module.hfa.park_weather_engine import adjust_for_park_and_weather
 # DEFERRED F7: import kept for reactivation post-Sprint 3
 # from modules.baseball_module.hfa.historical_weather import HistoricalWeatherFetcher
@@ -213,7 +215,7 @@ TEAM_CITY_COORDS: Dict[str, Tuple[float, float]] = {
     "Minnesota Twins":        (44.982, -93.278),    # Minneapolis — CST
     "New York Mets":          (40.757, -73.846),    # New York — EST
     "New York Yankees":       (40.829, -73.926),    # New York — EST
-    "Athletics":              (37.752, -122.201),   # Oakland — PST
+    "Athletics":              (38.572, -121.467),   # Sacramento — PST
     "Oakland Athletics":      (37.752, -122.201),   # Oakland — PST
     "Sacramento Athletics":   (38.572, -121.467),   # Sacramento — PST
     "Philadelphia Phillies":  (39.906, -75.167),    # Philadelphia — EST
@@ -296,7 +298,7 @@ TEAM_VENUES: Dict[str, str] = {
     "Minnesota Twins": "Target Field",
     "New York Mets": "Citi Field",
     "New York Yankees": "Yankee Stadium",
-    "Athletics": "RingCentral Coliseum",
+    "Athletics": "Sutter Health Park",
     "Oakland Athletics": "RingCentral Coliseum",
     "Sacramento Athletics": "Sutter Health Park",
     "Philadelphia Phillies": "Citizens Bank Park",
@@ -1015,14 +1017,23 @@ def apply_experimental_defense_pit_mode(
 
 
 # ── Bullpen PIT: PIT-native league averages (Savant, reliever-only) ──────────
+# _PIT_LG_K_BB and _PIT_LG_BARREL_PC re-centered 2026-07-11 against real
+# tbf-weighted league means from savant.team_bullpen.rolling (2024-2025):
+# K%-BB% empirical ~0.135-0.145 (was hardcoded 0.162, an uncited guess never
+# validated against real PIT data); barrel/contact empirical ~0.074-0.081
+# (was hardcoded 0.085). _PIT_LG_XWOBA_AG=0.312 verified still correct for
+# relievers specifically (empirical 0.310-0.311) — left unchanged.
 _PIT_LG_XWOBA_AG    = 0.312   # xwOBA against, pitcher side
-_PIT_LG_K_BB        = 0.162   # K% − BB% for team relievers
-_PIT_LG_BARREL_PC   = 0.085   # barrel per contact for relievers
+_PIT_LG_K_BB        = 0.140   # K% − BB% for team relievers
+_PIT_LG_BARREL_PC   = 0.074   # barrel per contact for relievers
 _K_PIT_XWOBA        = 200     # Bayesian stabilisation constant (BF)
 _K_PIT_K_BB         = 180
 _PIT_INNINGS_WEIGHT = 0.40    # fixed (no starter avg_ips; ≈ 5.4 avg IPS)
 _PIT_PITCHES_PER_IN = 15.0    # pitch-to-inning conversion for workload
-_PIT_NORMAL_IP_3D   = 9.0     # expected bullpen load over 3 days (same as legacy)
+# Re-centered 2026-07-11: real tbf-weighted mean pitches_last_3_days implies
+# ~10.6 IP-equivalent bullpen usage, not 9.0 — the old value made every
+# bullpen look chronically overworked (+2.4% mean workload_mult for no reason).
+_PIT_NORMAL_IP_3D   = 10.6    # expected bullpen load over 3 days
 
 
 def _regress_bp(observed: float, mean: float, n: float, k: float) -> float:
@@ -1115,10 +1126,12 @@ def calculate_pit_bullpen_adjustment(
     else:
         workload_mult = max(1.0 + delta_ip * 0.005, 0.97)
 
-    # Extra fatigue for bullpens used on 3+ consecutive days
+    # Consecutive-days fatigue bump removed 2026-07-11: mean consecutive_days
+    # for a TEAM bullpen (not one reliever) was ~5.2, so the >2 trigger fired
+    # on 73% of snapshots and saturated the 1.10 cap on 23% of them — a
+    # near-constant +2.7% inflation, not a differentiating signal. No
+    # equivalent term exists in the legacy (non-PIT) bullpen_engine.py.
     consecutive = float(workload.get("consecutive_days") or 0.0)
-    if consecutive > 2:
-        workload_mult = min(workload_mult * (1.0 + (consecutive - 2) * 0.01), 1.10)
 
     raw_mult   = quality_mult * workload_mult
 
@@ -1765,14 +1778,25 @@ def run_pipeline(
     except (ValueError, TypeError):
         _game_month = None
     _bias_before_date = str(game_data.get("game_date", "")) or None
-    lh *= learning.compute_team_bias_kalman_adjusted(
+    # Diagnostic only (2026-07-11, revised 2026-07-12) — see run_module.py's
+    # matching comment: this is NOT the bias-learning denominator (an
+    # earlier version of this fix used it as one and caused a measured
+    # double-count with the downstream engines; see learning_engine.py's
+    # compute_team_bias_kalman_adjusted docstring for the postmortem).
+    _sf["l0_home_lambda"] = lh
+    _sf["l0_away_lambda"] = la
+    _home_bias = learning.compute_team_bias_kalman_adjusted(
         game_data.get("home_team", {}).get("name", ""), season, "offense_home",
         month=_game_month, before_date=_bias_before_date,
     )
-    la *= learning.compute_team_bias_kalman_adjusted(
+    _away_bias = learning.compute_team_bias_kalman_adjusted(
         game_data.get("away_team", {}).get("name", ""), season, "offense_away",
         month=_game_month, before_date=_bias_before_date,
     )
+    lh *= _home_bias
+    la *= _away_bias
+    _sf["bias_on_home_lambda"] = _home_bias
+    _sf["bias_on_away_lambda"] = _away_bias
 
     # ── PASO 2: Park + Weather ────────────────────────────────────────────────
     _lh_pre, _la_pre = lh, la
@@ -2322,6 +2346,92 @@ def generate_report(
     print(sep)
 
 
+# ── ml_state advisory lock (2026-07-11, audit finding) ──────────────────────
+# A duplicate backtest process launched this session was killed within
+# seconds but still executed the reset-Platt-to-identity block against the
+# live predictions_history.db before dying — the real run that started
+# moments later silently warm-started from the corrupted (identity) state,
+# running an entire multi-thousand-game backtest with Platt calibration
+# disabled and no error or warning anywhere. Nothing previously stopped a
+# second process from doing the same thing at any time. This is a plain
+# file-based advisory lock (not OS-level flock — good enough for "don't
+# launch two of these by mistake", not meant to survive adversarial use).
+_ML_STATE_LOCK_PATH = DATA_DIR / "backtest_ml_state.lock"
+_ML_STATE_LOCK_STALE_HOURS = 4.0   # longest real run this session was ~15 min
+
+
+def _acquire_ml_state_lock(lock_path: Path = _ML_STATE_LOCK_PATH) -> None:
+    if lock_path.exists():
+        try:
+            info = json.loads(lock_path.read_text())
+            age_hours = (time.time() - float(info.get("started_at_epoch", 0))) / 3600.0
+            holder_pid = info.get("pid", "?")
+        except (json.JSONDecodeError, OSError, ValueError):
+            age_hours = 0.0
+            holder_pid = "?"
+        if age_hours < _ML_STATE_LOCK_STALE_HOURS:
+            raise RuntimeError(
+                f"Another backtest process appears to hold the ml_state lock "
+                f"({lock_path}, PID {holder_pid}, started {age_hours:.2f}h ago). "
+                f"Two processes resetting/writing shared Kalman/Platt/pipeline-"
+                f"weight state at once is exactly how a prior session silently "
+                f"corrupted a full backtest run's calibration. If that process "
+                f"is confirmed dead (not just slow), delete the lock file "
+                f"manually and re-run — do not just retry, which would launch "
+                f"a second concurrent writer."
+            )
+        logging.getLogger(__name__).warning(
+            "Stale ml_state lock at %s (%.2fh old, PID %s) — assuming that "
+            "process died and proceeding. If it's actually still running, "
+            "this run's results may be corrupted.",
+            lock_path, age_hours, holder_pid,
+        )
+    lock_path.write_text(json.dumps({
+        "pid": os.getpid(),
+        "started_at_epoch": time.time(),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }))
+    atexit.register(_release_ml_state_lock, lock_path)
+
+
+def _release_ml_state_lock(lock_path: Path = _ML_STATE_LOCK_PATH) -> None:
+    try:
+        lock_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _assert_platt_not_silently_identity(
+    learning: "LearningEngine", seasons: List[int], min_games: int = 200,
+) -> None:
+    """End-of-run sanity check: a season with enough graded games should not
+    have ended up at identity Platt (a=1.0, b=0.0) unless it genuinely has
+    no usable prior-season warm-start (only expected for the *first* season
+    of a run with no season-1 data in the DB, e.g. season 2024 today). Loudly
+    warns rather than silently reporting a contaminated-calibration Brier as
+    if it were a real number — this is the exact failure mode this session's
+    Platt-corruption incident produced with zero errors or warnings."""
+    log_ = logging.getLogger(__name__)
+    for season in sorted(seasons):
+        params = learning.load_state("platt_params", "calibration", season)
+        if not params:
+            continue
+        is_identity = (
+            abs(float(params.get("a", 1.0)) - 1.0) < 1e-6
+            and abs(float(params.get("b", 0.0))) < 1e-6
+        )
+        if is_identity:
+            log_.warning(
+                "  ⚠️  Season %d ended this run at IDENTITY Platt (a=1.0, b=0.0). "
+                "Expected only if this is genuinely the first season in the DB "
+                "with no prior-season data to warm-start from. If a prior "
+                "season's data exists, this likely means ml_state was reset "
+                "by a concurrent process during this run — do not trust this "
+                "run's Brier/accuracy for season %d without investigating.",
+                season, season,
+            )
+
+
 # ── main ───────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -2599,6 +2709,7 @@ def main() -> None:
     #      measures raw MC performance (no Platt applied), which under-reports
     #      the model's true production accuracy by ~1.4%.
     #
+    _acquire_ml_state_lock()
     log.info("Resetting walk-forward learning state for seasons %s …", list(seasons))
 
     # Capture prior-season Platt params BEFORE reset so warm-start can use them.
@@ -2617,8 +2728,31 @@ def main() -> None:
 
     # Warm-start each season's Platt with the prior season's fitted params.
     # Minimum 50 samples required (same threshold as recalibrate_platt).
+    #
+    # 2026-07-11 fix (audit finding: Platt warm-start hysteresis): when the
+    # prior season is ALSO part of this same multi-season run, do NOT seed
+    # it here from `_prior_platt` — that value is whatever a *previous,
+    # separate* process run last wrote (identity if never run, or a
+    # different pipeline/code version's fit otherwise), not this run's own
+    # walk-forward result for that season. Seeding from it meant every
+    # multi-season run's later seasons were calibrated against a
+    # one-run-stale fit, so identical code run twice in a row didn't
+    # reproduce the same numbers until the params reached a fixed point,
+    # and a code change to season N's pipeline wasn't reflected in season
+    # N+1's warm-start until the NEXT run. Such seasons are instead
+    # warm-started mid-loop (see the main loop below), from a fresh
+    # `recalibrate_platt()` call on THIS run's own just-completed season —
+    # chronologically correct and self-consistent within one run.
     _PLATT_MIN_SAMPLES = 50
+    _seasons_set = set(seasons)
     for season in sorted(seasons):
+        if (season - 1) in _seasons_set:
+            log.info(
+                "  Platt season %d: prior season %d is in this same run — "
+                "will warm-start mid-loop from its own fresh fit, not a stale prior run",
+                season, season - 1,
+            )
+            continue
         prior = _prior_platt.get(season)
         if prior and prior.get("n", 0) >= _PLATT_MIN_SAMPLES:
             learning.save_state(
@@ -2710,6 +2844,12 @@ def main() -> None:
     # Key: team name → (last_date "YYYY-MM-DD", last_venue str)
     _team_last_game: Dict[str, Tuple[str, str]] = {}
 
+    # 2026-07-11 fix (Platt warm-start hysteresis, see the warm-start block
+    # above): track season transitions so the season that just finished gets
+    # refit from THIS run's own data before the next season's first game
+    # reads its warm-start.
+    _loop_season: Optional[int] = None
+
     for idx, row in enumerate(rows, 1):
         game_pk   = row["game_pk"]
         game_date = row["game_date"]
@@ -2717,6 +2857,25 @@ def main() -> None:
         home_name = row["home_team"]
         away_name = row["away_team"]
         home_won  = row["home_won"]
+
+        if _loop_season is not None and season != _loop_season and _loop_season in _seasons_set:
+            a_fit, b_fit = learning.recalibrate_platt(_loop_season)
+            log.info(
+                "  Mid-run Platt refit (season boundary %d → %d): season %d a=%.4f b=%.4f",
+                _loop_season, season, _loop_season, a_fit, b_fit,
+            )
+            if season in _seasons_set and season - 1 == _loop_season:
+                learning.save_state(
+                    "platt_params", "calibration",
+                    {"a": a_fit, "b": b_fit, "n": 0},
+                    sample_count=0,
+                    season=season,
+                )
+                log.info(
+                    "  Platt warm-start season %d ← season %d (in-run, fresh): a=%.4f b=%.4f",
+                    season, _loop_season, a_fit, b_fit,
+                )
+        _loop_season = season
 
         # F3: detect meaningful B2B — played yesterday AND changed cities.
         # Within-series games (same venue, consecutive days) are normal MLB
@@ -2951,10 +3110,13 @@ def main() -> None:
 
             # Walk-forward Kalman: update *after* writing results so subsequent
             # games in this loop see the current observation — zero look-ahead.
-            learning.update_kalman(home_name, "offense_home", season, float(row["actual_home_runs"]))
+            # untruncate_home_runs() corrects for the 2026-07-11 audit finding
+            # (walk-off-truncated home runs biasing the "offense_home"/
+            # "defense_away" learning targets — see learning_engine.py).
+            learning.update_kalman(home_name, "offense_home", season, untruncate_home_runs(float(row["actual_home_runs"])))
             learning.update_kalman(away_name, "offense_away", season, float(row["actual_away_runs"]))
             learning.update_kalman(home_name, "defense_home", season, float(row["actual_away_runs"]))
-            learning.update_kalman(away_name, "defense_away", season, float(row["actual_home_runs"]))
+            learning.update_kalman(away_name, "defense_away", season, untruncate_home_runs(float(row["actual_home_runs"])))
 
             # Sprint 3 fix: invoke gradient descent that was structurally disconnected
             # from the backtest loop. Without this call, pipeline weights never update
@@ -3180,6 +3342,8 @@ def main() -> None:
             log.info("  Season %d: Platt a=%.4f b=%.4f", season, a, b)
         except Exception as exc:
             log.warning("  Platt failed for season %d: %s", season, exc)
+
+    _assert_platt_not_silently_identity(learning, list(seasons))
 
     # ── step 5: report ─────────────────────────────────────────────────────
     generate_report(

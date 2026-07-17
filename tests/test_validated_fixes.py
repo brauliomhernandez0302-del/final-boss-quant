@@ -19,7 +19,7 @@ import pytest
 import numpy as np
 
 from core.value_detector import kelly_criterion
-from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas
+from modules.baseball_module.hfa.hfa_engine import get_adjusted_lambdas, _UNIFORM_HOME_MULT
 from modules.baseball_module.montecarlo.simulator import monte_carlo_advanced, NB_DISPERSION
 from modules.baseball_module.context_engine.contextual_engine import (
     _B2B_MULT_HOME,
@@ -68,7 +68,11 @@ class TestKellyFix:
 # FIX C2 — HFA crowd boost eliminated
 # ═══════════════════════════════════════════════════════════════════
 class TestHFACrowdBoostEliminated:
-    """C2: crowd boost is pure noise (Pearson=-0.015); hfa_boost hard-coded to 0."""
+    """C2: PER-PARK crowd boost is pure noise (Pearson=-0.015); per-park
+    hfa_boost_runs hard-coded to 0. A separate, uniform (not per-park) home
+    multiplier was added 2026-07-11 from a later calibration diagnostic —
+    these tests confirm the per-park lookup stays gone (all parks still
+    equal each other), not that λ_home is literally unchanged."""
 
     def _game(self, park="Yankee Stadium", miles=0, tz=0):
         return {
@@ -81,19 +85,22 @@ class TestHFACrowdBoostEliminated:
         _, _, meta = get_adjusted_lambdas(4.5, 4.5, self._game())
         assert meta["hfa_boost_runs"] == 0.0
 
-    def test_hfa_mult_is_one(self):
+    def test_hfa_mult_is_uniform_constant(self):
         _, _, meta = get_adjusted_lambdas(4.5, 4.5, self._game("Fenway Park"))
-        assert meta["hfa_mult"] == 1.0
+        assert meta["hfa_mult"] == pytest.approx(1.0 + _UNIFORM_HOME_MULT)
 
-    def test_lambda_home_unchanged_without_travel(self):
+    def test_lambda_home_scaled_by_uniform_mult_without_travel(self):
         lh_out, _, _ = get_adjusted_lambdas(4.5, 4.5, self._game())
-        assert lh_out == pytest.approx(4.5)
+        assert lh_out == pytest.approx(4.5 * (1.0 + _UNIFORM_HOME_MULT))
 
     def test_all_parks_produce_same_lambda_home(self):
+        # FIX C2 still holds: the PER-PARK lookup stays removed, so every
+        # park produces the same λ_home (now scaled by the uniform mult).
         parks = ["Yankee Stadium", "Fenway Park", "Tropicana Field", "Coors Field", "Unknown"]
         results = [get_adjusted_lambdas(4.5, 4.5, self._game(p))[0] for p in parks]
-        assert all(r == pytest.approx(4.5) for r in results), \
-            "FIX C2: no park should boost λ_home"
+        expected = 4.5 * (1.0 + _UNIFORM_HOME_MULT)
+        assert all(r == pytest.approx(expected) for r in results), \
+            "FIX C2: no park should individually boost λ_home beyond the uniform mult"
 
 
 # ═══════════════════════════════════════════════════════════════════

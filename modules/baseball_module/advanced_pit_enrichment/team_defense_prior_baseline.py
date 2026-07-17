@@ -20,7 +20,7 @@ from .team_defense_pit_builder import (
 )
 
 
-BASELINE_VERSION = "contact_adjusted_defense_prior_baseline_v1"
+BASELINE_VERSION = "contact_adjusted_defense_prior_baseline_v2"
 
 
 @dataclass(frozen=True)

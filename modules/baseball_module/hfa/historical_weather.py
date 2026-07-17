@@ -32,14 +32,20 @@ _STADIUM_COORDS: Dict[str, Tuple[float, float]] = {
     "Fenway Park":                (42.3467, -71.0972),
     "Yankee Stadium":             (40.8296, -73.9262),
     "Camden Yards":               (39.2838, -76.6216),
+    # Renamed "Oriole Park at Camden Yards" for 2026 (sponsorship change) —
+    # same drift class as the other three below; live MLB API reports the
+    # new name while historical (2024/2025) game_data uses the old one.
+    "Oriole Park at Camden Yards": (39.2838, -76.6216),
     "Tropicana Field":            (27.7682, -82.6534),
     "Rogers Centre":              (43.6414, -79.3894),
     "Guaranteed Rate Field":      (41.8300, -87.6338),
+    "Rate Field":                 (41.8300, -87.6338),
     "Progressive Field":          (41.4962, -81.6852),
     "Comerica Park":              (42.3390, -83.0489),
     "Kauffman Stadium":           (39.0517, -94.4803),
     "Target Field":               (44.9817, -93.2779),
     "Minute Maid Park":           (29.7573, -95.3555),
+    "Daikin Park":                (29.7573, -95.3555),
     "Globe Life Field":           (32.7512, -97.0837),
     "Angel Stadium":              (33.8003, -117.8827),
     "T-Mobile Park":              (47.5914, -122.3325),
@@ -56,6 +62,7 @@ _STADIUM_COORDS: Dict[str, Tuple[float, float]] = {
     "PNC Park":                   (40.4468, -80.0057),
     "Busch Stadium":              (38.6226, -90.1928),
     "Dodger Stadium":             (34.0739, -118.2400),
+    "UNIQLO Field at Dodger Stadium": (34.0739, -118.2400),
     "Chase Field":                (33.4453, -112.0667),
     "Oracle Park":                (37.7786, -122.3893),
     "Petco Park":                 (32.7073, -117.1566),

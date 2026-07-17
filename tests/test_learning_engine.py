@@ -64,8 +64,21 @@ class TestBiasNeutral:
         assert bias != 1.0  # should now compute a real bias
 
     def test_perfect_calibration_is_one(self, engine):
-        # Use lambda=5.0 so round(1.0 * 5.0) = 5 → ratio = 5/5 = 1.0 exactly.
-        _insert_games(engine, "Dodgers", 2026, [1.0] * _MIN_SAMPLES, lambda_val=5.0)
+        # 2026-07-11: compute_team_bias now applies untruncate_home_runs()
+        # to actual_home_runs before dividing by lambda_home (walk-off
+        # truncation correction — see learning_engine.py's constant
+        # docstring). A raw box-score ratio of exactly 1.0 (actual==lambda)
+        # is no longer "neutral" — it now means the team scored MORE than
+        # the latent rate would predict once truncation is undone. True
+        # neutral input for this test is a raw ratio equal to the
+        # truncation factor itself, which untruncate_home_runs() maps back
+        # to exactly 1.0. actual_home_runs must be an integer (box scores
+        # are), so pick lambda=30.0 and ratio=29/30 — round(29/30 * 30.0)
+        # == 29 exactly, no rounding slop, and 29 ≈ 0.967 × 30.
+        _insert_games(
+            engine, "Dodgers", 2026,
+            [29.0 / 30.0] * _MIN_SAMPLES, lambda_val=30.0,
+        )
         bias = engine.compute_team_bias("Dodgers", 2026)
         assert bias == pytest.approx(1.0, abs=0.01)
 

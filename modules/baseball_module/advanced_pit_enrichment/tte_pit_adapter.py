@@ -1,8 +1,13 @@
 """Adapter from experimental TTE PIT snapshots to offensive lambda.
 
-This module is intentionally isolated from live and backtest paths. It mirrors
-the current True Talent offense formula only when all required PIT-safe inputs
-are explicitly present.
+This module is intentionally isolated from live/backtest ORCHESTRATION (no
+import of the live pipeline entrypoint or the backtest driver script). It
+DOES share the core
+composite-score/regression/blend MATH with the live engine, via
+`offense/tte_formula.py` (unified 2026-07-12 — the two paths had drifted
+into independently-duplicated copies of the same formula; see that module's
+docstring for the postmortem). It mirrors the current True Talent offense
+formula only when all required PIT-safe inputs are explicitly present.
 """
 
 from __future__ import annotations
@@ -10,6 +15,16 @@ from __future__ import annotations
 from typing import Any
 
 from config import LEAGUE_AVG_RUNS, LEAGUE_AVG_WOBA, LEAGUE_AVG_XWOBA
+from ..offense.tte_formula import (
+    regress as _shared_regress,
+    season_lambda,
+    blend_current_prior,
+    PRIOR_PA_EQUIVALENT as _SHARED_PRIOR_PA_EQUIVALENT,
+    LAMBDA_MIN as _SHARED_LAMBDA_MIN,
+    LAMBDA_MAX as _SHARED_LAMBDA_MAX,
+    PLATE_FACTOR_MIN,
+    PLATE_FACTOR_MAX,
+)
 
 
 FORMULA_VERSION = "tte_pit_adapter_v1"
@@ -17,7 +32,17 @@ FORMULA_VERSION = "tte_pit_adapter_v1"
 LG_RPG = LEAGUE_AVG_RUNS
 LG_XWOBA = LEAGUE_AVG_XWOBA  # single source of truth: config.py
 LG_WOBA = LEAGUE_AVG_WOBA
-LG_BARREL_PA = 0.088
+# Re-centered 2026-07-11: this adapter reads the per-PA `barrel_pa` field
+# (barrel_count / plate_appearances), but the constant was 0.088 — the
+# well-known public per-batted-ball-event (attempts) league average, not the
+# per-PA one. Same bug class already fixed in the live (non-PIT) offense
+# engine's own LG_BARREL_PA constant, but this PIT adapter has its own
+# independent copy that fix never touched. Real per-PA
+# league mean from savant.team_offense.prior_baseline (walk-forward,
+# 2024: 0.0544, 2025: 0.0532). Net effect of the old 0.088 constant: every
+# team's f_barrel was compressed toward ~0.60-0.67 regardless of real talent,
+# cutting barrel's effective composite weight from 0.30 to roughly 0.19.
+LG_BARREL_PA = 0.054
 LG_BB_PCT = 0.086
 LG_K_PCT = 0.224
 
@@ -25,13 +50,15 @@ K_XWOBA = 150
 K_BARREL = 120
 K_BB = 120
 K_K = 60
-PRIOR_PA_EQUIVALENT = 1000
 MIN_OK_PA = K_XWOBA
 
-LAMBDA_MIN = 3.0
-LAMBDA_MAX = 7.0
-PLATE_FACTOR_MIN = 0.85
-PLATE_FACTOR_MAX = 1.15
+# 2026-07-12: PRIOR_PA_EQUIVALENT/LAMBDA_MIN/LAMBDA_MAX moved to the shared
+# tte_formula module (single source of truth vs. the live engine) — kept as
+# local aliases so this file's other references and its provenance dict
+# don't need to change.
+PRIOR_PA_EQUIVALENT = _SHARED_PRIOR_PA_EQUIVALENT
+LAMBDA_MIN = _SHARED_LAMBDA_MIN
+LAMBDA_MAX = _SHARED_LAMBDA_MAX
 
 
 def adapt_tte_pit_snapshot_to_lambda(
@@ -141,33 +168,37 @@ def _compute_lambda(snapshot: dict[str, Any], baseline: dict[str, Any]) -> tuple
     bb_prior = float(snapshot["bb_pct_prior"])
     k_prior = float(snapshot["k_pct_prior"])
 
-    xwoba_reg = _regress(xwoba_cur, lg_xwoba, pa, K_XWOBA)
-    barrel_reg = _regress(barrel_cur, lg_barrel_pa, pa, K_BARREL)
-    bb_reg = _regress(bb_cur, lg_bb_pct, pa, K_BB)
-    k_reg = _regress(k_cur, lg_k_pct, pa, K_K)
+    # NOTE (2026-07-12, tte_formula unification): barrel% is regressed here
+    # using `pa` as the Bayesian sample size for ALL four metrics, including
+    # barrel — unlike the live engine, which uses `attempts` (batted-ball-
+    # events) specifically for barrel, since it's fundamentally a per-BBE
+    # rate. This under-shrinks barrel% here (PA ~1.47x attempts). Known,
+    # deliberately NOT fixed in this refactor — see tte_formula.py's
+    # docstring for why (requires first resolving the PIT cache's own
+    # batted_ball_count foul-inflation bug so this fix doesn't introduce a
+    # corrupted count into a newly-load-bearing computation).
+    xwoba_reg = _shared_regress(xwoba_cur, lg_xwoba, pa, K_XWOBA)
+    barrel_reg = _shared_regress(barrel_cur, lg_barrel_pa, pa, K_BARREL)
+    bb_reg = _shared_regress(bb_cur, lg_bb_pct, pa, K_BB)
+    k_reg = _shared_regress(k_cur, lg_k_pct, pa, K_K)
 
-    disc_cur = (bb_reg - k_reg) - (lg_bb_pct - lg_k_pct)
-    plate_factor = _clamp(1.0 + disc_cur * 3.5, PLATE_FACTOR_MIN, PLATE_FACTOR_MAX)
-
-    f_xwoba = xwoba_reg / lg_xwoba
-    f_barrel = barrel_reg / lg_barrel_pa
-    f_plate = plate_factor
-    composite = f_xwoba * 0.50 + f_barrel * 0.30 + f_plate * 0.20
-    lambda_cur = composite * lg_rpg
-
-    disc_prior = (bb_prior - k_prior) - (lg_bb_pct - lg_k_pct)
-    plate_prior = _clamp(1.0 + disc_prior * 3.5, PLATE_FACTOR_MIN, PLATE_FACTOR_MAX)
-    composite_prior = (
-        (xwoba_prior / lg_xwoba) * 0.50
-        + (barrel_prior / lg_barrel_pa) * 0.30
-        + plate_prior * 0.20
+    disc_cur = (bb_reg - k_reg) - (lg_bb_pct - lg_k_pct)  # kept for provenance only
+    lambda_cur, cur_factors = season_lambda(
+        xwoba_reg=xwoba_reg, barrel_reg=barrel_reg, bb_reg=bb_reg, k_reg=k_reg,
+        lg_xwoba=lg_xwoba, lg_barrel_rate=lg_barrel_pa,
+        lg_bb_pct=lg_bb_pct, lg_k_pct=lg_k_pct, lg_rpg=lg_rpg,
     )
-    lambda_prior = composite_prior * lg_rpg
+    f_xwoba, f_barrel, f_plate = cur_factors["f_xwoba"], cur_factors["f_barrel"], cur_factors["f_plate"]
 
-    prior_w = PRIOR_PA_EQUIVALENT / (PRIOR_PA_EQUIVALENT + pa)
-    current_w = pa / (PRIOR_PA_EQUIVALENT + pa)
-    lambda_offense = round(current_w * lambda_cur + prior_w * lambda_prior, 4)
-    lambda_offense = _clamp(lambda_offense, LAMBDA_MIN, LAMBDA_MAX)
+    lambda_prior, _pri_factors = season_lambda(
+        xwoba_reg=xwoba_prior, barrel_reg=barrel_prior, bb_reg=bb_prior, k_reg=k_prior,
+        lg_xwoba=lg_xwoba, lg_barrel_rate=lg_barrel_pa,
+        lg_bb_pct=lg_bb_pct, lg_k_pct=lg_k_pct, lg_rpg=lg_rpg,
+    )
+
+    lambda_offense, current_w, prior_w = blend_current_prior(
+        lambda_cur, lambda_prior, pa, PRIOR_PA_EQUIVALENT,
+    )
 
     provenance = {
         "formula_inputs": {
@@ -229,13 +260,3 @@ def _first_present(data: dict[str, Any], *keys: str) -> Any:
 
 def _is_missing(value: Any) -> bool:
     return value is None
-
-
-def _regress(observed: float, mean: float, n: float, k: float) -> float:
-    if n <= 0:
-        return mean
-    return (observed * n + mean * k) / (n + k)
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    return max(lower, min(upper, value))

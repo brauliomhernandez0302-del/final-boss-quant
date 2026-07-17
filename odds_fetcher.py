@@ -58,8 +58,6 @@ MARKETS      = ["h2h", "totals", "spreads"]
 SPORTS_KEYS = [
     "baseball_mlb",
     "basketball_nba",
-    "basketball_ncaab",
-    "basketball_euroleague",
     "soccer_epl",
     "soccer_spain_la_liga",
     "soccer_germany_bundesliga",
@@ -67,10 +65,12 @@ SPORTS_KEYS = [
     "soccer_france_ligue_one",
     "soccer_usa_mls",
     "mma_mixed_martial_arts",
-    "americanfootball_nfl",
-    "americanfootball_ncaaf",
-    "icehockey_nhl",
 ]
+# NFL/NCAAF/NHL/NCAAB/Euroleague removed 2026-07-14 — no module, analyzer, or
+# UI tab anywhere in this repo consumes them (verified via repo-wide grep).
+# Fetching them only burned The Odds API quota for sports nobody analyzes;
+# see the ODDS_API_KEY quota-exhaustion history in project memory. Re-add the
+# specific key if/when a real analyzer for that sport gets wired up.
 
 CACHE_DIR  = ROOT / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)

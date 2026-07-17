@@ -37,6 +37,85 @@ _BIAS_CACHE_HRS = 24
 _KF_Q = 0.025   # process noise variance (team quality changes ~0.16 R/G per game)
 _KF_R = 9.0     # observation noise variance (game-to-game σ ≈ 3 R/G)
 
+# Home-runs walk-off truncation correction (added 2026-07-11, audit finding).
+# montecarlo/simulator.py draws full-game Poisson/NB for both teams with no
+# bottom-9th walk-off logic, but real box scores ARE truncated: the home
+# team skips its half-inning once already leading. Empirically (2024-2025,
+# 4,830 games): mean(actual_home_runs / lambda_home) = 0.964-0.969, while
+# mean(actual_away_runs / lambda_away) = 0.989-0.994 — the away side has no
+# equivalent truncation (it always completes the innings it's due to bat).
+# Every learner below (Kalman, team-bias, multidim-bias, gradient-descent)
+# trains against raw observed runs, so without this correction they read
+# the truncation gap as a real "home is overrated" signal and fight any
+# upstream fix (e.g. hfa_engine.py's _UNIFORM_HOME_MULT) that corrects
+# lambda_home toward the untruncated latent rate the simulator needs.
+# Applied ONLY to values feeding these learners — never to the stored
+# actual_home_runs column (kept as true ground truth for accuracy/Brier
+# grading) and never to home_won (win/loss isn't affected by how many
+# runs were left unscored in a truncated bottom 9th).
+_HOME_RUNS_TRUNCATION_FACTOR = 0.967   # empirical mean of 0.964-0.969, 2024-2025
+
+
+def _l0_ratio(
+    actual_runs: float,
+    lambda_final: float,
+    stage_factors_json: Optional[str],
+    is_home: bool,
+) -> Optional[float]:
+    """Compute O/λ_final for one game-side (untruncated on the home side).
+
+    2026-07-11/12 postmortem, kept for anyone reading git blame or old
+    session notes — two attempts were made this session to change this
+    function's denominator, both reverted after real backtest regressions:
+
+    Attempt 1 (2026-07-11) divided by a logged "L0" value meant to be
+    "pre-bias, pre-Kalman λ" — actually captured AFTER Kalman and BEFORE
+    the 6 downstream engines, so it implicitly attributed those engines'
+    entire effect to "team bias" (a real double-count with e.g.
+    hfa_engine.py's uniform home multiplier). Backtest Brier regressed
+    0.24479 → 0.24550.
+
+    Attempt 2 (2026-07-12) divided out only the bias's own already-applied
+    multiplier (`bias_on_*_lambda`), leaving Kalman and the 6 engines in
+    the denominator — correct in isolation, but it converted the bias
+    estimator from closed-loop (this function's ratio already nets out any
+    PREVIOUSLY applied bias, so an overshoot shows up as a sub-1.0 ratio
+    next time and self-corrects) to open-loop (dividing the bias back out
+    means an overshoot never appears in the signal and is never damped).
+    Combined with `compute_multidim_bias`'s small samples (min_samples=8,
+    ±24% standard error on a ratio-of-means at that n) and the dampening
+    formula's removal (see compute_team_bias_kalman_adjusted), this applied
+    high-variance noise at full gain every time. Backtest Brier regressed
+    further, to 0.24636 — worse than attempt 1.
+
+    Conclusion: plain O/λ_final (this function, as currently implemented)
+    is a closed-loop residual — it already nets out whatever bias was
+    applied last time, so it re-measures only what's LEFT uncorrected, and
+    naturally self-extinguishes rather than compounding. Combined with
+    compute_team_bias_kalman_adjusted's dampening, the net effect functions
+    as implicit shrinkage appropriate to the real signal-to-noise of 8-30
+    game slices — a good empirical-Bayes-style estimator that a "more
+    exact" derivation (attempts 1 and 2) accidentally broke each time by
+    removing dampening or feedback. If this is revisited, the correct
+    framing is "does EXPLICIT, tuned shrinkage on a net-of-bias ratio beat
+    this implicit-shrinkage design" — an experiment requiring its own
+    validation, not a one-line "fix."
+    """
+    if not lambda_final or lambda_final <= 0:
+        return None
+    numer = untruncate_home_runs(actual_runs) if is_home else actual_runs
+    return numer / lambda_final
+
+
+def untruncate_home_runs(home_runs: float) -> float:
+    """Inflate observed (walk-off-truncated) home runs toward the latent,
+    full-game-equivalent rate that lambda_home is meant to represent.
+    Use at every point where actual_home_runs becomes a LEARNING target
+    (Kalman "offense_home"/"defense_away" roles, team-bias/multidim-bias
+    home-side ratios, gradient-descent's home-role target) — not for
+    grading, storage, or the away side (which isn't truncated)."""
+    return home_runs / _HOME_RUNS_TRUNCATION_FACTOR
+
 # Platt recalibration
 _PLATT_MIN_SAMPLES  = 50
 _PLATT_RECAL_DAYS   = 7
@@ -381,10 +460,10 @@ class LearningEngine:
             return
 
         season = row["season"]
-        self.update_kalman(row["home_team"], "offense_home", season, float(home_runs))
+        self.update_kalman(row["home_team"], "offense_home", season, untruncate_home_runs(float(home_runs)))
         self.update_kalman(row["away_team"], "offense_away", season, float(away_runs))
         self.update_kalman(row["home_team"], "defense_home", season, float(away_runs))
-        self.update_kalman(row["away_team"], "defense_away", season, float(home_runs))
+        self.update_kalman(row["away_team"], "defense_away", season, untruncate_home_runs(float(home_runs)))
 
         # Gradient-descent weight update
         if row["lambda_home"] and row["lambda_away"]:
@@ -431,7 +510,8 @@ class LearningEngine:
         query = """
             SELECT home_team, away_team,
                    lambda_home, lambda_away,
-                   actual_home_runs, actual_away_runs
+                   actual_home_runs, actual_away_runs,
+                   stage_factors_json
             FROM game_outcomes
             WHERE season = ?
               AND actual_home_runs IS NOT NULL
@@ -450,10 +530,14 @@ class LearningEngine:
 
         ratios = []
         for r in rows:
-            if r["home_team"] == team and r["lambda_home"] and r["lambda_home"] > 0:
-                ratios.append(r["actual_home_runs"] / r["lambda_home"])
-            elif r["away_team"] == team and r["lambda_away"] and r["lambda_away"] > 0:
-                ratios.append(r["actual_away_runs"] / r["lambda_away"])
+            if r["home_team"] == team:
+                ratio = _l0_ratio(r["actual_home_runs"], r["lambda_home"], r["stage_factors_json"], is_home=True)
+            elif r["away_team"] == team:
+                ratio = _l0_ratio(r["actual_away_runs"], r["lambda_away"], r["stage_factors_json"], is_home=False)
+            else:
+                continue
+            if ratio is not None:
+                ratios.append(ratio)
 
         if not ratios:
             return 1.0
@@ -479,26 +563,41 @@ class LearningEngine:
         When Kalman is active it already corrects `blend` (35%) of the model error;
         applying the raw bias on top overcorrects that share of the signal.
 
-        Exact dampening formula (not a linear approximation — see below):
+        Dampening formula:
           adjusted = raw_bias / (1 − blend + blend × raw_bias)
 
-        Derivation: if L0 is the pre-bias model λ and O is the team's true
-        observed rate (raw_bias = O/L0), and Kalman's own state has already
-        converged toward O, the post-Kalman λ is L_k = (1−blend)×L0 + blend×O.
-        The exact multiplier that maps L_k back to O is O/L_k, which in terms
-        of raw_bias is the rational expression above.
+        2026-07-11/12 postmortem (kept — this constant's exact theoretical
+        justification is wrong, but the mechanism itself is empirically
+        load-bearing, confirmed by two real regressions this session):
+        this formula's original derivation claimed `raw_bias` measures
+        O/L0 with L0 the pre-bias, PRE-KALMAN λ — that premise was never
+        actually true (`raw_bias` comes from `compute_multidim_bias`,
+        whose ratio always divides by the game's FINAL λ via `_l0_ratio`,
+        i.e. post-Kalman, post-bias, post all 6 downstream engines, not
+        L0). Two same-day attempts to "fix" this premise by changing
+        `_l0_ratio`'s denominator — first to a mislabeled L0 value, then to
+        λ_final with only the bias's own contribution divided out — both
+        produced measured backtest Brier regressions (0.24479 → 0.24550 →
+        0.24636) and were reverted. Root cause of both regressions: this
+        function's dampening, combined with `_l0_ratio`'s use of the FINAL
+        λ (which already nets out any previously-applied bias), forms a
+        closed-loop, implicitly-shrunk residual estimator appropriate to
+        the real signal-to-noise of small per-team slices (min_samples=8,
+        ±24% standard error on the ratio-of-means at that n) — removing
+        either the dampening or the closed-loop property converts it into
+        an open-loop, high-variance estimator that injects noise at full
+        gain. So: keep this formula exactly as originally written, despite
+        its stated derivation being false — it is functioning as intended
+        empirically, just for a different reason than documented. A future
+        session revisiting this should treat it as "does explicit, tuned
+        shrinkage beat this implicit-shrinkage design" — an experiment
+        requiring its own validation — not a one-line derivation fix.
 
         Example — team scores 3.5 R/G, model says 4.5 (raw_bias = 0.778):
           Kalman (blend=0.35): 0.65×4.5 + 0.35×3.5 = 4.15  (−7.8%)
           Old bias on 4.15:    4.15 × 0.778 = 3.23          (−22% extra → total −28%)
-          Exact dampened bias: 0.778 / (0.65 + 0.35×0.778) = 0.8434
+          Dampened bias: 0.778 / (0.65 + 0.35×0.778) = 0.8434
           New bias on 4.15:    4.15 × 0.8434 = 3.50          (−15.7% → total ≈ exact)
-
-        (An earlier version used the linear approximation
-        `1 + (1−blend)×(raw_bias−1)` = 0.8556 here — the tangent line of the
-        rational function at raw_bias=1. It under-corrects, more so the
-        further raw_bias sits from 1.0 and worse near the ±30% clamp bounds;
-        the exact form costs nothing extra to compute.)
 
         FIX C1: compute_team_bias mezclaba home+away juegos en una sola media,
         contaminando la señal del Kalman para equipos con asimetría HFA real.
@@ -600,7 +699,8 @@ class LearningEngine:
 
         with self._get_conn() as conn:
             rows = conn.execute(
-                f"SELECT {lambda_col}, {actual_col} FROM game_outcomes WHERE {where}",
+                f"SELECT {lambda_col}, {actual_col}, stage_factors_json "
+                f"FROM game_outcomes WHERE {where}",
                 params,
             ).fetchall()
 
@@ -608,9 +708,11 @@ class LearningEngine:
             return None
 
         ratios = [
-            r[actual_col] / r[lambda_col]
-            for r in rows
-            if r[lambda_col] and r[lambda_col] > 0
+            r for r in (
+                _l0_ratio(row[actual_col], row[lambda_col], row["stage_factors_json"], is_home)
+                for row in rows
+            )
+            if r is not None
         ]
         if not ratios:
             return None
@@ -1082,7 +1184,7 @@ class LearningEngine:
         updated = dict(weights)
 
         for role, lam_final, actual in [
-            ("home", row["lambda_home"], actual_home),
+            ("home", row["lambda_home"], untruncate_home_runs(actual_home)),
             ("away", row["lambda_away"], actual_away),
         ]:
             if not lam_final or lam_final <= 0:

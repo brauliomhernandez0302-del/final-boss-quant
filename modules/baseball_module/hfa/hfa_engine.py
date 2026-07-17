@@ -4,11 +4,34 @@ HFA ENGINE — Asymmetric home field advantage for MLB lambda pipeline
 
 Scope — asymmetric adjustments ONLY:
   Away-team travel fatigue (subtracts from λ_away only).
+  Small uniform home-win-probability correction (see below).
 
 Removed (E3 / FIX C2):
   Home crowd/familiarity boost: confirmed pure noise (Pearson=-0.015,
-  direction 53% random). hfa_boost hardcoded to 0.0. The hfa_base
-  per-stadium dict has been removed entirely.
+  direction 53% random). The per-stadium hfa_base lookup table (varying
+  boost by park) has been removed entirely and stays removed — that was
+  a genuinely uncorrelated static signal, not resurrected below.
+
+Added 2026-07-11 (post-leak-fix calibration diagnostic, distinct from the
+removed per-park lookup):
+  A residual analysis of the triple-clean, engine-hygiene-fixed backtest
+  (4,830 games, both 2024 and 2025 independently) found the model
+  under-predicts home win probability by a small, uniform ~1.6-1.7pp —
+  NOT park-specific noise like the removed feature, but a flat shift
+  present in both seasons. The signature is asymmetric by favorite side:
+  home-favorite picks are calibrated almost exactly (resid -0.4pp/+0.8pp),
+  while away-favorite picks over-rate the away team by 3-4pp in both
+  seasons. Market (Pinnacle) sits much closer to the true home win rate
+  than the model in both seasons, consistent with the model missing a
+  small real effect the market prices in. `_UNIFORM_HOME_MULT` below is a
+  single global constant (not per-park), sized from the observed
+  residual via Skellam sensitivity at typical λ (~2.8% λ_home ≈ 1.6-1.8pp
+  win-probability). Needs re-validation against a fresh backtest after
+  landing — if the residual doesn't close to ~0 in both seasons, revert
+  and look at Platt's intercept instead (the two are structurally
+  entangled: 2024 runs Platt at identity by design, 2025 doesn't, so a
+  downstream-only fix can't cover both seasons — this is why the fix
+  belongs in λ-space, not Platt).
 
 NOT in scope (handled by ParkWeatherEngine, PASO 5):
   Park run-environment factor — symmetric, belongs in its own engine.
@@ -20,6 +43,13 @@ from typing import Dict, Any, Tuple
 from config import LEAGUE_AVG_RUNS
 
 logger = logging.getLogger(__name__)
+
+# Uniform home-win-probability correction — see module docstring
+# "Added 2026-07-11" for the diagnostic that justifies this. Distinct from
+# the removed per-park hfa_base lookup: this is one flat constant applied
+# to every game, not a per-stadium table, so it cannot reproduce the old
+# feature's near-zero Pearson correlation with real HFA variation.
+_UNIFORM_HOME_MULT = 0.028
 
 
 # ── HFA Engine ────────────────────────────────────────────────────────────────
@@ -61,8 +91,11 @@ class HFAEngine:
         # Crowd boost eliminated (FIX C2 / E3): Pearson=-0.015, direction 53% random.
         # Kalman + multidim_bias cover ~95% of empirical HFA signal.
         hfa_boost = 0.0
-        hfa_mult  = 1.0
-        lh_new    = lh
+
+        # Uniform home correction (added 2026-07-11, see module docstring) —
+        # a single flat multiplier, not a per-park lookup.
+        hfa_mult  = 1.0 + _UNIFORM_HOME_MULT
+        lh_new    = lh * hfa_mult
 
         # ── Step 2: Away-team travel fatigue (asymmetric, λ_away only) ────────
         # Travel penalty retained: 69.3% activation rate, max 1.3% λ reduction.
@@ -74,8 +107,9 @@ class HFAEngine:
 
         metadata = {
             "park_name":       park_name,
-            "hfa_boost_runs":  0.0,
-            "hfa_mult":        1.0,
+            "hfa_boost_runs":  round(hfa_boost, 4),
+            "hfa_mult":        round(hfa_mult, 4),
+            "uniform_home_mult": _UNIFORM_HOME_MULT,
             "travel_penalty":  round(travel_penalty, 4),
         }
 
