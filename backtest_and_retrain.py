@@ -1785,13 +1785,23 @@ def run_pipeline(
     # compute_team_bias_kalman_adjusted docstring for the postmortem).
     _sf["l0_home_lambda"] = lh
     _sf["l0_away_lambda"] = la
+    # CHRON-001 (audit_20260714/): prediction_source='backtest' — this walk-
+    # forward query reads prior games' backtest_lambda_home/away (what THIS
+    # backtest run itself already computed and wrote for those earlier
+    # games, via update_game_outcomes() below), never a live game's real
+    # prediction. Preserves the exact same self-consistent walk-forward
+    # behavior as before this fix (each run rewrote the columns it reads
+    # from as it went) — just via the backtest_* shadow columns instead of
+    # clobbering the live ones.
     _home_bias = learning.compute_team_bias_kalman_adjusted(
         game_data.get("home_team", {}).get("name", ""), season, "offense_home",
         month=_game_month, before_date=_bias_before_date,
+        prediction_source="backtest",
     )
     _away_bias = learning.compute_team_bias_kalman_adjusted(
         game_data.get("away_team", {}).get("name", ""), season, "offense_away",
         month=_game_month, before_date=_bias_before_date,
+        prediction_source="backtest",
     )
     lh *= _home_bias
     la *= _away_bias
@@ -1922,7 +1932,10 @@ def run_pipeline(
     # Applied asymmetrically — same logic as run_module.py. Symmetric normalization
     # cancels the b intercept for neutral games, destroying the structural home
     # advantage that recalibrate_platt() learned.
-    _pa, _pb = learning.get_platt_params(season)
+    # CHRON-001 (audit_20260714/): prediction_source='backtest' — if this
+    # triggers a refit (cache stale/absent), it must train on this run's own
+    # backtest_p_home(_raw), never a live game's real prediction.
+    _pa, _pb = learning.get_platt_params(season, prediction_source="backtest")
     _p_h     = _platt(p_home_mc, _pa, _pb)
     p_home_cal = round(_p_h, 5)
     p_away_cal = round(1.0 - _p_h, 5)
@@ -1968,15 +1981,33 @@ def update_game_outcomes(
     p_away_raw: Optional[float] = None,
     stage_factors: Optional[Dict] = None,
 ) -> None:
+    """Persist this backtest run's recomputed λ/probabilities for game_pk.
+
+    CHRON-001 fix (audit_20260714/08_chronology_audit.md, roadmap Step 1):
+    this used to write directly to game_outcomes' live prediction columns
+    (lambda_home, p_home, ...) via an unconditional UPDATE...WHERE game_pk=?
+    with no guard — a routine backtest run touching a game that had a real
+    live prediction on file (record_prediction()) silently destroyed it,
+    with zero audit trail. Verified via direct DB read: 563 of 615
+    season-2026 rows had already been overwritten this way by a single
+    2026-06-28 batch run, none recoverable from any backup on disk (see
+    audit_20260714/chron001_forensics_report.md).
+
+    Now writes ONLY to the backtest_* shadow columns + backtest_run_at.
+    The live prediction columns (lambda_home, lambda_away, p_home, p_away,
+    p_home_raw, p_away_raw, stage_factors_json) and `source` are NEVER
+    touched here, regardless of the row's provenance — that invariant is
+    what tests/test_chron001_provenance.py locks in.
+    """
     now = datetime.now(timezone.utc).isoformat()
     sf_json = json.dumps(stage_factors) if stage_factors else None
     conn.execute(
         """
         UPDATE game_outcomes
-        SET lambda_home = ?, lambda_away = ?,
-            p_home = ?, p_away = ?,
-            p_home_raw = ?, p_away_raw = ?,
-            stage_factors_json = ?,
+        SET backtest_lambda_home = ?, backtest_lambda_away = ?,
+            backtest_p_home = ?, backtest_p_away = ?,
+            backtest_p_home_raw = ?, backtest_p_away_raw = ?,
+            backtest_stage_factors_json = ?,
             backtest_run_at = ?
         WHERE game_pk = ?
         """,
@@ -2859,7 +2890,10 @@ def main() -> None:
         home_won  = row["home_won"]
 
         if _loop_season is not None and season != _loop_season and _loop_season in _seasons_set:
-            a_fit, b_fit = learning.recalibrate_platt(_loop_season)
+            # CHRON-001 (audit_20260714/): prediction_source='backtest' —
+            # refit against this run's own backtest_p_home(_raw), never a
+            # live game's real prediction.
+            a_fit, b_fit = learning.recalibrate_platt(_loop_season, prediction_source="backtest")
             log.info(
                 "  Mid-run Platt refit (season boundary %d → %d): season %d a=%.4f b=%.4f",
                 _loop_season, season, _loop_season, a_fit, b_fit,
@@ -3127,11 +3161,16 @@ def main() -> None:
             #   - Only the invocation was missing
             # stage_factors_json is written by update_game_outcomes() above; lambda
             # fields are also set — so this call has all data it needs.
+            # CHRON-001 (audit_20260714/): prediction_source='backtest' —
+            # update_game_outcomes() (just above) now writes this game's λ/
+            # stage_factors to the backtest_* shadow columns, not the live
+            # ones, so this read must target the same columns it just wrote.
             learning._gradient_step(
                 game_pk,
                 int(row["actual_home_runs"]),
                 int(row["actual_away_runs"]),
                 season,
+                prediction_source="backtest",
             )
 
             # Pinnacle fair prob
@@ -3327,7 +3366,18 @@ def main() -> None:
     refreshed = 0
     for t in teams:
         for season in seasons:
-            bias = learning.compute_team_bias(t["t"], season)
+            # CHRON-001 (audit_20260714/): prediction_source='backtest' —
+            # final post-run refresh reads this run's own backtest_lambda_*/
+            # backtest_stage_factors_json, never a live game's prediction.
+            # Note (not fixed here, out of this step's scope — see
+            # audit_20260714/14_remediation_roadmap.md): the ml_state
+            # "team_bias" cache key itself is not source-scoped, so this
+            # write still lands in the same cache slot a live call with
+            # before_date=None would read — identical to the pre-fix
+            # behavior (which also populated that cache from whatever this
+            # backtest run had just computed), not a regression introduced
+            # by this fix.
+            bias = learning.compute_team_bias(t["t"], season, prediction_source="backtest")
             if bias != 1.0:
                 refreshed += 1
 
@@ -3338,7 +3388,8 @@ def main() -> None:
     log.info("Running Platt recalibration per season …")
     for season in seasons:
         try:
-            a, b = learning.recalibrate_platt(season)
+            # CHRON-001 (audit_20260714/): prediction_source='backtest'.
+            a, b = learning.recalibrate_platt(season, prediction_source="backtest")
             log.info("  Season %d: Platt a=%.4f b=%.4f", season, a, b)
         except Exception as exc:
             log.warning("  Platt failed for season %d: %s", season, exc)

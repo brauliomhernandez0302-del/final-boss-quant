@@ -115,4 +115,46 @@ Auditoría completa (solo lectura, componente por componente) realizada el 2026-
 
 **Un fix diagnosticado pero revertido dos veces**: la fórmula de "dampening exacto" de `compute_team_bias_kalman_adjusted` tiene una premisa documentada como falsa, pero dos intentos de arreglarla en línea con esa premisa causaron regresiones reales del backtest (0.24479→0.24550→0.24636). Revertida a la fórmula original, que funciona como un estimador de retroalimentación cerrada con shrinkage implícito — no reintentar sin nueva información (ver postmortem completo en el docstring de la función).
 
+### Actualización 2026-07-17 — auditoría completa (`audit_20260714/`) + remediación CHRON-001
+
+Auditoría de solo-lectura de todo el proyecto (13 secciones: leakage, cronología, calibración,
+mercado de odds, double-counting, fallbacks, matemática, operacional) — reporte completo en
+`audit_20260714/`, `00_executive_summary.md` como punto de entrada. Veredicto general:
+**PARTIAL** — sin leakage activo en la configuración citada como baseline, suite de 462 tests
+en verde, pero con hallazgos reales pendientes (`findings.csv`), el más serio de ellos
+**CHRON-001** (Alto): `game_outcomes` era compartida, sin protección, entre escrituras de
+producción en vivo y sobrescrituras del backtest — un backtest de rutina que tocara un juego
+en vivo ya reconciliado destruía la predicción real sin ningún rastro. Confirmado
+empíricamente: 563 de 615 rows de season 2026 ya habían sido sobrescritas por una sola
+corrida del 2026-06-28, ninguna recuperable de ningún backup en disco (`audit_20260714/chron001_forensics_report.md`).
+
+**CHRON-001 remediado el mismo día** (roadmap Paso 1, `audit_20260714/14_remediation_roadmap.md`):
+- Nuevas columnas en `game_outcomes`: `source` (`'live'`\|`'backtest'`\|`'import'`, fijada una
+  sola vez, nunca volteada) + columnas espejo `backtest_lambda_home/away`,
+  `backtest_p_home/away`, `backtest_p_home_raw/away_raw`, `backtest_stage_factors_json`.
+- `backtest_and_retrain.py::update_game_outcomes()` ahora escribe SOLO en las columnas
+  `backtest_*` — nunca más toca las columnas live de ningún row, sea cual sea su procedencia.
+- Las 10 funciones de `learning_engine.py` que leen columnas de predicción de `game_outcomes`
+  (team bias, multidim bias, Kalman-adjusted bias, gradient descent, Platt 1D y 2D, y sus
+  wrappers) ahora toman `prediction_source: str = "live"` y resuelven el nombre de columna
+  real vía `_pred_col()`. Cada invocación del backtest (loop principal, refits de frontera de
+  temporada, refit final) pasa explícitamente `prediction_source="backtest"` — auditado call
+  site por call site.
+- **Validado por identidad**: re-corrida completa `--season 2024,2025 --use-full-pit` (4,830
+  juegos) produjo un JSON de reporte idéntico byte a byte al último reporte real pre-cambio
+  en disco (`reports/round10_composite_weight_nudge/`, 2026-07-12) — única diferencia, el
+  timestamp `run_at`. El fix no movió ni un decimal del modelo. Nota honesta: el resultado
+  real (0.24482 Brier / 55.34% accuracy) difiere ligeramente de "0.24486/55.42%" citado más
+  arriba en este documento — discrepancia preexistente entre esa nota y el último reporte real
+  en disco, no introducida por este cambio (ver `audit_20260714/chron001_fase6_validation_report.md`
+  para la comparación exacta).
+- 7 tests nuevos de regresión (`tests/test_chron001_provenance.py`), 469/469 en verde.
+- **0 rows recuperables** de los 563 ya sobrescritos antes de este fix — los backups
+  disponibles empiezan una semana después del evento (`audit_20260714/chron001_forensics_report.md`).
+  El daño histórico es permanente; el fix previene que se repita.
+- Residual conocido, fuera de alcance de este paso: la caché `ml_state` de team-bias/Platt no
+  está separada por procedencia — el refresco final del backtest ("step 4") sigue escribiendo
+  en la misma cache key que leería una llamada en vivo, igual que antes de este fix (no es una
+  regresión, ver comentario en el código).
+
 Memoria de la sesión: `project_mlb_engine_hygiene_20260711.md`.

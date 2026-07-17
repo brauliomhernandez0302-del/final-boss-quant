@@ -56,6 +56,52 @@ _KF_R = 9.0     # observation noise variance (game-to-game σ ≈ 3 R/G)
 _HOME_RUNS_TRUNCATION_FACTOR = 0.967   # empirical mean of 0.964-0.969, 2024-2025
 
 
+# CHRON-001 fix (2026-07-17, audit_20260714/, roadmap Step 1): single source
+# of truth mapping a logical prediction field to its actual game_outcomes
+# column, per provenance. 'live' is the pre-existing column set (lambda_home,
+# p_home, ...) that record_prediction() authors and that every learning
+# function below defaulted to reading directly. 'backtest' is the shadow
+# column set (backtest_lambda_home, backtest_p_home, ...) that
+# backtest_and_retrain.py::update_game_outcomes() now writes to instead of
+# clobbering the live columns — see that function's docstring. Every
+# function in this file that reads a prediction column from game_outcomes
+# takes a `prediction_source: str = "live"` parameter and resolves column
+# names through this map, so a backtest run reads only what it just wrote
+# (never a live game's real prediction) while the live path's behavior is
+# provably unchanged (same column names as before this fix).
+_PREDICTION_COLUMNS: Dict[str, Dict[str, str]] = {
+    "live": {
+        "lambda_home":        "lambda_home",
+        "lambda_away":        "lambda_away",
+        "p_home":             "p_home",
+        "p_away":             "p_away",
+        "p_home_raw":         "p_home_raw",
+        "p_away_raw":         "p_away_raw",
+        "stage_factors_json": "stage_factors_json",
+    },
+    "backtest": {
+        "lambda_home":        "backtest_lambda_home",
+        "lambda_away":        "backtest_lambda_away",
+        "p_home":             "backtest_p_home",
+        "p_away":             "backtest_p_away",
+        "p_home_raw":         "backtest_p_home_raw",
+        "p_away_raw":         "backtest_p_away_raw",
+        "stage_factors_json": "backtest_stage_factors_json",
+    },
+}
+
+
+def _pred_col(prediction_source: str, logical_name: str) -> str:
+    """Resolve a logical prediction field to its real column name for this source."""
+    try:
+        return _PREDICTION_COLUMNS[prediction_source][logical_name]
+    except KeyError:
+        raise ValueError(
+            f"unknown prediction_source={prediction_source!r} or "
+            f"logical column={logical_name!r}"
+        )
+
+
 def _l0_ratio(
     actual_runs: float,
     lambda_final: float,
@@ -252,11 +298,84 @@ class LearningEngine:
                 # below same as any other already-present column.
                 ("ml_home_pin", "REAL"),
                 ("ml_away_pin", "REAL"),
+                # CHRON-001 fix (2026-07-17, audit_20260714/08_chronology_audit.md):
+                # game_outcomes used to be shared, unprotected, between live-production
+                # writes (record_prediction()/update_outcome()) and backtest overwrites
+                # (backtest_and_retrain.py::update_game_outcomes(), a plain
+                # UPDATE...WHERE game_pk=? with no provenance guard) — a routine backtest
+                # run touching a reconciled live game silently destroyed the live
+                # prediction record with no audit trail. `source` records who authored
+                # the CURRENT values in the live prediction columns (lambda_home, p_home,
+                # etc.) and is set once, never flipped. The backtest_* columns are where
+                # update_game_outcomes() now writes instead of clobbering the live ones —
+                # see its docstring and get_learning_rows()/apply-side usage below.
+                # backtest_run_at itself is normally added by backtest_and_retrain.py's
+                # own _add_backtest_col() — duplicated here (same no-op-if-present
+                # pattern as ml_home_pin/ml_away_pin above) because _backfill_chron001_
+                # source() below needs it to exist unconditionally, including on a
+                # fresh DB that a live-only deployment created without ever running a
+                # backtest.
+                ("backtest_run_at", "TEXT"),
+                ("source", "TEXT"),
+                ("backtest_lambda_home", "REAL"),
+                ("backtest_lambda_away", "REAL"),
+                ("backtest_p_home", "REAL"),
+                ("backtest_p_away", "REAL"),
+                ("backtest_p_home_raw", "REAL"),
+                ("backtest_p_away_raw", "REAL"),
+                ("backtest_stage_factors_json", "TEXT"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE game_outcomes ADD COLUMN {col} {typedef}")
                 except sqlite3.OperationalError:
                     pass
+            self._backfill_chron001_source(conn)
+
+    def _backfill_chron001_source(self, conn: sqlite3.Connection) -> None:
+        """One-time backfill for the CHRON-001 fix (audit_20260714/, roadmap Step 1).
+
+        Idempotent: every statement is gated on `source IS NULL`, so calling
+        this on every LearningEngine instantiation (live AND backtest both
+        construct one) is a cheap no-op once the backfill has run once.
+
+        Semantics — deliberately ordered, each step only touching rows the
+        previous step left with `source IS NULL`:
+          1. season=2026 AND backtest_run_at IS NULL -> 'live'
+             (the pure live-production rows, never touched by a backtest).
+          2. backtest_run_at IS NOT NULL -> 'backtest', and their CURRENT
+             live-prediction-column values are copied into the new
+             backtest_* columns. Provenance for these rows was already lost
+             before this fix existed — see
+             audit_20260714/chron001_forensics_report.md (0 of 563 rows
+             recoverable from any backup on disk) — this just records that
+             their live columns are backtest-authored so FASE 4's read path
+             finds the (already-backtest) data where it expects it, and so
+             a *future* backtest run editing these rows again writes only
+             to backtest_* rather than re-touching lambda_home/p_home.
+          3. Everything left (older-season bulk imports that never went
+             through record_prediction() or a backtest run) -> 'import'.
+        """
+        conn.execute(
+            "UPDATE game_outcomes SET source = 'live' "
+            "WHERE source IS NULL AND season = 2026 AND backtest_run_at IS NULL"
+        )
+        conn.execute(
+            """
+            UPDATE game_outcomes SET
+                source = 'backtest',
+                backtest_lambda_home = lambda_home,
+                backtest_lambda_away = lambda_away,
+                backtest_p_home = p_home,
+                backtest_p_away = p_away,
+                backtest_p_home_raw = p_home_raw,
+                backtest_p_away_raw = p_away_raw,
+                backtest_stage_factors_json = stage_factors_json
+            WHERE source IS NULL AND backtest_run_at IS NOT NULL
+            """
+        )
+        conn.execute(
+            "UPDATE game_outcomes SET source = 'import' WHERE source IS NULL"
+        )
 
     # ------------------------------------------------------------------
     # Prediction recording
@@ -313,8 +432,9 @@ class LearningEngine:
                 INSERT OR IGNORE INTO game_outcomes
                     (game_pk, game_date, season, home_team, away_team, venue, month,
                      lambda_home, lambda_away, p_home, p_away,
-                     p_home_raw, p_away_raw, ml_home_pin, ml_away_pin, stage_factors_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     p_home_raw, p_away_raw, ml_home_pin, ml_away_pin, stage_factors_json,
+                     source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live')
                 """,
                 (game_pk, game_date, season, home_team, away_team, venue, month,
                  lambda_home, lambda_away, p_home, p_away,
@@ -324,6 +444,19 @@ class LearningEngine:
             if not inserted:
                 # Row already exists (e.g. historical bulk import).  Backfill
                 # any NULL fields we now have — never overwrite existing data.
+                # CHRON-001 (audit_20260714/): source = COALESCE(source, 'live')
+                # — this call path (record_prediction) is exclusively the live
+                # writer (backtest_and_retrain.py never calls it, only
+                # update_game_outcomes(), which never touches `source` at
+                # all — see its docstring). So the only way `source` could
+                # still be NULL here is a pre-CHRON-001-migration row or a
+                # future bulk-import path that didn't set it; in that case
+                # this backfill call — by definition live — is the first
+                # real authorship information available, so 'live' is
+                # correct. If `source` is already set (the normal case,
+                # true for every row after the one-time migration backfill),
+                # COALESCE leaves it untouched, exactly as "never overwrite
+                # existing data" already requires for every other field here.
                 conn.execute(
                     """
                     UPDATE game_outcomes SET
@@ -331,7 +464,8 @@ class LearningEngine:
                         p_home_raw         = COALESCE(p_home_raw, ?),
                         p_away_raw         = COALESCE(p_away_raw, ?),
                         ml_home_pin        = COALESCE(ml_home_pin, ?),
-                        ml_away_pin        = COALESCE(ml_away_pin, ?)
+                        ml_away_pin        = COALESCE(ml_away_pin, ?),
+                        source             = COALESCE(source, 'live')
                     WHERE game_pk = ?
                     """,
                     (sf_json, p_home_raw, p_away_raw, ml_home_pin, ml_away_pin, game_pk),
@@ -410,6 +544,7 @@ class LearningEngine:
         game_pk: int,
         actual_home_runs: int,
         actual_away_runs: int,
+        prediction_source: str = "live",
     ) -> bool:
         """Fill in actual runs, trigger Kalman + gradient-descent updates.
 
@@ -423,6 +558,17 @@ class LearningEngine:
 
         Returns True only if this call actually scored the game (row existed
         and was previously unscored).
+
+        `prediction_source` — CHRON-001 fix (audit_20260714/): which
+        prediction columns _post_outcome_update()'s gradient-descent step
+        reads (live vs backtest_*). Actual-runs/home_won columns themselves
+        stay shared regardless — ground truth isn't provenance-split, only
+        model predictions are. Defaults to 'live'; currently the only real
+        caller is fetch_pending_outcomes() (live path — the backtest loop
+        calls update_kalman()/_gradient_step() directly, bypassing this
+        method entirely), so this default is a no-op change in practice,
+        added for defensive consistency with every other learning function
+        in this file.
         """
         home_won = 1 if actual_home_runs > actual_away_runs else 0
 
@@ -440,7 +586,7 @@ class LearningEngine:
             existed = cursor.rowcount > 0
 
         if existed:
-            self._post_outcome_update(game_pk, actual_home_runs, actual_away_runs)
+            self._post_outcome_update(game_pk, actual_home_runs, actual_away_runs, prediction_source)
         return existed
 
     def _post_outcome_update(
@@ -448,12 +594,16 @@ class LearningEngine:
         game_pk: int,
         home_runs: int,
         away_runs: int,
+        prediction_source: str = "live",
     ) -> None:
         """Update Kalman states and maybe trigger Platt recalibration."""
+        lam_home_col = _pred_col(prediction_source, "lambda_home")
+        lam_away_col = _pred_col(prediction_source, "lambda_away")
         with self._get_conn() as conn:
             row = conn.execute(
-                "SELECT home_team, away_team, season, lambda_home, lambda_away "
-                "FROM game_outcomes WHERE game_pk = ?",
+                f"SELECT home_team, away_team, season, "
+                f"{lam_home_col} AS lambda_home, {lam_away_col} AS lambda_away "
+                f"FROM game_outcomes WHERE game_pk = ?",
                 (game_pk,),
             ).fetchone()
         if not row:
@@ -467,7 +617,7 @@ class LearningEngine:
 
         # Gradient-descent weight update
         if row["lambda_home"] and row["lambda_away"]:
-            self._gradient_step(game_pk, home_runs, away_runs, season)
+            self._gradient_step(game_pk, home_runs, away_runs, season, prediction_source)
 
     # ------------------------------------------------------------------
     # Team bias (simple 1-D)
@@ -479,8 +629,17 @@ class LearningEngine:
         season: int,
         min_samples: int = _MIN_SAMPLES,
         before_date: Optional[str] = None,
+        prediction_source: str = "live",
     ) -> float:
         """mean(actual_runs / predicted_λ) for the team. Returns 1.0 when insufficient data.
+
+        `prediction_source` — CHRON-001 fix (audit_20260714/): selects which
+        game_outcomes columns (live vs backtest_*) supply lambda_home/
+        lambda_away/stage_factors_json. Doesn't need to be threaded into the
+        cache key: the cache is already bypassed whenever `before_date` is
+        given (see below), and backtest_and_retrain.py always passes
+        `before_date` (walk-forward), so a 'backtest' read can never collide
+        with a 'live'-cached value under the same key.
 
         FIX (2026-07-08): added `before_date` — a walk-forward cutoff (exclusive,
         "YYYY-MM-DD"). Without it, this query only filters by season, so a
@@ -507,11 +666,14 @@ class LearningEngine:
                 if self._hours_since(cached.get("updated_at", "")) < _BIAS_CACHE_HRS:
                     return float(cached["bias"])
 
-        query = """
+        lam_home_col = _pred_col(prediction_source, "lambda_home")
+        lam_away_col = _pred_col(prediction_source, "lambda_away")
+        sfj_col      = _pred_col(prediction_source, "stage_factors_json")
+        query = f"""
             SELECT home_team, away_team,
-                   lambda_home, lambda_away,
+                   {lam_home_col} AS lambda_home, {lam_away_col} AS lambda_away,
                    actual_home_runs, actual_away_runs,
-                   stage_factors_json
+                   {sfj_col} AS stage_factors_json
             FROM game_outcomes
             WHERE season = ?
               AND actual_home_runs IS NOT NULL
@@ -556,6 +718,7 @@ class LearningEngine:
         context: str,
         month: Optional[int] = None,
         before_date: Optional[str] = None,
+        prediction_source: str = "live",
     ) -> float:
         """Team bias dampened by Kalman's fractional coverage to prevent double-correction.
 
@@ -609,7 +772,10 @@ class LearningEngine:
         """
         # FIX C1: use context-specific bias instead of aggregate home+away mix.
         home_away = "home" if context == "offense_home" else "away"
-        raw_bias = self.compute_multidim_bias(team, season, home_away, month=month, before_date=before_date)
+        raw_bias = self.compute_multidim_bias(
+            team, season, home_away, month=month, before_date=before_date,
+            prediction_source=prediction_source,
+        )
         if raw_bias == 1.0:
             return 1.0
 
@@ -637,6 +803,7 @@ class LearningEngine:
         month: Optional[int] = None,   # 3-10; None = skip this tier, use home_away only
         min_samples: int = 8,
         before_date: Optional[str] = None,
+        prediction_source: str = "live",
     ) -> float:
         """
         Bias correction refined along up to two dimensions.
@@ -665,14 +832,19 @@ class LearningEngine:
                 if cached and cached.get("sample_count", 0) >= min_samples:
                     if self._hours_since(cached.get("updated_at", "")) < _BIAS_CACHE_HRS:
                         return float(cached["bias"])
-            result = self._compute_multidim(team, season, ha, mo, min_samples, before_date=before_date)
+            result = self._compute_multidim(
+                team, season, ha, mo, min_samples, before_date=before_date,
+                prediction_source=prediction_source,
+            )
             if result is not None:
                 if before_date is None:
                     self.save_state(scope_key, "multidim_bias", {"bias": result[0]}, result[1], season)
                 return result[0]
 
         # Final fallback: simple team bias
-        return self.compute_team_bias(team, season, before_date=before_date)
+        return self.compute_team_bias(
+            team, season, before_date=before_date, prediction_source=prediction_source,
+        )
 
     def _compute_multidim(
         self,
@@ -682,10 +854,12 @@ class LearningEngine:
         month: Optional[int],
         min_samples: int,
         before_date: Optional[str] = None,
+        prediction_source: str = "live",
     ) -> Optional[Tuple[float, int]]:
         is_home = (home_away == "home")
         team_col    = "home_team" if is_home else "away_team"
-        lambda_col  = "lambda_home" if is_home else "lambda_away"
+        lambda_col  = _pred_col(prediction_source, "lambda_home" if is_home else "lambda_away")
+        sfj_col     = _pred_col(prediction_source, "stage_factors_json")
         actual_col  = "actual_home_runs" if is_home else "actual_away_runs"
 
         where = f"season = ? AND actual_home_runs IS NOT NULL AND {team_col} = ?"
@@ -699,7 +873,7 @@ class LearningEngine:
 
         with self._get_conn() as conn:
             rows = conn.execute(
-                f"SELECT {lambda_col}, {actual_col}, stage_factors_json "
+                f"SELECT {lambda_col} AS lambda_val, {actual_col}, {sfj_col} AS stage_factors_json "
                 f"FROM game_outcomes WHERE {where}",
                 params,
             ).fetchall()
@@ -709,7 +883,7 @@ class LearningEngine:
 
         ratios = [
             r for r in (
-                _l0_ratio(row[actual_col], row[lambda_col], row["stage_factors_json"], is_home)
+                _l0_ratio(row[actual_col], row["lambda_val"], row["stage_factors_json"], is_home)
                 for row in rows
             )
             if r is not None
@@ -909,8 +1083,13 @@ class LearningEngine:
     # Platt recalibration
     # ------------------------------------------------------------------
 
-    def get_platt_params(self, season: int) -> Tuple[float, float]:
-        """Return current (a, b) Platt logistic shrinkage coefficients."""
+    def get_platt_params(self, season: int, prediction_source: str = "live") -> Tuple[float, float]:
+        """Return current (a, b) Platt logistic shrinkage coefficients.
+
+        `prediction_source` — CHRON-001 fix (audit_20260714/): forwarded to
+        recalibrate_platt() if a refit is triggered below, so a backtest
+        caller never refits against live columns.
+        """
         cached = self.load_state("platt_params", "calibration", season)
         if cached:
             last_recal = cached.get("updated_at", "")
@@ -919,7 +1098,7 @@ class LearningEngine:
                 return float(cached.get("a", _PLATT_A_DEFAULT)), float(cached.get("b", _PLATT_B_DEFAULT))
         # Try to refit — recalibrate_platt returns identity (1.0, 0.0) when n < MIN_SAMPLES.
         try:
-            a, b = self.recalibrate_platt(season)
+            a, b = self.recalibrate_platt(season, prediction_source=prediction_source)
         except Exception as exc:
             logger.warning(f"[learning] Platt recalibration failed: {exc}")
             a, b = _PLATT_A_DEFAULT, _PLATT_B_DEFAULT
@@ -934,17 +1113,24 @@ class LearningEngine:
             return float(prev.get("a", _PLATT_A_DEFAULT)), float(prev.get("b", _PLATT_B_DEFAULT))
         return _PLATT_A_DEFAULT, _PLATT_B_DEFAULT
 
-    def recalibrate_platt(self, season: int) -> Tuple[float, float]:
+    def recalibrate_platt(self, season: int, prediction_source: str = "live") -> Tuple[float, float]:
         """
         Refit logistic regression mapping raw p_home → home_won on this season's data.
         Requires sklearn. Falls back to defaults if insufficient data.
+
+        `prediction_source` — CHRON-001 fix (audit_20260714/): live reads
+        p_home_raw/p_home as before (no behavior change); backtest reads
+        backtest_p_home_raw/backtest_p_home instead, so a backtest refit
+        never trains on a live game's actual prediction (or vice versa).
         """
+        p_home_col     = _pred_col(prediction_source, "p_home")
+        p_home_raw_col = _pred_col(prediction_source, "p_home_raw")
         with self._get_conn() as conn:
             rows = conn.execute(
-                """
-                SELECT COALESCE(p_home_raw, p_home) AS p_home, home_won
+                f"""
+                SELECT COALESCE({p_home_raw_col}, {p_home_col}) AS p_home, home_won
                 FROM game_outcomes
-                WHERE season = ? AND home_won IS NOT NULL AND p_home IS NOT NULL
+                WHERE season = ? AND home_won IS NOT NULL AND {p_home_col} IS NOT NULL
                 """,
                 (season,),
             ).fetchall()
@@ -1006,7 +1192,9 @@ class LearningEngine:
     # Platt-2D recalibration (edge-vs-outcome)
     # ------------------------------------------------------------------
 
-    def get_platt_2d_params(self, season: int) -> Optional[Tuple[float, float, float]]:
+    def get_platt_2d_params(
+        self, season: int, prediction_source: str = "live",
+    ) -> Optional[Tuple[float, float, float]]:
         """Return (a, b, c) Platt-2D coefficients for `season`, or None if
         there isn't enough historical data yet to fit one.
 
@@ -1015,6 +1203,12 @@ class LearningEngine:
         Callers MUST treat None as "leave p_home unchanged" — never fall back
         to identity coefficients silently, since (a=0,b=1,c=0) is a real,
         meaningful fit outcome, not a safe default.
+
+        `prediction_source` — CHRON-001 fix (audit_20260714/): forwarded to
+        recalibrate_platt_2d()'s training query (live p_home vs backtest_
+        p_home). The cache key itself ("platt2d_params") is intentionally
+        NOT source-scoped — out of scope for this fix; see
+        audit_20260714/14_remediation_roadmap.md Step 1's boundary.
         """
         cached = self.load_state("platt2d_params", "calibration", season)
         if cached:
@@ -1022,7 +1216,7 @@ class LearningEngine:
             if age_days < _PLATT2D_RECAL_DAYS:
                 return float(cached["a"]), float(cached["b"]), float(cached["c"])
         try:
-            result = self.recalibrate_platt_2d(season)
+            result = self.recalibrate_platt_2d(season, prediction_source=prediction_source)
         except Exception as exc:
             logger.warning(f"[learning] Platt-2D recalibration failed: {exc}")
             result = None
@@ -1037,18 +1231,29 @@ class LearningEngine:
                 return float(prev["a"]), float(prev["b"]), float(prev["c"])
         return None
 
-    def recalibrate_platt_2d(self, season: int) -> Optional[Tuple[float, float, float]]:
+    def recalibrate_platt_2d(
+        self, season: int, prediction_source: str = "live",
+    ) -> Optional[Tuple[float, float, float]]:
         """Refit logit(home_won) ~ a + b*logit(p_home) + c*logit(market_prob_home)
         on all seasons strictly before `season` (expanding window). Returns
         None — not identity — when there isn't enough data; the caller must
         not apply an unfit model.
+
+        `prediction_source` — CHRON-001 fix (audit_20260714/): selects
+        p_home vs backtest_p_home. ml_home_pin/ml_away_pin (the market
+        price) are NOT provenance-split — they record a real historical
+        fact (what Pinnacle actually quoted at prediction time), populated
+        independently by fetch_historical_odds.py::enrich_game_outcomes(),
+        not by record_prediction()/update_game_outcomes() — so they stay
+        shared regardless of source, same as actual_home_runs/home_won.
         """
+        p_home_col = _pred_col(prediction_source, "p_home")
         with self._get_conn() as conn:
             rows = conn.execute(
-                """
-                SELECT p_home, home_won, ml_home_pin, ml_away_pin
+                f"""
+                SELECT {p_home_col} AS p_home, home_won, ml_home_pin, ml_away_pin
                 FROM game_outcomes
-                WHERE season < ? AND home_won IS NOT NULL AND p_home IS NOT NULL
+                WHERE season < ? AND home_won IS NOT NULL AND {p_home_col} IS NOT NULL
                   AND ml_home_pin IS NOT NULL AND ml_away_pin IS NOT NULL
                   AND ml_home_pin > 1 AND ml_away_pin > 1
                 """,
@@ -1142,12 +1347,20 @@ class LearningEngine:
         actual_home: int,
         actual_away: int,
         season: int,
+        prediction_source: str = "live",
     ) -> None:
         """
         One gradient-descent step on pipeline weights using Poisson log-likelihood.
 
         Reads stored stage_factors_json to know each stage's contribution.
         Skips silently if stage_factors are missing.
+
+        `prediction_source` — CHRON-001 fix (audit_20260714/): live reads
+        lambda_home/lambda_away/stage_factors_json as before; backtest reads
+        the backtest_* shadow columns that update_game_outcomes() writes to
+        instead of the live ones, so a backtest gradient step trains on the
+        SAME λ/stage-factors it just computed this run, not on a live game's
+        real prediction (or stale data from a previous backtest run).
 
         Key format is "{stage}_on_{role}_lambda" (renamed 2026-07-06 — see
         run_module.py's inline comments at each _stage_factors[...] assignment
@@ -1163,10 +1376,14 @@ class LearningEngine:
         format — remove this fallback once a batched backtest has run with
         the renamed keys and no more old-format blobs remain in game_outcomes.
         """
+        lam_home_col = _pred_col(prediction_source, "lambda_home")
+        lam_away_col = _pred_col(prediction_source, "lambda_away")
+        sfj_col      = _pred_col(prediction_source, "stage_factors_json")
         with self._get_conn() as conn:
             row = conn.execute(
-                "SELECT lambda_home, lambda_away, stage_factors_json FROM game_outcomes "
-                "WHERE game_pk = ?",
+                f"SELECT {lam_home_col} AS lambda_home, {lam_away_col} AS lambda_away, "
+                f"{sfj_col} AS stage_factors_json FROM game_outcomes "
+                f"WHERE game_pk = ?",
                 (game_pk,),
             ).fetchone()
 
