@@ -1051,7 +1051,14 @@ class MLBStatsAPI:
                         previous_game_date = gd
 
             if not previous_venue or not previous_game_date:
-                return {"has_travel_fatigue": False, "miles_traveled": 0, "time_zones_crossed": 0, "back_to_back": False}
+                # Genuinely known, not fabricated: no completed prior game
+                # found in the lookback window, so there is no travel to
+                # report — 0 is the real answer here, not a guess.
+                return {
+                    "has_travel_fatigue": False, "miles_traveled": 0,
+                    "time_zones_crossed": 0, "back_to_back": False,
+                    "travel_source": "live",
+                }
 
             prev_dt = datetime.fromisoformat(previous_game_date.replace('Z', '+00:00'))
             hours_between = (game_dt - prev_dt).total_seconds() / 3600
@@ -1061,6 +1068,16 @@ class MLBStatsAPI:
             coords = WeatherAPI.STADIUM_COORDS
             miles = 0
             time_zones = 0
+            # FALL-002 fix (roadmap Step 4, audit_20260714/): an unmapped
+            # venue used to fabricate a plausible-looking "mid-range travel"
+            # guess (1000mi/1tz) here — indistinguishable downstream from a
+            # real measurement. That silent substitution is exactly what let
+            # REG-015 go undetected for weeks across 4 renamed stadiums.
+            # Missing now stays missing: miles/time_zones remain 0 (their
+            # honest "unknown, no fabricated number" default) and
+            # travel_source flags it so hfa_engine.py can apply a neutral
+            # multiplier instead of guessing.
+            travel_source = "live"
             if previous_venue in coords and current_venue in coords:
                 prev_c = coords[previous_venue]
                 curr_c = coords[current_venue]
@@ -1069,9 +1086,7 @@ class MLBStatsAPI:
                 tz_curr = _lon_to_tz_offset(curr_c["lon"])
                 time_zones = abs(tz_curr - tz_prev)
             elif previous_venue != current_venue:
-                # Fallback: unknown stadium → assume mid-range travel
-                miles = 1000
-                time_zones = 1
+                travel_source = "missing"
 
             has_fatigue = (miles > 1000 or time_zones >= 2) and hours_between < 30
 
@@ -1082,6 +1097,7 @@ class MLBStatsAPI:
                 "miles_traveled": miles,
                 "time_zones_crossed": time_zones,
                 "back_to_back": back_to_back,
+                "travel_source": travel_source,
             }
             with open(cache_file, "w") as f:
                 json.dump(result, f)
@@ -2049,6 +2065,11 @@ class MLBDataIntegrator:
                         enriched["miles_traveled_away"] = travel.get("miles_traveled", 0)
                         enriched["time_zones_crossed_away"] = travel.get("time_zones_crossed", 0)
                         enriched["back_to_back_away"] = travel.get("back_to_back", False)
+                        # FALL-002 fix (roadmap Step 4): flattened alongside
+                        # the other travel fields above, same convention —
+                        # hfa_engine.py reads this to tell a real 0-mile/0-tz
+                        # measurement apart from an unmapped-venue "missing".
+                        enriched["travel_source_away"] = travel.get("travel_source", "live")
                         if travel.get("has_travel_fatigue"):
                             logger.info(f"  ✈️ {game['away_team']}: {travel['miles_traveled']} mi, {travel['time_zones_crossed']} TZ")
 

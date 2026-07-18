@@ -111,6 +111,10 @@ class HFAEngine:
             "hfa_mult":        round(hfa_mult, 4),
             "uniform_home_mult": _UNIFORM_HOME_MULT,
             "travel_penalty":  round(travel_penalty, 4),
+            # FALL-002 fix (roadmap Step 4): purely additive provenance
+            # marker, same contract as park_weather_engine.py's
+            # weather_source — does not affect travel_penalty's value.
+            "travel_source":   game_data.get("travel_source_away", "live"),
         }
 
         logger.debug(
@@ -139,7 +143,19 @@ class HFAEngine:
             signal. Keeping it here would double-count the away team's B2B.
           • In practice travel fields are rarely populated by the free MLB API;
             the penalty fires mainly when game_data is enriched externally.
+          • FALL-002 fix (roadmap Step 4, audit_20260714/): when
+            data_fetchers.py::get_travel_fatigue() couldn't resolve
+            coordinates for one of the two venues (an unmapped/renamed
+            stadium — REG-015's exact failure mode), it now reports
+            travel_source_away="missing" instead of fabricating a
+            plausible-looking 1000mi/1tz guess. This function honors that:
+            a missing source means a genuinely neutral (zero) penalty, not
+            a specific fabricated one — an honest "we don't know, so we
+            don't adjust" beats a confident-looking wrong number.
         """
+        if game_data.get("travel_source_away", "live") == "missing":
+            return 0.0
+
         _mi = game_data.get("miles_traveled_away")
         miles      = float(_mi if _mi is not None else 0)
         _tz = game_data.get("time_zones_crossed_away")

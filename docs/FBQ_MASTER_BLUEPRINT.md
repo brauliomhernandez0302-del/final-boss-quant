@@ -1,9 +1,36 @@
 # FINAL BOSS QUANT — MASTER BLUEPRINT G∞
 ## De sistema casero a operación cuantitativa de nivel institucional
 
-**Versión:** 1.6 — Julio 2026 (deduplicación ODDS-001 + MATH-001, roadmap paso 3, sesión 2026-07-18)
-**Punto de partida:** MLB pipeline con Brier honesto **0.24482 / accuracy 55.34%** (sin cambio — ver nota v1.6, ambos fixes de esta versión son deduplicación pura, confirmada no-op por su propio gate), 495 tests, remediación look-ahead sustancialmente completada (ver 0.1)
+**Versión:** 1.7 — Julio 2026 (fallbacks honestos FALL-001 + FALL-002, roadmap paso 4, sesión 2026-07-18)
+**Punto de partida:** MLB pipeline con Brier honesto **0.24482 / accuracy 55.34%** (sin cambio — ver nota v1.7, ambos fixes son señalización de procedencia pura, confirmada no-op por su propio gate), 504 tests, remediación look-ahead sustancialmente completada (ver 0.1)
 **Principio rector:** Un cambio a la vez. Backtest después de cada uno. Nada entra sin validación PIT.
+
+**Nota de esta versión (v1.7)**: roadmap paso 4 — eleva a principio de proyecto un patrón que
+ya existía en el mejor código del repo (`ui/odds_loader.py`/REG-028, `get_platt_2d_params()`):
+*un fallback jamás produce un valor indistinguible de una medición real; lo faltante se
+señala con procedencia explícita, nunca se fabrica*. **FALL-001**: `adjust_for_park_and_weather()`
+gana `weather_source: "live"|"missing"` en su metadata — puramente aditivo, el multiplicador
+numérico no cambió ni un bit (verificado: `weather_mult` idéntico al valor neutral pre-fix
+para un venue no mapeado). Efecto colateral correcto: el backtest, weather-blind por diseño,
+ahora reporta `"missing"` en el 100% de los juegos — verdad auto-documentada, no un bug.
+**FALL-002**: `get_travel_fatigue()` dejó de fabricar `1000mi/1tz` para un venue sin
+coordenadas — el modo de fallo exacto que dejó a REG-015 invisible semanas para 4 estadios
+renombrados. Ahora regresa `0`s honestos + `travel_source: "live"|"missing"`; `hfa_engine.py`
+aplica penalización neutral (0.0) cuando ve `"missing"` en vez de adivinar. Cambio de
+comportamiento real, pero solo en el caso de fallo — con los 30 estadios activos ya mapeados
+post-REG-015, cero ocurrencias en producción hoy; la diferencia solo se manifestará en el
+próximo rename, degradando con honestidad en vez de fabricar. **Test nuevo que cierra el gap
+que el propio audit dejó anotado** (`findings.csv` bajo REG-015): cada venue de
+`STADIUM_DATABASE` debe resolver en los otros 2 diccionarios de coordenadas — la invariante
+exacta que REG-015 violó, ahora en CI. Ninguno de los dos fixes se serializa en el reporte del
+backtest ni en `stage_factors_json` (verificado: `_park_meta`/la metadata de HFA se descartan
+en `backtest_and_retrain.py`, nunca llegan a `_sf`) — gate estándar, diff byte a byte contra
+el reporte del paso 3, única diferencia el timestamp `run_at`. 9 tests nuevos
+(`tests/test_paso4_honest_fallbacks.py`), 504/504 en verde. Regla de promoción de
+calibración (ride-along del paso 3): confirmado por grep que ya vive en `CONTRACTS.md` desde
+el paso 3 — no se agregó a `CLAUDE.md` porque la condición ("si no está en ninguno") no se
+cumplió. `MANIFIESTO.md` sigue sin crearse, decisión deliberada — consolidar en los tres docs
+existentes en vez de una cuarta autoridad driftable, la lección directa de CLAUDE2.md/REG-033.
 
 **Nota de esta versión (v1.6)**: roadmap paso 3 — el bundle de deduplicación que el propio audit
 (`audit_20260714/`) marcó como "provablemente no-op", en un solo commit atómico con un solo

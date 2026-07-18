@@ -288,6 +288,15 @@ class ParkWeatherEngine:
             roof_closed = True   # default retractable parks to closed
 
         weather     = game_data.get("weather", {})
+        # FALL-001 fix (roadmap Step 4, audit_20260714/): purely additive
+        # provenance marker — does NOT change weather_mult's value or how
+        # it's computed (that stays _weather_mult()'s unmodified neutral
+        # path when `weather` is empty). Distinguishes "genuinely neutral
+        # conditions" from "we don't know" (an unmapped/renamed venue —
+        # REG-015's exact failure mode — an API fetch failure, or the
+        # backtest, which is weather-blind by design and will therefore
+        # report 'missing' on every single game; see CONTRACTS.md).
+        weather_source = "live" if weather else "missing"
         weather_mult, wx_meta = self._weather_mult(weather, stadium, roof_closed)
 
         total_mult = park_mult * weather_mult
@@ -334,6 +343,7 @@ class ParkWeatherEngine:
             "park_name":              park_name,
             "park_factor":            round(park_mult,    4),
             "weather_mult":           round(weather_mult, 4),
+            "weather_source":         weather_source,
             "total_mult":             round(total_mult,   4),
             "roof_closed":            roof_closed,
             "postponement_risk":      weather.get("postponement_risk",
