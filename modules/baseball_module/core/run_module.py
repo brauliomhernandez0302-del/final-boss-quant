@@ -667,6 +667,20 @@ def run_module(
         results['metadata']['park_weather'] = park_meta
         _stage_factors['park_on_home_lambda'] = _raw_h_park
         _stage_factors['park_on_away_lambda'] = _raw_a_park
+        # Ride-along (roadmap Step 5, MATH-003 5d.3): this flag was write-only
+        # metadata since FALL-002 (Step 4) — nobody saw a live REG-015-class
+        # failure (unmapped venue, API outage) unless they went looking in
+        # game_info. run_module.py is the live-only entrypoint (the backtest
+        # driver calls these engines directly, never through here — see
+        # CONTRACTS.md), so this warning only fires for genuine live gaps,
+        # never the always-"missing" backtest case (weather-blind by design,
+        # see park_weather_engine.py's own comment on that).
+        if park_meta.get('weather_source') == 'missing':
+            logger.warning(
+                "PASO 5: weather_source=missing for this live game — "
+                "park+weather adjustment ran with neutral (no rain/wind/temp) "
+                "conditions, not a fabricated guess. Check the OpenWeather fetch."
+            )
         logger.info(
             f"   ✅ Park+Weather: park={park_meta['park_factor']:.3f}  "
             f"weather={park_meta['weather_mult']:.3f}  "
@@ -723,6 +737,16 @@ def run_module(
             results['lambdas_history']['hfa'] = {'lh': lh, 'la': la}
             results['metadata']['hfa'] = hfa_meta
             logger.info(f"   ✅ HFA adjusted: λ_h={lh:.3f}, λ_a={la:.3f} (w={_w_hfa:.3f})")
+            # Ride-along (roadmap Step 5, MATH-003 5d.3) — same reasoning as
+            # the weather_source warning above: live-only, was write-only
+            # metadata since FALL-002.
+            if hfa_meta.get('travel_source') == 'missing':
+                logger.warning(
+                    "PASO 7: travel_source=missing for this live game — "
+                    "away-team travel fatigue ran with a neutral (zero) "
+                    "penalty, not a fabricated guess. Check venue coordinate "
+                    "resolution in data_fetchers.py::get_travel_fatigue()."
+                )
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 8: MARKET ODDS (usa las pre-cargadas del selector o las fetcha)

@@ -81,6 +81,7 @@ Each sport has a `run_module()` function that returns `Dict[str, Any]` with keys
 - **EV calculation**: `EV = (prob × (odds - 1)) - (1 - prob)` in decimal odds. Positive EV + minimum rating threshold = actionable pick.
 - **Safe module loading**: `safe_import()` in `app.py` gracefully handles missing modules; analyzers fall back gracefully when sport modules are unavailable.
 - **Streamlit + terminal dual mode**: `run_module.py` detects Streamlit availability with a try/except around `import streamlit as st`; falls back to selecting the first game in terminal mode.
+- **Backtest-validated calibration does not reach live automatically**: since CHRON-002, `ml_state`/`kalman_state` are split by `state_source` (`'live'` vs `'backtest'`). A model/pipeline change validated via a backtest run must be followed by `python3 scripts/promote_calibration.py --season <N> --mechanism <...> --confirm` before it's trusted in production — see `CONTRACTS.md`'s `ml_state` entry and the operational-rule callout right above the `calibration/learning_engine.py` row for the full mechanism list and TTL/promotion details.
 
 ## Estado actual
 
@@ -197,5 +198,21 @@ existe de forma independiente en el lado de PITCHERS (`savant_daily_aggregator.p
 `pitcher_prior_baseline.py`) — no es código compartido con el lado de ofensa, pero es la misma
 clase de bug. No tocado; reportado como decisión pendiente del dueño en
 `audit_20260714/math002_diagnostico/paso5b1_precondiciones.md` §4.
+
+3. **MATH-003 — análisis residual, sin implementar** (`scripts/math003_home_win_residual.py`,
+   repetible): re-corrida la misma metodología que originalmente derivó
+   `_UNIFORM_HOME_MULT=0.028`, sobre el baseline post-5c. Resultado: el término cierra
+   consistentemente ~1.6pp de sub-predicción en ambas temporadas (como fue diseñado), pero el
+   gap subyacente real NO es igual entre temporadas — 2024 queda con residual +0.08pp
+   (esencialmente cerrado), 2025 retiene +1.47pp sin corregir (su gap real, ~3.10pp, es casi el
+   doble que el de 2024, ~1.70pp). **Decisión abierta del dueño, no resuelta aquí** (por regla
+   explícita del paso, un residual que implica otro valor se reporta, no se cambia): subir el
+   valor cerraría 2025 pero sobre-corregiría 2024; ver
+   `audit_20260714/math002_diagnostico/paso5d_math003_residual.md` para las opciones
+   consideradas. `_UNIFORM_HOME_MULT` se queda en `0.028` sin cambios.
+
+Ride-alongs: `run_module.py` ahora emite `logger.warning` (modo live únicamente — el backtest
+nunca pasa por este entrypoint) cuando `weather_source`/`travel_source` llegan `"missing"`,
+para que la próxima falla clase REG-015 aparezca en logs y no solo en metadata sin abrir.
 
 Memoria de la sesión: `project_math002_math003_20260718.md`.
