@@ -546,7 +546,17 @@ class _RawTeamAccumulator:
 
         if event.launch_speed_angle == 6:
             self.barrel_count += 1
-        if event.launch_speed is not None:
+
+        # MATH-002 fix (2026-07-18, audit_20260714/math002_diagnostico/reporte.md):
+        # this is a separate reimplementation of _aggregate_common()'s counting
+        # logic (streaming accumulator vs. list comprehension) and had the same
+        # foul-inflation bug independently — scoped to PA-terminal events here
+        # too, matching _aggregate_common()'s fix. is_pa_event is a per-event
+        # boolean (Statcast sets woba_denom/events only on the terminal pitch
+        # of an at-bat), so evaluating it inline while streaming is safe and
+        # doesn't need to see later pitches of the same at-bat.
+        is_pa_event = _is_plate_appearance_event(event)
+        if is_pa_event and event.launch_speed is not None:
             self.batted_ball_count += 1
             self.hit_speed_sum += event.launch_speed
             self.hit_speed_count += 1
@@ -557,7 +567,7 @@ class _RawTeamAccumulator:
                 if 8.0 <= event.launch_angle <= 32.0:
                     self.sweet_spot_count += 1
 
-        if _is_plate_appearance_event(event):
+        if is_pa_event:
             key = (event.game_pk, event.at_bat_number)
             existing = self.pa_events.get(key)
             if existing is None or event.pitch_number >= existing.pitch_number:
@@ -632,7 +642,12 @@ def _aggregate_team(
 
 def _aggregate_common(events: list[Any]) -> dict[str, Any]:
     pa_events = _plate_appearance_events(events)
-    batted_ball_events = [event for event in events if event.launch_speed is not None]
+    # MATH-002 fix (2026-07-18, audit_20260714/math002_diagnostico/reporte.md):
+    # must be scoped to pa_events, not the raw `events` list — Statcast tracks
+    # launch_speed on fouls too (ball physically contacted, PA continues), and
+    # counting those inflated batted_ball_count ~1.9x vs. the true count of
+    # PA-terminal batted-ball events (confirmed empirically, 16/16 samples).
+    batted_ball_events = [event for event in pa_events if event.launch_speed is not None]
     launch_speeds = [event.launch_speed for event in batted_ball_events if event.launch_speed is not None]
     launch_angles = [event.launch_angle for event in batted_ball_events if event.launch_angle is not None]
     est_woba_values = [
