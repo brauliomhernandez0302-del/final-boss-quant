@@ -105,10 +105,16 @@ def _pred_col(prediction_source: str, logical_name: str) -> str:
 def _l0_ratio(
     actual_runs: float,
     lambda_final: float,
-    stage_factors_json: Optional[str],
     is_home: bool,
 ) -> Optional[float]:
     """Compute O/λ_final for one game-side (untruncated on the home side).
+
+    MATH-001 fix (roadmap Step 3, 2026-07): dropped the `stage_factors_json`
+    parameter — vestigial from the two reverted denominator-change attempts
+    below (attempts 1/2 needed it to extract a logged L0 value; the kept,
+    final version never reads it). See the postmortem immediately below,
+    preserved verbatim — it is why no third attempt should touch this
+    function without new information.
 
     2026-07-11/12 postmortem, kept for anyone reading git blame or old
     session notes — two attempts were made this session to change this
@@ -765,12 +771,10 @@ class LearningEngine:
 
         lam_home_col = _pred_col(prediction_source, "lambda_home")
         lam_away_col = _pred_col(prediction_source, "lambda_away")
-        sfj_col      = _pred_col(prediction_source, "stage_factors_json")
         query = f"""
             SELECT home_team, away_team,
                    {lam_home_col} AS lambda_home, {lam_away_col} AS lambda_away,
-                   actual_home_runs, actual_away_runs,
-                   {sfj_col} AS stage_factors_json
+                   actual_home_runs, actual_away_runs
             FROM game_outcomes
             WHERE season = ?
               AND actual_home_runs IS NOT NULL
@@ -790,9 +794,9 @@ class LearningEngine:
         ratios = []
         for r in rows:
             if r["home_team"] == team:
-                ratio = _l0_ratio(r["actual_home_runs"], r["lambda_home"], r["stage_factors_json"], is_home=True)
+                ratio = _l0_ratio(r["actual_home_runs"], r["lambda_home"], is_home=True)
             elif r["away_team"] == team:
-                ratio = _l0_ratio(r["actual_away_runs"], r["lambda_away"], r["stage_factors_json"], is_home=False)
+                ratio = _l0_ratio(r["actual_away_runs"], r["lambda_away"], is_home=False)
             else:
                 continue
             if ratio is not None:
@@ -962,7 +966,6 @@ class LearningEngine:
         is_home = (home_away == "home")
         team_col    = "home_team" if is_home else "away_team"
         lambda_col  = _pred_col(prediction_source, "lambda_home" if is_home else "lambda_away")
-        sfj_col     = _pred_col(prediction_source, "stage_factors_json")
         actual_col  = "actual_home_runs" if is_home else "actual_away_runs"
 
         where = f"season = ? AND actual_home_runs IS NOT NULL AND {team_col} = ?"
@@ -976,7 +979,7 @@ class LearningEngine:
 
         with self._get_conn() as conn:
             rows = conn.execute(
-                f"SELECT {lambda_col} AS lambda_val, {actual_col}, {sfj_col} AS stage_factors_json "
+                f"SELECT {lambda_col} AS lambda_val, {actual_col} "
                 f"FROM game_outcomes WHERE {where}",
                 params,
             ).fetchall()
@@ -986,7 +989,7 @@ class LearningEngine:
 
         ratios = [
             r for r in (
-                _l0_ratio(row[actual_col], row["lambda_val"], row["stage_factors_json"], is_home)
+                _l0_ratio(row[actual_col], row["lambda_val"], is_home)
                 for row in rows
             )
             if r is not None

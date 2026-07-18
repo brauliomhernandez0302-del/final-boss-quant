@@ -55,6 +55,7 @@ sys.path.insert(0, str(ROOT))
 
 from math import log as _log, exp as _exp
 from config import DATA_DIR, LEAGUE_AVG_ERA, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP
+from core.value_detector import remove_vig_multiplicative
 from data_fetchers import MLBDataIntegrator, MLBStatsAPI
 from modules.baseball_module.hfa.park_weather_engine import STADIUM_DATABASE as _STADIUM_DB
 from modules.baseball_module.calibration.learning_engine import LearningEngine, untruncate_home_runs
@@ -2019,14 +2020,6 @@ def update_game_outcomes(
     )
 
 
-# ── pinnacle devig ─────────────────────────────────────────────────────────
-
-def _devig(o1: float, o2: float) -> Tuple[float, float]:
-    """Multiplicative devig of a two-outcome market."""
-    t = 1.0 / o1 + 1.0 / o2
-    return (1.0 / o1) / t, (1.0 / o2) / t
-
-
 # ── report ─────────────────────────────────────────────────────────────────
 
 def generate_report(
@@ -2703,7 +2696,7 @@ def main() -> None:
         for r in result_rows:
             pin_fh = pin_fa = None
             if r["ml_home_pin"] and r["ml_away_pin"]:
-                pin_fh, pin_fa = _devig(r["ml_home_pin"], r["ml_away_pin"])
+                pin_fh, pin_fa = remove_vig_multiplicative([r["ml_home_pin"], r["ml_away_pin"]])
             results.append({
                 "game_pk":         r["game_pk"], "season": r["season"],
                 "lh":              r["lh"], "la": r["la"],
@@ -3194,7 +3187,7 @@ def main() -> None:
             # Pinnacle fair prob
             pin_fh = pin_fa = None
             if row["ml_home_pin"] and row["ml_away_pin"]:
-                pin_fh, pin_fa = _devig(row["ml_home_pin"], row["ml_away_pin"])
+                pin_fh, pin_fa = remove_vig_multiplicative([row["ml_home_pin"], row["ml_away_pin"]])
 
             results.append({
                 "game_pk":        game_pk,

@@ -1,9 +1,34 @@
 # FINAL BOSS QUANT — MASTER BLUEPRINT G∞
 ## De sistema casero a operación cuantitativa de nivel institucional
 
-**Versión:** 1.5 — Julio 2026 (auditoría completa de solo-lectura + remediación CHRON-001/CHRON-002, sesión 2026-07-14/18)
-**Punto de partida:** MLB pipeline con Brier honesto **0.24482 / accuracy 55.34%** (baseline canónico corregido 2026-07-18 — ver nota v1.5; el "0.24486/55.42%" citado en v1.3/v1.4 era doc drift frente al reporte real en disco), 483 tests, remediación look-ahead sustancialmente completada (ver 0.1)
+**Versión:** 1.6 — Julio 2026 (deduplicación ODDS-001 + MATH-001, roadmap paso 3, sesión 2026-07-18)
+**Punto de partida:** MLB pipeline con Brier honesto **0.24482 / accuracy 55.34%** (sin cambio — ver nota v1.6, ambos fixes de esta versión son deduplicación pura, confirmada no-op por su propio gate), 495 tests, remediación look-ahead sustancialmente completada (ver 0.1)
 **Principio rector:** Un cambio a la vez. Backtest después de cada uno. Nada entra sin validación PIT.
+
+**Nota de esta versión (v1.6)**: roadmap paso 3 — el bundle de deduplicación que el propio audit
+(`audit_20260714/`) marcó como "provablemente no-op", en un solo commit atómico con un solo
+gate. **ODDS-001**: `backtest_and_retrain.py` mantenía su propia `_devig()`, copia algebraica
+de `core/value_detector.py::remove_vig_multiplicative` nunca importada de ahí — la 5ª
+instancia confirmada del patrón de drift-por-duplicación de este codebase (`LG_XWOBA`,
+diccionarios de estadios, F5 naming, fórmula TTE). Reemplazada por el import compartido;
+verificado bit-idéntico (no solo aproximado) contra 8 pares de odds diversos antes del swap.
+**MATH-001**: `_l0_ratio()` en `learning_engine.py` aceptaba `stage_factors_json` sin leerlo
+nunca — vestigio de los dos intentos revertidos de REG-006 (Brier 0.24479→0.24550→0.24636).
+Removido de la firma y de sus 3 call sites; verificado que el acceso a rows en los tres es
+por nombre (`sqlite3.Row`), nunca posicional, así que quitar la columna del `SELECT` no corrió
+ningún índice. Los postmortems de `_l0_ratio` y `compute_team_bias_kalman_adjusted` se
+preservaron verbatim — son memoria institucional que ya evitó un tercer intento fallido.
+12 tests nuevos (`tests/test_paso3_dedup.py`), 495/495 en verde. Gate: `--season 2024,2025
+--use-full-pit` re-corrido en tmux, diff contra el reporte validado del paso 2
+(`chron002_gate_validation/backtest_report_20260718_0543.json`) — única diferencia, el
+timestamp `run_at`, confirmando que ninguno de los dos cambios movió el modelo. **Regla
+operativa nueva, documentada en `CONTRACTS.md`** (ride-along del paso 2, no un cambio de este
+paso): desde CHRON-002, la calibración Platt (1D) en vivo NO hereda automáticamente los
+refits de un backtest validado — requiere `scripts/promote_calibration.py --confirm`
+explícito. Kalman y team bias sí se auto-mantienen en vivo. `MANIFIESTO.md`, citado en los
+tres prompts de esta sesión como el lugar para esta regla, **no existe en el repo** (confirmado
+por `find` + `git log --all`) — la regla quedó solo en `CONTRACTS.md` hasta que se decida la
+forma de ese documento.
 
 **Nota de esta versión (v1.5)**: sesión de dos fases. **Fase 1 (2026-07-14)**: auditoría
 completa de solo-lectura de todo el proyecto (13 secciones — leakage, cronología,
