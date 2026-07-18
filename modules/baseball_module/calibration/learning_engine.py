@@ -1319,6 +1319,7 @@ class LearningEngine:
 
     def get_platt_2d_params(
         self, season: int, prediction_source: str = "live",
+        training_columns: str = "backtest_preferred",
     ) -> Optional[Tuple[float, float, float]]:
         """Return (a, b, c) Platt-2D coefficients for `season`, or None if
         there isn't enough historical data yet to fit one.
@@ -1330,11 +1331,13 @@ class LearningEngine:
         meaningful fit outcome, not a safe default.
 
         `prediction_source` — CHRON-001 fix (audit_20260714/): forwarded to
-        recalibrate_platt_2d()'s training query (live p_home vs backtest_
-        p_home). CHRON-002 fix (roadmap Step 2 Commit A): the
-        ("platt2d_params") cache itself is now also state_source-scoped —
-        closes the residual CHRON-001 left open (see that fix's audit
-        note; this was "out of scope" there, in scope here).
+        recalibrate_platt_2d()'s training query. CHRON-002 fix (roadmap
+        Step 2 Commit A): the ("platt2d_params") cache itself is now also
+        state_source-scoped — closes the residual CHRON-001 left open (see
+        that fix's audit note; this was "out of scope" there, in scope here).
+
+        `training_columns` — roadmap Step 2, Commit B: see
+        recalibrate_platt_2d()'s docstring for what this selects.
         """
         cached = self.load_state("platt2d_params", "calibration", season, prediction_source)
         if cached:
@@ -1342,7 +1345,9 @@ class LearningEngine:
             if age_days < _PLATT2D_RECAL_DAYS:
                 return float(cached["a"]), float(cached["b"]), float(cached["c"])
         try:
-            result = self.recalibrate_platt_2d(season, prediction_source=prediction_source)
+            result = self.recalibrate_platt_2d(
+                season, prediction_source=prediction_source, training_columns=training_columns,
+            )
         except Exception as exc:
             logger.warning(f"[learning] Platt-2D recalibration failed: {exc}")
             result = None
@@ -1359,21 +1364,56 @@ class LearningEngine:
 
     def recalibrate_platt_2d(
         self, season: int, prediction_source: str = "live",
+        training_columns: str = "backtest_preferred",
     ) -> Optional[Tuple[float, float, float]]:
         """Refit logit(home_won) ~ a + b*logit(p_home) + c*logit(market_prob_home)
         on all seasons strictly before `season` (expanding window). Returns
         None — not identity — when there isn't enough data; the caller must
         not apply an unfit model.
 
-        `prediction_source` — CHRON-001 fix (audit_20260714/): selects
-        p_home vs backtest_p_home. ml_home_pin/ml_away_pin (the market
-        price) are NOT provenance-split — they record a real historical
-        fact (what Pinnacle actually quoted at prediction time), populated
-        independently by fetch_historical_odds.py::enrich_game_outcomes(),
-        not by record_prediction()/update_game_outcomes() — so they stay
-        shared regardless of source, same as actual_home_runs/home_won.
+        `prediction_source` — CHRON-001 fix (audit_20260714/): selects the
+        state_source namespace and the plain-column fallback in
+        `training_columns='live_only'` mode. ml_home_pin/ml_away_pin (the
+        market price) are NOT provenance-split — they record a real
+        historical fact (what Pinnacle actually quoted at prediction time),
+        populated independently by fetch_historical_odds.py::
+        enrich_game_outcomes(), not by record_prediction()/
+        update_game_outcomes() — so they stay shared regardless of source,
+        same as actual_home_runs/home_won.
+
+        `training_columns` — roadmap Step 2, Commit B (audit_20260714/
+        14_remediation_roadmap.md). This is the ONLY cross-season reader of
+        game_outcomes prediction columns anywhere in the live-reachable code
+        path (confirmed by repo-wide enumeration,
+        audit_20260714/chron002_commitB_enumeration.md) — it trains on
+        `WHERE season < ?`, i.e. seasons that, since CHRON-001, have their
+        live prediction columns permanently FROZEN at whatever they were
+        before that fix landed (a backtest can no longer refresh them).
+        The backtest_* columns, by contrast, ARE refreshed by every
+        validated backtest re-run and reflect the CURRENT model — exactly
+        what a calibration layer training on "how well does today's model
+        agree with reality" wants as input, not a frozen historical
+        snapshot of a possibly-superseded model version.
+          - 'backtest_preferred' (default): reads
+            COALESCE(backtest_p_home, p_home) — prefers the fresher
+            backtest value, falling back to the live column only for rows a
+            backtest has never touched (there both columns already agree,
+            since backtest_p_home is NULL and COALESCE picks p_home).
+          - 'live_only': the pre-Commit-B behavior — reads the plain
+            `prediction_source`-selected column only. Kept for the
+            equality-freeze test (today, on this DB, backtest_p_home ==
+            p_home for every row a backtest has touched, so both modes
+            produce byte-identical fits — this mode exists to prove that,
+            not because it should be used going forward).
         """
-        p_home_col = _pred_col(prediction_source, "p_home")
+        if training_columns == "backtest_preferred":
+            _primary = _pred_col("backtest", "p_home")
+            _fallback = _pred_col(prediction_source, "p_home")
+            p_home_col = f"COALESCE({_primary}, {_fallback})"
+        elif training_columns == "live_only":
+            p_home_col = _pred_col(prediction_source, "p_home")
+        else:
+            raise ValueError(f"unknown training_columns={training_columns!r}")
         with self._get_conn() as conn:
             rows = conn.execute(
                 f"""
