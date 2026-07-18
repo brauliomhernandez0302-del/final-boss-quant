@@ -159,3 +159,43 @@ corrida del 2026-06-28, ninguna recuperable de ningún backup en disco (`audit_2
   regresión, ver comentario en el código).
 
 Memoria de la sesión: `project_mlb_engine_hygiene_20260711.md`.
+
+### Actualización 2026-07-18 — MATH-002/MATH-003 (roadmap audit_20260714, Paso 5)
+
+**Baseline vigente: Brier 0.24483 / accuracy 55.51%** (mismo comando `--season 2024,2025
+--use-full-pit`, 4,830 juegos) — supersede el 0.24482/55.34% de arriba. **Reporte canónico**:
+`audit_20260714/paso5c_gate/backtest_report_20260718_1452.json` — esta ruta, no la prosa, es
+la fuente de verdad; ver la nota de baseline al inicio de esta sección de CLAUDE.md sobre por
+qué esa distinción importa.
+
+Dos bugs reales de conteo (mismo mecanismo, dos implementaciones independientes) y un fix de
+paridad de métrica, cada uno validado con backtest completo antes/después:
+
+1. **`batted_ball_count` inflado por fouls** (`savant_offense_daily_aggregator.py`): contaba
+   cualquier pitch con `launch_speed` trackeado, incluyendo fouls no terminales de PA —
+   inflación real 1.905x sobre el conteo verdadero (16/16 muestras validadas offline,
+   `audit_20260714/math002_diagnostico/`). Encontrado en DOS implementaciones independientes
+   (`_aggregate_common()` y `_RawTeamAccumulator`, esta última alimentando `prior_baseline` y
+   una vía alterna de `team_offense.rolling` que el diagnóstico inicial no había detectado).
+   Ambas corregidas; los tres namespaces afectados (`savant.batter.rolling`,
+   `savant.team_offense.rolling`, `savant.team_offense.prior_baseline`) reconstruidos 100%
+   offline para ambas temporadas. Fixture permanente de regresión:
+   `tests/test_math002_batted_ball_count_fixture.py`. Commit identity (nada consumía el campo
+   todavía): backtest byte-idéntico salvo timestamp.
+2. **Switch de MATH-002** (`tte_pit_adapter.py`): el adaptador PIT regresionaba `barrel%` como
+   una métrica per-PA de punta a punta (numerador `barrel_count/plate_appearances`, prior
+   `0.054` per-PA, n=`pa`) — internamente consistente pero distinta a la definición del motor
+   en vivo (`barrels_sum/attempts_sum`, prior `0.088`, n=`attempts`). Corregido para igualar
+   exactamente al motor en vivo (numerador, prior, Y n cambiados juntos — cambiar solo la n
+   hubiera sido una quimera dimensional). `K_BARREL=120` sin tocar, ya coincidía. Delta
+   acotado y aprobado por el dueño: +0.17pp accuracy, Brier esencialmente plano (+0.00001),
+   solo 1 de 4,859 juegos movió su `p_home` más de 1pp (tabla completa en
+   `audit_20260714/math002_diagnostico/paso5c4_delta_gate.md`).
+
+**Residual pendiente, fuera de alcance de este paso**: el mismo bug de conteo (foul-inflation)
+existe de forma independiente en el lado de PITCHERS (`savant_daily_aggregator.py`,
+`pitcher_prior_baseline.py`) — no es código compartido con el lado de ofensa, pero es la misma
+clase de bug. No tocado; reportado como decisión pendiente del dueño en
+`audit_20260714/math002_diagnostico/paso5b1_precondiciones.md` §4.
+
+Memoria de la sesión: `project_math002_math003_20260718.md`.

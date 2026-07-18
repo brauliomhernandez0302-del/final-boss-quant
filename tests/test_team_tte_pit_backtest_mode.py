@@ -458,6 +458,7 @@ def _seed_team_tte_pit(cache, *, team_id, as_of_date, est_woba):
             "est_woba": est_woba,
             "woba": est_woba - 0.010,
             "barrel_pa": 0.095,
+            "brl_percent": 14.25,
             "bb_pct": 0.090,
             "k_pct": 0.210,
             "pa": 240,

@@ -1,6 +1,8 @@
 import inspect
 
 from modules.baseball_module.advanced_pit_enrichment import adapt_tte_pit_snapshot_to_lambda
+from modules.baseball_module.advanced_pit_enrichment.tte_pit_adapter import K_BARREL, LG_BARREL_PA
+from modules.baseball_module.offense.tte_formula import regress
 
 
 def test_complete_snapshot_produces_lambda_when_formula_requirements_are_met():
@@ -193,6 +195,46 @@ def test_no_live_backtest_or_run_module_imports():
     assert "backtest_and_retrain" not in source
     assert "run_module" not in source
     assert "true_talent_engine" not in source
+
+
+def test_barrel_shrinkage_uses_attempts_not_pa():
+    """MATH-002 audit test: barrel's Bayesian sample size must be `bip`
+    (batted-ball-events/attempts), matching the live offense engine, not
+    `pa`. Regression check: derive f_barrel = barrel_reg / LG_BARREL_PA from
+    the output and confirm it matches regress(..., n=bip, ...) exactly,
+    and would NOT match regress(..., n=pa, ...) since bip != pa here."""
+    snapshot = _snapshot(team_brl_percent=9.0, pa=400, bip=250)
+    result = adapt_tte_pit_snapshot_to_lambda(snapshot)
+
+    barrel_cur = 9.0 / 100.0
+    expected_reg_with_bip = regress(barrel_cur, LG_BARREL_PA, 250, K_BARREL)
+    expected_reg_with_pa = regress(barrel_cur, LG_BARREL_PA, 400, K_BARREL)
+    assert expected_reg_with_bip != expected_reg_with_pa  # sanity: the two bases actually differ
+
+    expected_f_barrel_with_bip = round(expected_reg_with_bip / LG_BARREL_PA, 4)
+    expected_f_barrel_with_pa = round(expected_reg_with_pa / LG_BARREL_PA, 4)
+    f_barrel = result["provenance"]["factors"]["f_barrel"]
+
+    assert f_barrel == expected_f_barrel_with_bip
+    assert f_barrel != expected_f_barrel_with_pa
+
+
+def test_barrel_current_input_is_per_attempt_rate_not_per_pa():
+    """MATH-002: barrel_cur must come from team_brl_percent/100 (per-attempt,
+    barrel_count/batted_ball_count), not the legacy per-PA barrel_pa field."""
+    snapshot = _snapshot(team_brl_percent=12.0, barrel_pa=0.999, pa=300, bip=200)
+    result = adapt_tte_pit_snapshot_to_lambda(snapshot)
+
+    assert result["provenance"]["formula_inputs"]["barrel_pa"] == 0.12
+
+
+def test_missing_bip_returns_none_with_fallback_used():
+    result = adapt_tte_pit_snapshot_to_lambda(
+        _snapshot(team_est_woba=0.330, team_brl_percent=9.0, bb_pct=0.09, k_pct=0.21, pa=300, bip=None),
+    )
+
+    assert result["lambda_offense"] is None
+    assert result["fallback_used"] == "missing_inputs:bip"
 
 
 def _snapshot(**overrides):

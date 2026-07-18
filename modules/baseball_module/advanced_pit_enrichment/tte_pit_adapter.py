@@ -32,17 +32,30 @@ FORMULA_VERSION = "tte_pit_adapter_v1"
 LG_RPG = LEAGUE_AVG_RUNS
 LG_XWOBA = LEAGUE_AVG_XWOBA  # single source of truth: config.py
 LG_WOBA = LEAGUE_AVG_WOBA
-# Re-centered 2026-07-11: this adapter reads the per-PA `barrel_pa` field
-# (barrel_count / plate_appearances), but the constant was 0.088 — the
-# well-known public per-batted-ball-event (attempts) league average, not the
-# per-PA one. Same bug class already fixed in the live (non-PIT) offense
-# engine's own LG_BARREL_PA constant, but this PIT adapter has its own
-# independent copy that fix never touched. Real per-PA
-# league mean from savant.team_offense.prior_baseline (walk-forward,
-# 2024: 0.0544, 2025: 0.0532). Net effect of the old 0.088 constant: every
-# team's f_barrel was compressed toward ~0.60-0.67 regardless of real talent,
-# cutting barrel's effective composite weight from 0.30 to roughly 0.19.
-LG_BARREL_PA = 0.054
+# MATH-002 fix (2026-07-18, audit_20260714/math002_diagnostico/paso5c1_alineacion_metrica.md):
+# this adapter now matches the live offense engine's barrel term exactly
+# instead of being its own internally-consistent-but-different per-PA
+# metric. The 2026-07-11 re-centering (see git history) had switched the
+# PRIOR to a per-PA value (0.054, walk-forward from prior_baseline) while the
+# numerator stayed per-PA too (barrel_count/plate_appearances) —
+# self-consistent, but not the same thing the live engine measures. That fix
+# was a stopgap: at the time, `batted_ball_count`/`bip` (the PIT cache's own
+# attempts count) was itself broken by foul-ball inflation (MATH-002, fixed
+# in commit 5b of this roadmap step), so there was no trustworthy
+# per-attempt `n` to shrink toward a per-attempt prior with. Now that
+# batted_ball_count is fixed, this reverts to the live offense engine's
+# exact definition (the sibling module next to tte_formula.py, line 70):
+# LG_BARREL_PA = 0.088 ("per PA" in that constant's own comment is a
+# codebase-wide legacy misnomer, confirmed by the team-aggregation helper
+# that produces it, which computes barrels_sum/attempts_sum — i.e.
+# per-batted-ball-event, not per-PA).
+# Hardcoded here rather than imported: this module's own isolation test
+# (tests/test_tte_pit_adapter.py) explicitly forbids importing the live
+# offense engine module into this module (intentional orchestration
+# isolation) — same accepted duplicated-constant risk tte_formula.py's
+# docstring already documents (that refactor unified the MATH, not the
+# league constants).
+LG_BARREL_PA = 0.088
 LG_BB_PCT = 0.086
 LG_K_PCT = 0.224
 
@@ -137,15 +150,24 @@ def _missing_formula_inputs(snapshot: dict[str, Any], baseline: dict[str, Any]) 
         if _is_missing(snapshot.get(key)):
             missing.append(key)
 
-    if _first_present(snapshot, "team_barrel_pa", "barrel_pa") is None:
+    # MATH-002 (2026-07-18): barrel's current-season input is now
+    # team_brl_percent/brl_percent (per-attempt, matching live) instead of
+    # barrel_pa/team_barrel_pa (per-PA) — see paso5c1_alineacion_metrica.md.
+    # The "barrel_pa"/"barrel_pa_prior" labels are kept as-is; they identify
+    # the barrel INPUT slot in missing_inputs/fallback_used, not the field name.
+    if _first_present(snapshot, "team_brl_percent", "brl_percent") is None:
         missing.append("barrel_pa")
+    if _is_missing(_first_present(snapshot, "bip", "batted_ball_count")):
+        missing.append("bip")
     if _first_present(snapshot, "bb_pct", "team_bb_pct") is None:
         missing.append("bb_pct")
     if _first_present(snapshot, "k_pct", "team_k_pct") is None:
         missing.append("k_pct")
     if not snapshot.get("prior_baseline_found"):
         missing.append("prior_baseline")
-    for key in ("team_est_woba_prior", "barrel_pa_prior", "bb_pct_prior", "k_pct_prior"):
+    if snapshot.get("brl_percent_prior") is None:
+        missing.append("barrel_pa_prior")
+    for key in ("team_est_woba_prior", "bb_pct_prior", "k_pct_prior"):
         if _is_missing(snapshot.get(key)):
             missing.append(key)
     return missing
@@ -160,25 +182,28 @@ def _compute_lambda(snapshot: dict[str, Any], baseline: dict[str, Any]) -> tuple
     lg_k_pct = float(baseline.get("league_k_pct", LG_K_PCT))
 
     xwoba_cur = float(snapshot["team_est_woba"])
-    barrel_cur = float(_first_present(snapshot, "team_barrel_pa", "barrel_pa"))
+    # MATH-002 fix (2026-07-18, paso5c1_alineacion_metrica.md): barrel_cur is
+    # now a per-attempt rate (team_brl_percent/100 == barrel_count/attempts),
+    # matching the live offense engine's definition exactly, instead of the
+    # per-PA barrel_pa field.
+    barrel_cur = float(_first_present(snapshot, "team_brl_percent", "brl_percent")) / 100.0
+    bip_cur = float(_first_present(snapshot, "bip", "batted_ball_count"))
     bb_cur = float(_first_present(snapshot, "bb_pct", "team_bb_pct"))
     k_cur = float(_first_present(snapshot, "k_pct", "team_k_pct"))
     xwoba_prior = float(snapshot["team_est_woba_prior"])
-    barrel_prior = float(snapshot["barrel_pa_prior"])
+    barrel_prior = float(snapshot["brl_percent_prior"]) / 100.0
     bb_prior = float(snapshot["bb_pct_prior"])
     k_prior = float(snapshot["k_pct_prior"])
 
-    # NOTE (2026-07-12, tte_formula unification): barrel% is regressed here
-    # using `pa` as the Bayesian sample size for ALL four metrics, including
-    # barrel — unlike the live engine, which uses `attempts` (batted-ball-
-    # events) specifically for barrel, since it's fundamentally a per-BBE
-    # rate. This under-shrinks barrel% here (PA ~1.47x attempts). Known,
-    # deliberately NOT fixed in this refactor — see tte_formula.py's
-    # docstring for why (requires first resolving the PIT cache's own
-    # batted_ball_count foul-inflation bug so this fix doesn't introduce a
-    # corrupted count into a newly-load-bearing computation).
+    # Barrel is regressed toward its league mean using attempts (batted-ball
+    # events) as the Bayesian sample size, not pa — it's fundamentally a
+    # per-BBE rate, same as the live offense engine. This
+    # was previously left unfixed pending the PIT cache's own
+    # batted_ball_count foul-inflation bug (MATH-002, fixed in commit 5b of
+    # this roadmap step) so the switch wouldn't introduce a corrupted count
+    # into a now-load-bearing computation.
     xwoba_reg = _shared_regress(xwoba_cur, lg_xwoba, pa, K_XWOBA)
-    barrel_reg = _shared_regress(barrel_cur, lg_barrel_pa, pa, K_BARREL)
+    barrel_reg = _shared_regress(barrel_cur, lg_barrel_pa, bip_cur, K_BARREL)
     bb_reg = _shared_regress(bb_cur, lg_bb_pct, pa, K_BB)
     k_reg = _shared_regress(k_cur, lg_k_pct, pa, K_K)
 
@@ -204,6 +229,7 @@ def _compute_lambda(snapshot: dict[str, Any], baseline: dict[str, Any]) -> tuple
         "formula_inputs": {
             "team_est_woba": xwoba_cur,
             "barrel_pa": barrel_cur,
+            "bip": int(bip_cur),
             "bb_pct": bb_cur,
             "k_pct": k_cur,
             "pa": int(pa),
