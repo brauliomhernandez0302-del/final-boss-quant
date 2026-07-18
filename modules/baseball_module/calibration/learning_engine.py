@@ -330,6 +330,86 @@ class LearningEngine:
                 except sqlite3.OperationalError:
                     pass
             self._backfill_chron001_source(conn)
+            self._migrate_chron002_state_source(conn)
+
+    def _migrate_chron002_state_source(self, conn: sqlite3.Connection) -> None:
+        """CHRON-002 fix (roadmap Step 2, Commit A): ml_state and kalman_state
+        used to be shared, unprotected, between live and backtest — a
+        backtest refit of Platt/team-bias/pipeline-weights/Kalman state
+        overwrote the exact keys production reads, the residual CHRON-001
+        left open (see CONTRACTS.md's game_outcomes entry). Adds a
+        `state_source` column to both tables' PRIMARY KEY.
+
+        SQLite can't ALTER a PRIMARY KEY, so this rebuilds each table
+        (CREATE new schema -> copy -> DROP old -> RENAME) — a one-time
+        operation, guarded by checking whether `state_source` is already a
+        column (idempotent: every LearningEngine() instantiation, live and
+        backtest alike, calls this, so the guard must make every call after
+        the first a cheap no-op).
+
+        Migration is copy-to-both, not heuristic backfill: every existing
+        row is duplicated into state_source='live' AND state_source=
+        'backtest' with byte-identical values. Historical provenance of a
+        given key's value is exactly as irreconstructible as it was for
+        game_outcomes (CHRON-001) — copying to both guarantees zero
+        behavior change at cutover: whichever path reads a key next gets
+        precisely what was there before this migration, and the two
+        namespaces only diverge from new writes made after this point.
+        """
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(ml_state)")}
+        if "state_source" not in cols:
+            conn.executescript(
+                """
+                CREATE TABLE ml_state_chron002_new (
+                    key          TEXT    NOT NULL,
+                    scope        TEXT    NOT NULL,
+                    season       INTEGER NOT NULL,
+                    state_source TEXT    NOT NULL,
+                    value_json   TEXT    NOT NULL,
+                    sample_count INTEGER DEFAULT 0,
+                    updated_at   TEXT    NOT NULL,
+                    PRIMARY KEY (key, scope, season, state_source)
+                );
+                INSERT INTO ml_state_chron002_new
+                    (key, scope, season, state_source, value_json, sample_count, updated_at)
+                    SELECT key, scope, season, 'live', value_json, sample_count, updated_at
+                    FROM ml_state;
+                INSERT INTO ml_state_chron002_new
+                    (key, scope, season, state_source, value_json, sample_count, updated_at)
+                    SELECT key, scope, season, 'backtest', value_json, sample_count, updated_at
+                    FROM ml_state;
+                DROP TABLE ml_state;
+                ALTER TABLE ml_state_chron002_new RENAME TO ml_state;
+                """
+            )
+
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(kalman_state)")}
+        if "state_source" not in cols:
+            conn.executescript(
+                """
+                CREATE TABLE kalman_state_chron002_new (
+                    team         TEXT    NOT NULL,
+                    context      TEXT    NOT NULL,
+                    season       INTEGER NOT NULL,
+                    state_source TEXT    NOT NULL,
+                    x_est        REAL    NOT NULL,
+                    p_est        REAL    NOT NULL,
+                    n_obs        INTEGER DEFAULT 0,
+                    updated_at   TEXT    NOT NULL,
+                    PRIMARY KEY (team, context, season, state_source)
+                );
+                INSERT INTO kalman_state_chron002_new
+                    (team, context, season, state_source, x_est, p_est, n_obs, updated_at)
+                    SELECT team, context, season, 'live', x_est, p_est, n_obs, updated_at
+                    FROM kalman_state;
+                INSERT INTO kalman_state_chron002_new
+                    (team, context, season, state_source, x_est, p_est, n_obs, updated_at)
+                    SELECT team, context, season, 'backtest', x_est, p_est, n_obs, updated_at
+                    FROM kalman_state;
+                DROP TABLE kalman_state;
+                ALTER TABLE kalman_state_chron002_new RENAME TO kalman_state;
+                """
+            )
 
     def _backfill_chron001_source(self, conn: sqlite3.Connection) -> None:
         """One-time backfill for the CHRON-001 fix (audit_20260714/, roadmap Step 1).
@@ -610,10 +690,10 @@ class LearningEngine:
             return
 
         season = row["season"]
-        self.update_kalman(row["home_team"], "offense_home", season, untruncate_home_runs(float(home_runs)))
-        self.update_kalman(row["away_team"], "offense_away", season, float(away_runs))
-        self.update_kalman(row["home_team"], "defense_home", season, float(away_runs))
-        self.update_kalman(row["away_team"], "defense_away", season, untruncate_home_runs(float(home_runs)))
+        self.update_kalman(row["home_team"], "offense_home", season, untruncate_home_runs(float(home_runs)), prediction_source)
+        self.update_kalman(row["away_team"], "offense_away", season, float(away_runs), prediction_source)
+        self.update_kalman(row["home_team"], "defense_home", season, float(away_runs), prediction_source)
+        self.update_kalman(row["away_team"], "defense_away", season, untruncate_home_runs(float(home_runs)), prediction_source)
 
         # Gradient-descent weight update
         if row["lambda_home"] and row["lambda_away"]:
@@ -635,11 +715,15 @@ class LearningEngine:
 
         `prediction_source` — CHRON-001 fix (audit_20260714/): selects which
         game_outcomes columns (live vs backtest_*) supply lambda_home/
-        lambda_away/stage_factors_json. Doesn't need to be threaded into the
-        cache key: the cache is already bypassed whenever `before_date` is
-        given (see below), and backtest_and_retrain.py always passes
-        `before_date` (walk-forward), so a 'backtest' read can never collide
-        with a 'live'-cached value under the same key.
+        lambda_away/stage_factors_json. Also selects the ml_state
+        `state_source` namespace for the team_bias cache below (CHRON-002
+        fix, roadmap Step 2 Commit A) — closes the residual CHRON-001 left
+        open, where a source-unaware cache meant a backtest's final
+        cache-populating call could still leave a value a live call
+        (before_date=None) would read. The cache is also still bypassed
+        whenever `before_date` is given (see below), which is how
+        backtest_and_retrain.py's per-game walk-forward calls avoid it
+        entirely regardless.
 
         FIX (2026-07-08): added `before_date` — a walk-forward cutoff (exclusive,
         "YYYY-MM-DD"). Without it, this query only filters by season, so a
@@ -661,7 +745,7 @@ class LearningEngine:
         """
         if before_date is None:
             cache_key = f"team_bias:{team}"
-            cached = self.load_state(cache_key, "team_bias", season)
+            cached = self.load_state(cache_key, "team_bias", season, prediction_source)
             if cached and cached.get("sample_count", 0) >= min_samples:
                 if self._hours_since(cached.get("updated_at", "")) < _BIAS_CACHE_HRS:
                     return float(cached["bias"])
@@ -707,7 +791,10 @@ class LearningEngine:
         raw  = sum(ratios) / len(ratios)
         bias = max(1.0 - _BIAS_CLAMP, min(1.0 + _BIAS_CLAMP, raw))
         if before_date is None:
-            self.save_state(cache_key, "team_bias", {"bias": bias}, len(ratios), season)
+            self.save_state(
+                cache_key, "team_bias", {"bias": bias}, len(ratios), season,
+                prediction_source=prediction_source,
+            )
         logger.debug(f"[learning] {team} bias={bias:.4f} (n={len(ratios)})")
         return bias
 
@@ -779,7 +866,7 @@ class LearningEngine:
         if raw_bias == 1.0:
             return 1.0
 
-        state = self._get_kalman_state(team, context, season)
+        state = self._get_kalman_state(team, context, season, prediction_source)
         if not state or state["n_obs"] < 10:
             return raw_bias  # Kalman cold-start: no overlap to remove
 
@@ -828,7 +915,7 @@ class LearningEngine:
 
         for scope_key, ha, mo in dims:
             if before_date is None:
-                cached = self.load_state(scope_key, "multidim_bias", season)
+                cached = self.load_state(scope_key, "multidim_bias", season, prediction_source)
                 if cached and cached.get("sample_count", 0) >= min_samples:
                     if self._hours_since(cached.get("updated_at", "")) < _BIAS_CACHE_HRS:
                         return float(cached["bias"])
@@ -838,7 +925,10 @@ class LearningEngine:
             )
             if result is not None:
                 if before_date is None:
-                    self.save_state(scope_key, "multidim_bias", {"bias": result[0]}, result[1], season)
+                    self.save_state(
+                        scope_key, "multidim_bias", {"bias": result[0]}, result[1], season,
+                        prediction_source=prediction_source,
+                    )
                 return result[0]
 
         # Final fallback: simple team bias
@@ -899,13 +989,19 @@ class LearningEngine:
     # Kalman filter
     # ------------------------------------------------------------------
 
-    def reset_kalman_for_seasons(self, seasons: List[int]) -> int:
+    def reset_kalman_for_seasons(
+        self, seasons: List[int], prediction_source: str = "live",
+    ) -> int:
         """Delete all Kalman states for the given seasons.
 
         Called by the backtest before it starts processing so that the
         walk-forward loop begins from a neutral state rather than from
         whatever stale (and potentially look-ahead-biased) states the
         live system accumulated.
+
+        CHRON-002 fix: `prediction_source` scopes the delete to one
+        state_source namespace — a backtest reset can never delete
+        production's live Kalman states, or vice versa.
 
         Returns the number of rows deleted.
         """
@@ -914,17 +1010,19 @@ class LearningEngine:
         placeholders = ",".join("?" * len(seasons))
         with self._get_conn() as conn:
             cursor = conn.execute(
-                f"DELETE FROM kalman_state WHERE season IN ({placeholders})",
-                seasons,
+                f"DELETE FROM kalman_state WHERE season IN ({placeholders}) AND state_source = ?",
+                [*seasons, prediction_source],
             )
             deleted = cursor.rowcount
         logger.info(
-            "[learning] Kalman reset: deleted %d states for seasons %s",
-            deleted, seasons,
+            "[learning] Kalman reset: deleted %d states for seasons %s (state_source=%s)",
+            deleted, seasons, prediction_source,
         )
         return deleted
 
-    def reset_pipeline_weights(self, seasons: List[int]) -> int:
+    def reset_pipeline_weights(
+        self, seasons: List[int], prediction_source: str = "live",
+    ) -> int:
         """Reset learned pipeline weights to 1.0 for the given seasons.
 
         Called by the backtest before the walk-forward loop so that weights
@@ -937,13 +1035,19 @@ class LearningEngine:
             return 0
         defaults = {k: 1.0 for k in _STAGE_KEYS}
         for season in seasons:
-            self.save_state("pipeline_weights", "weights", defaults, 0, season)
+            self.save_state(
+                "pipeline_weights", "weights", defaults, 0, season,
+                prediction_source=prediction_source,
+            )
         logger.info(
-            "[learning] Pipeline weights reset to 1.0 for seasons %s", seasons
+            "[learning] Pipeline weights reset to 1.0 for seasons %s (state_source=%s)",
+            seasons, prediction_source,
         )
         return len(seasons)
 
-    def reset_platt_params(self, seasons: List[int]) -> int:
+    def reset_platt_params(
+        self, seasons: List[int], prediction_source: str = "live",
+    ) -> int:
         """Seed identity Platt params (a=1.0, b=0.0) for the given seasons.
 
         We UPSERT rather than DELETE.  If we deleted, get_platt_params() would
@@ -966,19 +1070,22 @@ class LearningEngine:
                 {"a": _PLATT_A_DEFAULT, "b": _PLATT_B_DEFAULT, "n": 0},
                 sample_count=0,
                 season=season,
+                prediction_source=prediction_source,
             )
         logger.info(
-            "[learning] Platt params reset to identity (a=1.0, b=0.0) for seasons %s",
-            seasons,
+            "[learning] Platt params reset to identity (a=1.0, b=0.0) for seasons %s (state_source=%s)",
+            seasons, prediction_source,
         )
         return len(seasons)
 
-    def get_kalman_n_obs(self, team: str, context: str, season: int) -> int:
+    def get_kalman_n_obs(
+        self, team: str, context: str, season: int, prediction_source: str = "live",
+    ) -> int:
         """Return the number of observations backing this team/context's Kalman
         state (0 if cold-start / no state yet). Used to gauge confidence in
         whether the Kalman correction is actually active for this game.
         """
-        state = self._get_kalman_state(team, context, season)
+        state = self._get_kalman_state(team, context, season, prediction_source)
         return state["n_obs"] if state else 0
 
     def get_kalman_estimate(
@@ -986,13 +1093,14 @@ class LearningEngine:
         team: str,
         context: str,
         season: int,
+        prediction_source: str = "live",
     ) -> Optional[float]:
         """Return Kalman-filtered estimate of team's expected runs for this context.
 
         context: 'offense_home' | 'offense_away' | 'defense_home' | 'defense_away'
         Returns None when no observations exist yet.
         """
-        state = self._get_kalman_state(team, context, season)
+        state = self._get_kalman_state(team, context, season, prediction_source)
         return state["x_est"] if state else None
 
     def update_kalman(
@@ -1001,9 +1109,16 @@ class LearningEngine:
         context: str,
         season: int,
         observed: float,
+        prediction_source: str = "live",
     ) -> float:
-        """Kalman update step with new run observation. Returns updated estimate."""
-        state = self._get_kalman_state(team, context, season)
+        """Kalman update step with new run observation. Returns updated estimate.
+
+        CHRON-002 fix: `prediction_source` selects the state_source
+        namespace for both the read and the write below, so a backtest's
+        walk-forward Kalman update can never read or overwrite production's
+        live Kalman state.
+        """
+        state = self._get_kalman_state(team, context, season, prediction_source)
 
         if state is None:
             x_est = observed
@@ -1017,15 +1132,18 @@ class LearningEngine:
             p_est  = (1.0 - K) * p_pred
             n_obs  = state["n_obs"] + 1
 
-        self._save_kalman_state(team, context, season, x_est, p_est, n_obs)
+        self._save_kalman_state(team, context, season, x_est, p_est, n_obs, prediction_source)
         return x_est
 
-    def _get_kalman_state(self, team: str, context: str, season: int) -> Optional[Dict]:
+    def _get_kalman_state(
+        self, team: str, context: str, season: int, prediction_source: str = "live",
+    ) -> Optional[Dict]:
+        """CHRON-002 fix: `prediction_source` selects the state_source namespace."""
         with self._get_conn() as conn:
             row = conn.execute(
                 "SELECT x_est, p_est, n_obs FROM kalman_state "
-                "WHERE team = ? AND context = ? AND season = ?",
-                (team, context, season),
+                "WHERE team = ? AND context = ? AND season = ? AND state_source = ?",
+                (team, context, season, prediction_source),
             ).fetchone()
         if not row:
             return None
@@ -1039,20 +1157,21 @@ class LearningEngine:
         x_est: float,
         p_est: float,
         n_obs: int,
+        prediction_source: str = "live",
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self._get_conn() as conn:
             conn.execute(
                 """
-                INSERT INTO kalman_state (team, context, season, x_est, p_est, n_obs, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(team, context, season) DO UPDATE SET
+                INSERT INTO kalman_state (team, context, season, state_source, x_est, p_est, n_obs, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(team, context, season, state_source) DO UPDATE SET
                     x_est = excluded.x_est,
                     p_est = excluded.p_est,
                     n_obs = excluded.n_obs,
                     updated_at = excluded.updated_at
                 """,
-                (team, context, season, x_est, p_est, n_obs, now),
+                (team, context, season, prediction_source, x_est, p_est, n_obs, now),
             )
 
     def get_kalman_lambda_adjustment(
@@ -1061,6 +1180,7 @@ class LearningEngine:
         context: str,
         season: int,
         model_lambda: float,
+        prediction_source: str = "live",
     ) -> float:
         """
         Return an adjusted λ blending the model estimate with the Kalman estimate.
@@ -1070,7 +1190,7 @@ class LearningEngine:
         dampening formula removes exactly the Kalman share of the correction.
         Returns model_lambda when fewer than 10 Kalman observations exist.
         """
-        state = self._get_kalman_state(team, context, season)
+        state = self._get_kalman_state(team, context, season, prediction_source)
         if not state or state["n_obs"] < 10:
             return model_lambda
         kalman_lam = state["x_est"]
@@ -1088,9 +1208,12 @@ class LearningEngine:
 
         `prediction_source` — CHRON-001 fix (audit_20260714/): forwarded to
         recalibrate_platt() if a refit is triggered below, so a backtest
-        caller never refits against live columns.
+        caller never refits against live columns. CHRON-002 fix (roadmap
+        Step 2 Commit A): also selects the ml_state state_source namespace
+        for the cache reads/writes below, so a backtest refit's fitted
+        params can never be read by (or overwrite) production's live cache.
         """
-        cached = self.load_state("platt_params", "calibration", season)
+        cached = self.load_state("platt_params", "calibration", season, prediction_source)
         if cached:
             last_recal = cached.get("updated_at", "")
             age_days = self._hours_since(last_recal) / 24.0
@@ -1106,7 +1229,7 @@ class LearningEngine:
             return a, b
         # recalibrate_platt returned identity — not enough current-season data yet.
         # Warm-start: carry forward previous season's fitted params.
-        prev = self.load_state("platt_params", "calibration", season - 1)
+        prev = self.load_state("platt_params", "calibration", season - 1, prediction_source)
         if prev and prev.get("n", 0) >= _PLATT_MIN_SAMPLES:
             logger.info("[learning] Platt warm-start from season %d (a=%.4f b=%.4f)",
                         season - 1, prev.get("a", _PLATT_A_DEFAULT), prev.get("b", _PLATT_B_DEFAULT))
@@ -1157,7 +1280,8 @@ class LearningEngine:
             b = float(lr.intercept_[0])
 
             self.save_state("platt_params", "calibration",
-                            {"a": a, "b": b, "n": n}, n, season)
+                            {"a": a, "b": b, "n": n}, n, season,
+                            prediction_source=prediction_source)
             logger.info(f"[learning] Platt recalibrated: a={a:.4f}, b={b:.4f} (n={n})")
             return a, b
 
@@ -1166,7 +1290,8 @@ class LearningEngine:
             a, b = self._platt_moment_match(rows)
             # Save result so TTL cache kicks in and prevents repeated recomputation.
             self.save_state("platt_params", "calibration",
-                            {"a": a, "b": b, "n": n}, n, season)
+                            {"a": a, "b": b, "n": n}, n, season,
+                            prediction_source=prediction_source)
             return a, b
 
     def _platt_moment_match(self, rows) -> Tuple[float, float]:
@@ -1206,11 +1331,12 @@ class LearningEngine:
 
         `prediction_source` — CHRON-001 fix (audit_20260714/): forwarded to
         recalibrate_platt_2d()'s training query (live p_home vs backtest_
-        p_home). The cache key itself ("platt2d_params") is intentionally
-        NOT source-scoped — out of scope for this fix; see
-        audit_20260714/14_remediation_roadmap.md Step 1's boundary.
+        p_home). CHRON-002 fix (roadmap Step 2 Commit A): the
+        ("platt2d_params") cache itself is now also state_source-scoped —
+        closes the residual CHRON-001 left open (see that fix's audit
+        note; this was "out of scope" there, in scope here).
         """
-        cached = self.load_state("platt2d_params", "calibration", season)
+        cached = self.load_state("platt2d_params", "calibration", season, prediction_source)
         if cached:
             age_days = self._hours_since(cached.get("updated_at", "")) / 24.0
             if age_days < _PLATT2D_RECAL_DAYS:
@@ -1225,7 +1351,7 @@ class LearningEngine:
         # Not enough current data — warm-start from the most recent prior
         # season that had a successful fit.
         for prior_season in range(season - 1, season - 5, -1):
-            prev = self.load_state("platt2d_params", "calibration", prior_season)
+            prev = self.load_state("platt2d_params", "calibration", prior_season, prediction_source)
             if prev and prev.get("n", 0) >= _PLATT2D_MIN_SAMPLES:
                 logger.info(f"[learning] Platt-2D warm-start from season {prior_season}")
                 return float(prev["a"]), float(prev["b"]), float(prev["c"])
@@ -1302,6 +1428,7 @@ class LearningEngine:
         self.save_state(
             "platt2d_params", "calibration",
             {"a": a, "b": b, "c": c, "n": n}, n, season,
+            prediction_source=prediction_source,
         )
         logger.info(
             f"[learning] Platt-2D recalibrated for season {season}: "
@@ -1328,16 +1455,21 @@ class LearningEngine:
     # Pipeline weights (gradient descent)
     # ------------------------------------------------------------------
 
-    def get_pipeline_weights(self, season: int) -> Dict[str, float]:
+    def get_pipeline_weights(
+        self, season: int, prediction_source: str = "live",
+    ) -> Dict[str, float]:
         """Return learned weight (0.30–1.50) for each pipeline stage."""
-        cached = self.load_state("pipeline_weights", "weights", season)
+        cached = self.load_state("pipeline_weights", "weights", season, prediction_source)
         if cached:
             return {k: float(cached.get(k, 1.0)) for k in _STAGE_KEYS}
         # Warm-start: carry forward previous season's learned weights.
         # GD takes months to converge from 1.0; prior season is a strong prior.
-        prev = self.load_state("pipeline_weights", "weights", season - 1)
+        prev = self.load_state("pipeline_weights", "weights", season - 1, prediction_source)
         if prev:
-            logger.info("[learning] weights warm-start from season %d", season - 1)
+            logger.info(
+                "[learning] weights warm-start from season %d (state_source=%s)",
+                season - 1, prediction_source,
+            )
             return {k: float(prev.get(k, 1.0)) for k in _STAGE_KEYS}
         return {k: 1.0 for k in _STAGE_KEYS}
 
@@ -1395,7 +1527,7 @@ class LearningEngine:
         except (json.JSONDecodeError, TypeError):
             return
 
-        state = self.load_state("pipeline_weights", "weights", season)
+        state = self.load_state("pipeline_weights", "weights", season, prediction_source)
         weights = {k: float(state.get(k, 1.0)) for k in _STAGE_KEYS} if state else {k: 1.0 for k in _STAGE_KEYS}
         n_steps = (state.get("sample_count", 0) if state else 0) + 1
         updated = dict(weights)
@@ -1443,7 +1575,8 @@ class LearningEngine:
             updated[stage] = max(_MIN_WEIGHT, min(_MAX_WEIGHT, updated[stage]))
 
         self.save_state("pipeline_weights", "weights", updated,
-                        sample_count=n_steps, season=season)
+                        sample_count=n_steps, season=season,
+                        prediction_source=prediction_source)
 
     # ------------------------------------------------------------------
     # Generic state persistence
@@ -1456,19 +1589,25 @@ class LearningEngine:
         value: Dict[str, Any],
         sample_count: int,
         season: int,
+        prediction_source: str = "live",
     ) -> None:
+        """CHRON-002 fix (roadmap Step 2, Commit A): `prediction_source`
+        selects the `state_source` namespace ('live' default, unchanged
+        behavior; 'backtest' for every backtest_and_retrain.py caller) so a
+        backtest refit can never overwrite the exact ml_state key
+        production reads — the residual CHRON-001 left open."""
         now = datetime.now(timezone.utc).isoformat()
         with self._get_conn() as conn:
             conn.execute(
                 """
-                INSERT INTO ml_state (key, scope, season, value_json, sample_count, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(key, scope, season) DO UPDATE SET
+                INSERT INTO ml_state (key, scope, season, state_source, value_json, sample_count, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(key, scope, season, state_source) DO UPDATE SET
                     value_json   = excluded.value_json,
                     sample_count = excluded.sample_count,
                     updated_at   = excluded.updated_at
                 """,
-                (key, scope, season, json.dumps(value), sample_count, now),
+                (key, scope, season, prediction_source, json.dumps(value), sample_count, now),
             )
 
     def load_state(
@@ -1476,12 +1615,14 @@ class LearningEngine:
         key: str,
         scope: str,
         season: int,
+        prediction_source: str = "live",
     ) -> Optional[Dict[str, Any]]:
+        """See save_state()'s docstring for `prediction_source`."""
         with self._get_conn() as conn:
             row = conn.execute(
                 "SELECT value_json, sample_count, updated_at "
-                "FROM ml_state WHERE key = ? AND scope = ? AND season = ?",
-                (key, scope, season),
+                "FROM ml_state WHERE key = ? AND scope = ? AND season = ? AND state_source = ?",
+                (key, scope, season, prediction_source),
             ).fetchone()
         if not row:
             return None

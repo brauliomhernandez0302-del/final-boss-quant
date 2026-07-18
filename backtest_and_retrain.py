@@ -1762,13 +1762,17 @@ def run_pipeline(
             )
 
     # ── Kalman adjustment (walk-forward: only sees games prior to this one) ───
-    lh = learning.get_kalman_lambda_adjustment(home_team, "offense_home", season, lh)
-    la = learning.get_kalman_lambda_adjustment(away_team, "offense_away", season, la)
+    # CHRON-002 (roadmap Step 2, Commit A): prediction_source='backtest' —
+    # reads/writes the backtest state_source namespace of kalman_state,
+    # never production's live Kalman state.
+    lh = learning.get_kalman_lambda_adjustment(home_team, "offense_home", season, lh, prediction_source="backtest")
+    la = learning.get_kalman_lambda_adjustment(away_team, "offense_away", season, la, prediction_source="backtest")
 
     # REVERTIDO: Kalman defense_home removed (see run_module.py comment + AUDIT_FINDINGS.md)
 
     # ── Learned pipeline weights ──────────────────────────────────────────────
-    _w = learning.get_pipeline_weights(season)
+    # CHRON-002: prediction_source='backtest'.
+    _w = learning.get_pipeline_weights(season, prediction_source="backtest")
 
     # ── Team bias (LearningEngine, walk-forward: only sees games strictly ──────
     #    before this one — see compute_team_bias's docstring for the leak this
@@ -2444,7 +2448,11 @@ def _assert_platt_not_silently_identity(
     Platt-corruption incident produced with zero errors or warnings."""
     log_ = logging.getLogger(__name__)
     for season in sorted(seasons):
-        params = learning.load_state("platt_params", "calibration", season)
+        # CHRON-002 (roadmap Step 2, Commit A): this sanity check is
+        # backtest-exclusive (only ever called from the end-of-run step
+        # below) — reads the 'backtest' state_source namespace, i.e. the
+        # params THIS run itself just fitted, not production's live cache.
+        params = learning.load_state("platt_params", "calibration", season, prediction_source="backtest")
         if not params:
             continue
         is_identity = (
@@ -2745,13 +2753,20 @@ def main() -> None:
 
     # Capture prior-season Platt params BEFORE reset so warm-start can use them.
     # Seasons processed in ascending order so each N seeds from N-1's fitted params.
+    # CHRON-002 (roadmap Step 2, Commit A): all reads/writes below are
+    # explicitly prediction_source='backtest' — this whole reset/warm-start
+    # dance is backtest-to-backtest continuity (this run's season N
+    # warm-starting from a PREVIOUS backtest run's season N-1 fit), never
+    # touching or touched by production's live state.
     _prior_platt: Dict[int, Optional[Dict]] = {}
     for season in sorted(seasons):
-        _prior_platt[season] = learning.load_state("platt_params", "calibration", season - 1)
+        _prior_platt[season] = learning.load_state(
+            "platt_params", "calibration", season - 1, prediction_source="backtest",
+        )
 
-    n_kal_deleted = learning.reset_kalman_for_seasons(list(seasons))
-    n_wt_reset    = learning.reset_pipeline_weights(list(seasons))
-    n_plt_deleted = learning.reset_platt_params(list(seasons))
+    n_kal_deleted = learning.reset_kalman_for_seasons(list(seasons), prediction_source="backtest")
+    n_wt_reset    = learning.reset_pipeline_weights(list(seasons), prediction_source="backtest")
+    n_plt_deleted = learning.reset_platt_params(list(seasons), prediction_source="backtest")
     log.info(
         "  Kalman: %d rows deleted | weights: %d seasons reset | Platt: %d rows deleted",
         n_kal_deleted, n_wt_reset, n_plt_deleted,
@@ -2791,6 +2806,7 @@ def main() -> None:
                 {"a": prior["a"], "b": prior["b"], "n": 0},
                 sample_count=0,
                 season=season,
+                prediction_source="backtest",
             )
             log.info(
                 "  Platt warm-start season %d ← season %d: a=%.4f b=%.4f",
@@ -2904,6 +2920,7 @@ def main() -> None:
                     {"a": a_fit, "b": b_fit, "n": 0},
                     sample_count=0,
                     season=season,
+                    prediction_source="backtest",
                 )
                 log.info(
                     "  Platt warm-start season %d ← season %d (in-run, fresh): a=%.4f b=%.4f",
@@ -3147,10 +3164,11 @@ def main() -> None:
             # untruncate_home_runs() corrects for the 2026-07-11 audit finding
             # (walk-off-truncated home runs biasing the "offense_home"/
             # "defense_away" learning targets — see learning_engine.py).
-            learning.update_kalman(home_name, "offense_home", season, untruncate_home_runs(float(row["actual_home_runs"])))
-            learning.update_kalman(away_name, "offense_away", season, float(row["actual_away_runs"]))
-            learning.update_kalman(home_name, "defense_home", season, float(row["actual_away_runs"]))
-            learning.update_kalman(away_name, "defense_away", season, untruncate_home_runs(float(row["actual_home_runs"])))
+            # CHRON-002 (roadmap Step 2, Commit A): prediction_source='backtest'.
+            learning.update_kalman(home_name, "offense_home", season, untruncate_home_runs(float(row["actual_home_runs"])), prediction_source="backtest")
+            learning.update_kalman(away_name, "offense_away", season, float(row["actual_away_runs"]), prediction_source="backtest")
+            learning.update_kalman(home_name, "defense_home", season, float(row["actual_away_runs"]), prediction_source="backtest")
+            learning.update_kalman(away_name, "defense_away", season, untruncate_home_runs(float(row["actual_home_runs"])), prediction_source="backtest")
 
             # Sprint 3 fix: invoke gradient descent that was structurally disconnected
             # from the backtest loop. Without this call, pipeline weights never update

@@ -17,10 +17,10 @@ from modules.baseball_module.advanced_pit_enrichment.tte_pit_adapter import (
 
 
 class _FakeLearning:
-    def get_kalman_lambda_adjustment(self, team, role, season, model_lambda):
+    def get_kalman_lambda_adjustment(self, team, role, season, model_lambda, prediction_source="live"):
         return model_lambda
 
-    def get_pipeline_weights(self, season):
+    def get_pipeline_weights(self, season, prediction_source="live"):
         return {}
 
     def compute_team_bias_kalman_adjusted(self, team, season, role, month=None, before_date=None,
