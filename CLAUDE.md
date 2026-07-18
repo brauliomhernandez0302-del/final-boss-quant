@@ -101,7 +101,7 @@ Auditoría completa (solo lectura, componente por componente) realizada el 2026-
 
 ### Actualización 2026-07-11/12 — higiene de motores + descubrimiento de caché de TTE incompleta
 
-**Baseline vigente: Brier 0.24486 / accuracy 55.42%** (mismo comando, mismos 4,830 juegos, 453 tests) — supersede el 0.24525/55.30% de arriba. Nueve bugs reales encontrados y corregidos, cada uno validado con una corrida de backtest completa antes/después:
+**Baseline vigente: Brier 0.24482 / accuracy 55.34%** (mismo comando, mismos 4,830 juegos, 453 tests) — supersede el 0.24525/55.30% de arriba. **Corrección 2026-07-18** (roadmap Step 2, FASE 6 de CHRON-001/CHRON-002): el número "0.24486/55.42%" que este documento citaba desde el 2026-07-11/12 no coincide con el último reporte real en disco de esa misma corrida (`reports/round10_composite_weight_nudge/backtest_report_20260712_0827.json`, comparado byte a byte contra dos re-corridas independientes de identidad del `--season 2024,2025 --use-full-pit`, 2026-07-17 y 2026-07-18 — las tres coinciden exactamente salvo el timestamp `run_at`). El canónico es el JSON del reporte, no la prosa — corregido aquí; ver `audit_20260714/chron001_fase6_validation_report.md` para la comparación exacta. Nueve bugs reales encontrados y corregidos, cada uno validado con una corrida de backtest completa antes/después:
 
 1. Proxy de defensa PIT (`team_defense_pit_builder.py`): `force_out` mal clasificado como "batter safe" — la defensa sí convierte el out (sobre el corredor forzado). Explicaba casi todo un sesgo de -3pp a nivel liga.
 2. Tres constantes de bullpen PIT sin calibrar contra datos reales (`_PIT_LG_K_BB`, `_PIT_LG_BARREL_PC`, `_PIT_NORMAL_IP_3D`) + un bono de fatiga por días consecutivos que saturaba en 23% de los casos (casi constante, no señal real).
@@ -143,11 +143,12 @@ corrida del 2026-06-28, ninguna recuperable de ningún backup en disco (`audit_2
 - **Validado por identidad**: re-corrida completa `--season 2024,2025 --use-full-pit` (4,830
   juegos) produjo un JSON de reporte idéntico byte a byte al último reporte real pre-cambio
   en disco (`reports/round10_composite_weight_nudge/`, 2026-07-12) — única diferencia, el
-  timestamp `run_at`. El fix no movió ni un decimal del modelo. Nota honesta: el resultado
-  real (0.24482 Brier / 55.34% accuracy) difiere ligeramente de "0.24486/55.42%" citado más
-  arriba en este documento — discrepancia preexistente entre esa nota y el último reporte real
-  en disco, no introducida por este cambio (ver `audit_20260714/chron001_fase6_validation_report.md`
-  para la comparación exacta).
+  timestamp `run_at`. El fix no movió ni un decimal del modelo. Nota honesta (**corregida
+  2026-07-18**, ver la nota de baseline arriba): el resultado real (0.24482 Brier / 55.34%
+  accuracy) difería de "0.24486/55.42%", que este documento citaba entonces — era una
+  discrepancia preexistente entre esa prosa y el último reporte real en disco, no introducida
+  por este cambio, y ya está corregida en la nota de baseline al inicio de esta sección (ver
+  `audit_20260714/chron001_fase6_validation_report.md` para la comparación exacta).
 - 7 tests nuevos de regresión (`tests/test_chron001_provenance.py`), 469/469 en verde.
 - **0 rows recuperables** de los 563 ya sobrescritos antes de este fix — los backups
   disponibles empiezan una semana después del evento (`audit_20260714/chron001_forensics_report.md`).

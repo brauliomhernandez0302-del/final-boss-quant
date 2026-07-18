@@ -1,9 +1,45 @@
 # FINAL BOSS QUANT — MASTER BLUEPRINT G∞
 ## De sistema casero a operación cuantitativa de nivel institucional
 
-**Versión:** 1.4 — Julio 2026 (auditoría de la capa odds/detección-de-valor, sesión 2026-07-12/14)
-**Punto de partida:** MLB pipeline con Brier honesto **0.24486 / accuracy 55.42%** (baseline de la sesión de higiene de motores 2026-07-11/12, ver CLAUDE.md — supersede el 0.24525/55.30% de v1.3), 462 tests, remediación look-ahead sustancialmente completada (ver 0.1)
+**Versión:** 1.5 — Julio 2026 (auditoría completa de solo-lectura + remediación CHRON-001/CHRON-002, sesión 2026-07-14/18)
+**Punto de partida:** MLB pipeline con Brier honesto **0.24482 / accuracy 55.34%** (baseline canónico corregido 2026-07-18 — ver nota v1.5; el "0.24486/55.42%" citado en v1.3/v1.4 era doc drift frente al reporte real en disco), 483 tests, remediación look-ahead sustancialmente completada (ver 0.1)
 **Principio rector:** Un cambio a la vez. Backtest después de cada uno. Nada entra sin validación PIT.
+
+**Nota de esta versión (v1.5)**: sesión de dos fases. **Fase 1 (2026-07-14)**: auditoría
+completa de solo-lectura de todo el proyecto (13 secciones — leakage, cronología,
+calibración, mercado de odds, double-counting, fallbacks, matemática, operacional — reporte
+en `audit_20260714/`, veredicto general PARTIAL). Encontró **CHRON-001** (Alto): `game_outcomes`
+compartida, sin protección, entre escrituras live y sobrescrituras del backtest — verificado
+empíricamente que 563 de 615 rows de season 2026 ya habían sido sobrescritas por una sola
+corrida del 2026-06-28, 0 recuperables de ningún backup en disco. **Fase 2 (2026-07-17/18,
+roadmap paso 1-2)**: remediación en 4 commits atómicos secuenciales, cada uno con su propio
+gate de identidad. **CHRON-001** (`175f497`): `source`/columnas `backtest_*` en
+`game_outcomes`, escritura del backtest aislada de las columnas live, 10 funciones de
+`learning_engine.py` parametrizadas con `prediction_source`. **CHRON-002** (`f369f12`,
+roadmap paso 2 commit A): mismo problema pero en `ml_state`/`kalman_state` — el residuo que
+CHRON-001 dejó explícitamente abierto (el "step 4" del backtest todavía pisaba la caché que
+lee producción); cerrado con `state_source` en ambas tablas + `scripts/promote_calibration.py`
+como único camino sancionado (manual, `--confirm` obligatorio) para promover calibración de
+backtest a vivo. **Fuente de entrenamiento cross-season** (roadmap paso 2 commit B): única
+lectora cross-season de columnas de predicción en modo vivo (`recalibrate_platt_2d`, enumerada
+exhaustivamente) pasa a preferir `COALESCE(backtest_p_home, p_home)` — las columnas live de
+seasons pasadas quedan congeladas por diseño desde CHRON-001, las `backtest_*` sí se
+refrescan con cada backtest validado. **LEARN-002** (roadmap paso 2 commit C): monitor
+`calibration_health()` — % de predicciones vivas con Platt activo + % con Pinnacle presente,
+alerta si cualquiera cae bajo 5% con n≥20, línea nueva en el status bar de la UI. Smoke test
+contra la DB real (2026-07-18) encontró `pct_pinnacle_present=0%` (n=23, 14 días) — real,
+reportado tal cual, consistente con `ODDS_API_KEY` desactivada esta sesión, no un bug nuevo.
+**Las cuatro corridas de identidad** (`--season 2024,2025 --use-full-pit`, 4,830 juegos cada
+una: FASE 6 de CHRON-001, gate de CHRON-002, mas las dos re-verificaciones cruzadas)
+produjeron JSON idéntico byte a byte entre sí salvo el timestamp `run_at` — ninguno de los
+cuatro commits movió un solo decimal del modelo, como exigía cada gate. Disciplina: 483/483
+tests en verde en todo momento, un commit por fix, tmux para las corridas largas. Corregido
+de pasada: el baseline "0.24486/55.42%" que v1.3/v1.4 citaban no coincidía con el último
+reporte real en disco (`reports/round10_composite_weight_nudge/`) — era prosa desactualizada,
+no el modelo; corregido en `CLAUDE.md` y arriba. Errata en `audit_20260714/
+01_known_issues_register.md`: REG-021 afirmaba que `recalibrate_platt_2d` corría en el
+backtest (heredado de `AUDITORIA_MLB_2026-07.md`, nunca re-verificado) — confirmado por grep
+repetido que tiene cero call sites ahí; corregido.
 
 **Nota de esta versión (v1.4)**: por primera vez desde v1.1, el número de backtest NO cambia — porque los bugs de esta sesión vivían aguas abajo del modelo, en la capa que convierte probabilidades en apuestas reales. Disparador: los picks en vivo del día mostraban EVs absurdos en runline/totales (+24% a +82%) y 6 de 7 moneylines en tier ULTRA. La auditoría completa de `odds_fetcher.py`/`value_detector.py`/`ui/`/`track_record/` (10 commits, `da721c1`→`0fd674e`, cada hallazgo de Fable re-verificado línea por línea antes de confiarlo) encontró, entre otros: **(1)** Pinnacle estructuralmente excluido del fetch en vivo — `REGION="us"` lo excluye (no es book US-licensed) y la key `"pinnaclesports"` era simplemente incorrecta (`"pinnacle"`); verificado vía `ml_home_pin` NULL en el 100% de filas live desde al menos 2026-07-04. Consecuencia real: la corrección Platt-2D de `value_detector.py`, gateada en tener línea justa de Pinnacle, estuvo silenciosamente apagada en producción TODA la temporada — el backtest no se ve afectado (usa el script histórico separado, que siempre tuvo la key correcta), pero backtest y producción nunca fueron comparables. **(2)** El origen directo de los EVs absurdos: el "best price" shopping tomaba `max(price)` ignorando el campo `point` — podía casar la probabilidad calculada para Over 9.5 con el precio de un Over 10.5 de otro book. Corregido con línea de consenso por punto (preferir el punto de Pinnacle, si no mayoría) — y, en un follow-up (`0fd674e`), se encontró que la matemática de cobertura del runline estaba además hardcodeada a ±1.5 sin importar qué línea real llegara, así que conectar el dato real sin arreglar esto habría solo cambiado la etiqueta, no el cálculo; ambos corregidos. **(3)** Push en líneas enteras ("Over 9.0") contado como pérdida completa en el EV — corregido con `push_prob` real. **(4)** El fallback pick de `track_record/publisher.py` pasaba cuotas ya-decimales por una conversión que asume americanas (~2830% de EV falso, stake al tope de Kelly). **(5)** `ui/odds_loader.py` fabricaba precios even-money (2.0) que `ui/mlb.py` trataba como mercado real. **(6)** La señal de "calidad de bullpen" se calculaba sobre el roster COMPLETO (abridores incluidos) — premisa documentada ("relievers dominan por volumen") verificada como falsa; corregido con clasificación real de rol por jugador. Disciplina refinada respecto al principio rector: fixes que tocan probabilidad/λ recibieron backtest before/after real (el fix de ruido epistémico: bit-for-bit idéntico en 4,830 juegos; el de bullpen: 286 juegos por la ruta legacy, Brier +0.00024 = piso de ruido; el de runline: identidad matemática probada para la línea estándar 1.5, no hizo falta backtest); fixes de solo clasificación de tier, display de EV o plumbing se validaron con tests dirigidos — backtestear lo que provablemente no puede mover el número da falsa confianza en la dirección equivocada. 462 tests en verde en cada commit; nada pusheado aún. Lección de proceso: varios commits tempranos mezclaron accidentalmente trabajo previo sin commitear del usuario (fix de truncamiento walk-off en `learning_engine.py`/`run_module.py`) — detectado, informado, decidido dejarlos como están; los commits posteriores se hicieron con cuidado quirúrgico de exclusión.
 

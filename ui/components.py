@@ -15,7 +15,7 @@ import math
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import streamlit as st
@@ -209,7 +209,7 @@ class UIComponents:
         )
 
     @staticmethod
-    def render_status_bar() -> None:
+    def render_status_bar(calibration_health: Optional[Dict[str, Any]] = None) -> None:
         cache_file = CONFIG.CACHE_DIR / "odds_last.json"
         import os
         api_key = os.getenv("ODDS_API_KEY", "").strip()
@@ -232,6 +232,30 @@ class UIComponents:
             """,
             unsafe_allow_html=True,
         )
+
+        # LEARN-002 (audit_20260714/, roadmap Step 2 Commit C) — minimal
+        # "is calibration alive" line. One line, not a dashboard: the two
+        # percentages calibration_health() computes (scoped to live
+        # predictions only, made possible by CHRON-001's source column) +
+        # sample size, colored by the same threshold that triggers its
+        # logger.warning. None populated (e.g. the caller couldn't reach
+        # the DB) -> render nothing rather than a misleading placeholder.
+        if calibration_health is not None and calibration_health.get("n_rows", 0) > 0:
+            pct_platt = calibration_health["pct_platt_active"]
+            pct_pin = calibration_health["pct_pinnacle_present"]
+            n = calibration_health["n_rows"]
+            healthy = pct_platt >= 5.0 and pct_pin >= 5.0
+            cal_color = ThemeColors.SUCCESS.value if healthy else ThemeColors.DANGER.value
+            st.markdown(
+                f"""
+                <div style='text-align:center; background:{cal_color}; padding:6px;
+                    border-radius:8px; margin:4px 0; font-size:13px;'>
+                    Calibración (14d, n={n}): Platt activo {pct_platt:.0f}% ·
+                    Pinnacle presente {pct_pin:.0f}%
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
     @staticmethod
     def render_value_card(

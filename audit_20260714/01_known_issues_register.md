@@ -207,8 +207,19 @@ scoped server-side; low risk, harden someday" — project's own words).
 **REG-021 — `recalibrate_platt`/`recalibrate_platt_2d` run after the main backtest loop, not
 interleaved — confirmed non-contaminating.**
 Documented: `docs/AUDITORIA_MLB_2026-07.md` §"Sigue pendiente" note under item 0.1.
-**Status: CANNOT VERIFY further without exceeding this audit's reproducibility-run budget
-beyond what §8 already used** — treated as previously verified, not re-derived.
+**Errata (2026-07-18, roadmap Step 2 Commit C)**: this entry's premise was itself doc drift,
+carried forward uncritically from `AUDITORIA_MLB_2026-07.md` (2026-07-06) without
+re-verification against the current code. `recalibrate_platt_2d` has **zero call sites**
+in `backtest_and_retrain.py` — confirmed repeatedly this session by direct grep (see
+`audit_20260714/chron002_commitB_enumeration.md`) — it is exclusively invoked from the live
+path (`get_platt_2d_params` → `run_module.py`). There is nothing to "run after the main
+backtest loop, not interleaved" for `recalibrate_platt_2d` specifically, because it never
+runs in the backtest at all. `recalibrate_platt` (1D) genuinely does run inside the backtest
+(mid-run season-boundary refits, end-of-run per-season refit — see CHRON-002's commit), and
+*that* half of the original claim holds. **Status: CORRECTED** — `recalibrate_platt_2d`
+removed from this claim; `recalibrate_platt`'s non-interleaved, non-contaminating behavior
+remains confirmed (verified directly this session via the CHRON-001/CHRON-002 identity gates,
+which re-ran the full backtest and reproduced byte-identical reports).
 
 ---
 

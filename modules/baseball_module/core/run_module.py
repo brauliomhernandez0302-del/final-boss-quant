@@ -126,6 +126,15 @@ def run_module(
     except Exception:
         pass  # never block analysis on learning failures
 
+    # LEARN-002 (audit_20260714/, roadmap Step 2 Commit C) — cheap "is
+    # calibration alive" check, once per live run. Logs a warning (does not
+    # raise) if Platt or the Pinnacle fair-line feed looks dead — the check
+    # that would have caught REG-001/REG-003/REG-007 on day one.
+    try:
+        _learning.calibration_health()
+    except Exception:
+        pass  # never block analysis on a monitoring check
+
     try:
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 0: OBTENER DATOS

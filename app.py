@@ -304,7 +304,16 @@ def main() -> None:
     UIComponents.apply_theme()
     UIComponents.render_header()
     st.markdown("---")
-    UIComponents.render_status_bar()
+    # LEARN-002 (roadmap Step 2 Commit C) — cheap, best-effort calibration
+    # health check for the status bar. Never blocks the UI: any failure
+    # (missing DB, etc.) just means the line doesn't render.
+    _cal_health: Optional[Dict[str, Any]] = None
+    try:
+        from modules.baseball_module.calibration.learning_engine import LearningEngine
+        _cal_health = LearningEngine(db_path=_cfg.DATA_DIR / "predictions_history.db").calibration_health()
+    except Exception:
+        pass
+    UIComponents.render_status_bar(_cal_health)
 
     # Sidebar needs the sport selected in the analysis tab — pass a sensible default
     settings = render_sidebar(db, "MLB")

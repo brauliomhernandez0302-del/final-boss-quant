@@ -175,6 +175,19 @@ _PLATT_B_DEFAULT    = 0.0
 _PLATT2D_MIN_SAMPLES = 400
 _PLATT2D_RECAL_DAYS  = 7
 
+# LEARN-002 fix (audit_20260714/, roadmap Step 2 Commit C) — "is calibration
+# alive" monitor. Three independent, confirmed silent-calibration-failure
+# incidents predate this: REG-001 (team-bias look-ahead leak), REG-003
+# (Platt reset to identity by an interrupted concurrent backtest launch),
+# REG-007 (the live odds fetch's REGION/bookmaker-key bug that silently
+# disabled Platt-2D correction in production for months, zero errors). None
+# of the three would have tripped any alarm — this constant pair is that
+# alarm's threshold, calibrated conservatively (a real mechanism should be
+# active on the vast majority of predictions, not just >5%; 5% is "so low
+# it can only mean broken," not a tuned optimum).
+_CALIBRATION_HEALTH_MIN_ROWS      = 20    # below this, a sample-noise false alarm is as likely as a real one
+_CALIBRATION_HEALTH_PCT_THRESHOLD = 5.0   # percent
+
 # Kalman blend fraction — must be identical in both get_kalman_lambda_adjustment
 # and compute_team_bias_kalman_adjusted so the bias dampening formula matches
 # the actual blend applied.
@@ -1670,6 +1683,89 @@ class LearningEngine:
         data["sample_count"] = row["sample_count"]
         data["updated_at"]   = row["updated_at"]
         return data
+
+    # ------------------------------------------------------------------
+    # Calibration health monitor (LEARN-002, roadmap Step 2 Commit C)
+    # ------------------------------------------------------------------
+
+    def calibration_health(self, window_days: int = 14) -> Dict[str, Any]:
+        """"Is calibration alive?" — a cheap, real-time production check.
+
+        Scoped to `source='live'` ONLY (CHRON-001 made this possible for
+        the first time — before that fix, game_outcomes couldn't
+        distinguish a live prediction from a backtest-recomputed one, so
+        this exact query would have silently mixed the two and produced a
+        meaningless number).
+
+        Returns:
+          pct_platt_active     — % of live rows in the window where
+                                  p_home != p_home_raw (Platt actually
+                                  changed the raw MC probability).
+          pct_pinnacle_present — % of live rows in the window with
+                                  ml_home_pin populated (Platt-2D's fair-
+                                  line input is actually arriving).
+          n_rows                — window sample size.
+
+        Logs a warning (not an exception — this must never block a live
+        prediction) when n_rows >= _CALIBRATION_HEALTH_MIN_ROWS and either
+        percentage falls below _CALIBRATION_HEALTH_PCT_THRESHOLD. This is
+        the check that would have caught REG-001/REG-003/REG-007 on day
+        one instead of running silently broken for weeks to months.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).strftime("%Y-%m-%d")
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT p_home, p_home_raw, ml_home_pin FROM game_outcomes "
+                "WHERE source = 'live' AND game_date >= ?",
+                (cutoff,),
+            ).fetchall()
+
+        n_rows = len(rows)
+        if n_rows == 0:
+            pct_platt_active = 0.0
+            pct_pinnacle_present = 0.0
+        else:
+            n_platt_active = sum(
+                1 for r in rows
+                if r["p_home"] is not None and r["p_home_raw"] is not None
+                and abs(r["p_home"] - r["p_home_raw"]) > 1e-9
+            )
+            n_pinnacle_present = sum(1 for r in rows if r["ml_home_pin"] is not None)
+            pct_platt_active = 100.0 * n_platt_active / n_rows
+            pct_pinnacle_present = 100.0 * n_pinnacle_present / n_rows
+
+        if n_rows >= _CALIBRATION_HEALTH_MIN_ROWS:
+            if pct_platt_active < _CALIBRATION_HEALTH_PCT_THRESHOLD:
+                logger.warning(
+                    "[calibration_health] Platt appears DEAD in production: only "
+                    "%.1f%% of %d live predictions in the last %d days show "
+                    "p_home != p_home_raw. This is the exact silent-failure "
+                    "signature behind REG-001 (team-bias look-ahead leak) and "
+                    "REG-003 (Platt reset to identity by an interrupted "
+                    "concurrent backtest launch) — check ml_state's "
+                    "'platt_params' row (state_source='live') before trusting "
+                    "any live prediction's calibrated probability.",
+                    pct_platt_active, n_rows, window_days,
+                )
+            if pct_pinnacle_present < _CALIBRATION_HEALTH_PCT_THRESHOLD:
+                logger.warning(
+                    "[calibration_health] Pinnacle fair-line data appears "
+                    "MISSING in production: only %.1f%% of %d live predictions "
+                    "in the last %d days have ml_home_pin populated. This is "
+                    "the exact silent-failure signature behind REG-007 (the "
+                    "live odds fetch's REGION/bookmaker-key bug that silently "
+                    "disabled Platt-2D correction in production for months, "
+                    "zero errors) — check odds_fetcher.py's live fetch path "
+                    "before trusting Platt-2D's correction is actually applying.",
+                    pct_pinnacle_present, n_rows, window_days,
+                )
+
+        return {
+            "pct_platt_active": pct_platt_active,
+            "pct_pinnacle_present": pct_pinnacle_present,
+            "n_rows": n_rows,
+            "window_days": window_days,
+        }
 
     # ------------------------------------------------------------------
     # Helpers
