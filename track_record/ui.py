@@ -171,7 +171,7 @@ def render_track_record() -> None:
             lambda x: f"{x:.1%}" if x is not None else "—"
         )
         picks_df["ev_pct"] = picks_df["ev_pct"].map(
-            lambda x: f"{x:+.1%}" if x is not None else "—"
+            lambda x: f"{x:+.1f}%" if x is not None else "—"
         )
         picks_df["pnl"] = picks_df["pnl"].map(
             lambda x: f"{x:+.2f}u" if x is not None else "—"
@@ -198,7 +198,7 @@ def render_track_record() -> None:
                     "Matchup":  f"{row['away_team']} @ {row['home_team']}",
                     "Mercado":   row["market"],
                     "Prob":      f"{(row['model_prob'] or 0):.1%}",
-                    "EV":        f"{(row['ev_pct'] or 0):+.1%}",
+                    "EV":        f"{(row['ev_pct'] or 0):+.1f}%",
                     "Tier":      row["confidence_tier"] or "—",
                     "Odds":      f"{row['odds_decimal']:.2f}" if row["odds_decimal"] else "—",
                     "Stake":     f"{row['stake_units']:.2f}u" if row["stake_units"] else "—",

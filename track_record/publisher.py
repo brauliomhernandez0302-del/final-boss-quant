@@ -144,7 +144,13 @@ def publish_mlb_picks(
         game_pk = game.get("game_pk")
         home_team = game.get("home_team", "")
         away_team = game.get("away_team", "")
-        game_date = str(game.get("game_date", today))[:10]
+        # Prefer official_date (MLB's own schedule-day field) over
+        # game_date[:10] (a raw UTC start-time timestamp) — a late-night
+        # start's UTC date can be one day ahead of the schedule day
+        # get_todays_games()/get_todays_games(tomorrow) actually query by,
+        # which caused pick_uid/game_date to disagree with the day
+        # run_module()'s own internal game lookup resolved the game under.
+        game_date = str(game.get("official_date") or game.get("game_date", today))[:10]
         commence_raw = game.get("commence_time") or game.get("game_datetime") or ""
 
         # --- enforce pre-game lead ---
@@ -280,7 +286,7 @@ def publish_mlb_picks(
 
             if dry_run:
                 log.info(
-                    f"  [DRY RUN] {pick_uid}  EV={ev_pct:.2%}  tier={tier}"
+                    f"  [DRY RUN] {pick_uid}  EV={ev_pct:.2f}%  tier={tier}"
                 )
             else:
                 row_id = db.publish_pick(
@@ -303,7 +309,7 @@ def publish_mlb_picks(
                 )
                 if row_id:
                     log.info(
-                        f"  Published #{row_id}: {pick_uid}  EV={ev_pct:.2%}  tier={tier}"
+                        f"  Published #{row_id}: {pick_uid}  EV={ev_pct:.2f}%  tier={tier}"
                     )
                 else:
                     log.debug(f"  Already published: {pick_uid}")

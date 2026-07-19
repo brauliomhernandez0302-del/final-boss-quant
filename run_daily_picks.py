@@ -49,7 +49,7 @@ def run_publish(db, dry_run: bool, sports: list[str]) -> list[dict]:
     log.info(f"Picks published: {len(picks)}")
     for p in picks:
         log.info(
-            f"  {p['pick_uid']}  EV={p['ev_pct']:.2%}  tier={p.get('confidence_tier')}  "
+            f"  {p['pick_uid']}  EV={p['ev_pct']:.2f}%  tier={p.get('confidence_tier')}  "
             f"stake={p.get('stake_units', 0):.2f}u"
         )
     return picks
@@ -79,7 +79,7 @@ def print_summary(db) -> None:
     log.info(f"ROI:          {hl['roi_pct']:+.2f}%")
     log.info(f"Units P&L:    {hl['total_units']:+.4f}u")
     log.info(f"Sharpe:       {hl['sharpe']:.3f}")
-    log.info(f"Avg EV:       {hl['avg_ev_pct']:+.2%}")
+    log.info(f"Avg EV:       {hl['avg_ev_pct']:+.2f}%")
 
 
 def export_json(db, out_path: Path) -> None:

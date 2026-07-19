@@ -233,6 +233,16 @@ class MLBStatsAPI:
             return {
                 "game_pk": game.get("gamePk"),
                 "game_date": game.get("gameDate"),
+                # "Which schedule day this game belongs to" per MLB's own
+                # convention — distinct from game_date's UTC start-time
+                # timestamp, which crosses into the next calendar day for any
+                # late-night start (e.g. a 10pm Pacific game has a gameDate
+                # of ~05:00 UTC the NEXT day). This is exactly what
+                # get_todays_games()/get_games_by_date() query the schedule
+                # endpoint by, so a consumer that needs "today vs tomorrow"
+                # to agree with those calls (not the raw UTC date) should use
+                # this field, not game_date[:10].
+                "official_date": game.get("officialDate"),
                 "home_team": home_team,
                 "away_team": away_team,
                 "home_team_id": home_team_id,
