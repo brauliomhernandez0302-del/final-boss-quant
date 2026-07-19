@@ -811,6 +811,7 @@ def run_module(
                 _fetched_odds = get_best_odds_for_teams(
                     home_team=home_team,
                     away_team=away_team,
+                    commence_time=str(game_data.get('game_date', '')),
                     sport="baseball_mlb"
                 ) or None
                 if _fetched_odds:

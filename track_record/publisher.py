@@ -151,7 +151,16 @@ def publish_mlb_picks(
         # which caused pick_uid/game_date to disagree with the day
         # run_module()'s own internal game lookup resolved the game under.
         game_date = str(game.get("official_date") or game.get("game_date", today))[:10]
-        commence_raw = game.get("commence_time") or game.get("game_datetime") or ""
+        # 2026-07-19 fix: this was reading commence_time/game_datetime, keys
+        # data_fetchers.py's _parse_game() never populates for MLB (only
+        # game_date, the full ISO start-time timestamp) — so commence_raw
+        # was ALWAYS "" and the entire MIN_LEAD_MINUTES pre-game-lead check
+        # below silently never fired for any real MLB game, undermining this
+        # module's own core guarantee ("every pick has a pre-game
+        # published_at timestamp", per its module docstring). game_date is
+        # kept last in the fallback chain so a future/other-sport caller
+        # that DOES populate commence_time/game_datetime is unaffected.
+        commence_raw = game.get("commence_time") or game.get("game_datetime") or game.get("game_date") or ""
 
         # --- enforce pre-game lead ---
         if commence_raw:
@@ -196,7 +205,8 @@ def publish_mlb_picks(
         market_odds: Dict[str, Any] = {}
         try:
             market_odds = get_best_odds_for_teams(
-                home_team=home_team, away_team=away_team, sport="baseball_mlb"
+                home_team=home_team, away_team=away_team,
+                commence_time=commence_raw, sport="baseball_mlb"
             ) or {}
         except Exception:
             pass

@@ -64,7 +64,8 @@ def test_get_best_odds_for_teams_returns_gameodds_compatible_f5_keys(monkeypatch
     monkeypatch.setattr(odds_fetcher, "_get_raw_events", lambda: [_synthetic_event()])
 
     result = odds_fetcher.get_best_odds_for_teams(
-        home_team="Yankees", away_team="Red Sox", sport="baseball_mlb"
+        home_team="Yankees", away_team="Red Sox",
+        commence_time="2026-07-06T23:00:00Z", sport="baseball_mlb"
     )
 
     # The exact keys GameOdds/run_module.py read (core/value_detector.py's
@@ -88,7 +89,8 @@ def test_f5_odds_activate_analyze_first5_gate(monkeypatch):
     into GameOdds exactly as run_module.py does, and confirm F5 activates."""
     monkeypatch.setattr(odds_fetcher, "_get_raw_events", lambda: [_synthetic_event()])
     fetched = odds_fetcher.get_best_odds_for_teams(
-        home_team="Yankees", away_team="Red Sox", sport="baseball_mlb"
+        home_team="Yankees", away_team="Red Sox",
+        commence_time="2026-07-06T23:00:00Z", sport="baseball_mlb"
     )
 
     odds = GameOdds(

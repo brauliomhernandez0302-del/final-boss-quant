@@ -27,7 +27,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -507,189 +507,247 @@ def get_odds_data() -> List[Dict]:
     return [n for n in normalized if n["home_odds"] and n["away_odds"]]
 
 
+_ODDS_MATCH_WINDOW = timedelta(hours=6)
+
+
+def _parse_commence(value: str) -> Optional[datetime]:
+    """Parse an ISO-8601 commence_time (The Odds API or MLB schedule format,
+    both use a 'Z'-suffixed UTC timestamp) into a tz-aware datetime. None on
+    any parse failure — callers must treat that as "can't disambiguate"."""
+    try:
+        v = value[:-1] + "+00:00" if value.endswith("Z") else value
+        dt = datetime.fromisoformat(v)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def get_best_odds_for_teams(
     home_team: str,
     away_team: str,
+    commence_time: str,
     sport: str = "baseball_mlb",
     region: str = "us",   # kept for API compatibility, unused — see module-level REGION
 ) -> Dict:
     """Find best ML prices + Pinnacle reference for a specific matchup.
 
-    Searches the cached raw events — no extra API call.
-    Returns {} if the matchup is not found.
+    `commence_time` (required — the target game's own real start time, ISO
+    8601, e.g. from the MLB schedule's `gameDate`) disambiguates between
+    multiple odds-API events for the same two teams — a multi-game series or
+    a doubleheader. Team-name matching ALONE (the pre-2026-07-19 behavior)
+    silently returned whichever matching event happened to be first in the
+    API's event list, which could be a different day's game for the same two
+    teams entirely — a confirmed real bug, see
+    audit_20260714/verificacion_operativa/reporte.md (V2).
+
+    Searches the cached raw events — no extra API call. Returns {} (never a
+    guess) if no matching event falls within ±6h of `commence_time`, if two
+    candidates are exactly tied in distance (ambiguous), or if
+    `commence_time` itself doesn't parse.
     """
+    target = _parse_commence(commence_time)
+    if target is None:
+        logger.warning(
+            "get_best_odds_for_teams: unparseable commence_time=%r for %s @ %s — "
+            "cannot disambiguate, returning no odds",
+            commence_time, away_team, home_team,
+        )
+        return {}
+
     raw = _get_raw_events()
 
-    for event in raw:
-        if event.get("sport_key") != sport:
+    candidates: List[tuple] = []
+    for candidate_event in raw:
+        if candidate_event.get("sport_key") != sport:
             continue
-
-        g_home = event.get("home_team", "")
-        g_away = event.get("away_team", "")
-
+        g_home = candidate_event.get("home_team", "")
+        g_away = candidate_event.get("away_team", "")
         home_match = home_team.lower() in g_home.lower() or g_home.lower() in home_team.lower()
         away_match = away_team.lower() in g_away.lower() or g_away.lower() in away_team.lower()
         if not (home_match and away_match):
             continue
+        event_commence = _parse_commence(candidate_event.get("commence_time", ""))
+        if event_commence is None:
+            continue
+        delta = abs(event_commence - target)
+        if delta <= _ODDS_MATCH_WINDOW:
+            candidates.append((delta, candidate_event))
 
-        best_home = 0.0
-        best_away = 0.0
-        pin_home: Optional[float] = None
-        pin_away: Optional[float] = None
-        best_f5_home = 0.0
-        best_f5_away = 0.0
+    if not candidates:
+        logger.warning(
+            "get_best_odds_for_teams: no odds event for %s @ %s within %s of commence_time=%s",
+            away_team, home_team, _ODDS_MATCH_WINDOW, commence_time,
+        )
+        return {}
 
-        # Line-based markets: grouped by point, same reasoning as
-        # _normalize_event() — see _consensus_line_and_price()'s docstring.
-        over_by_point: Dict[float, float] = {}
-        over_point_counts: Dict[float, int] = {}
-        under_by_point: Dict[float, float] = {}
-        pin_total_point: Optional[float] = None
+    candidates.sort(key=lambda c: c[0])
+    if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+        logger.warning(
+            "get_best_odds_for_teams: ambiguous match for %s @ %s — 2+ odds events "
+            "equally close (%s) to commence_time=%s, refusing to guess",
+            away_team, home_team, candidates[0][0], commence_time,
+        )
+        return {}
 
-        rl_home_by_point: Dict[float, float] = {}
-        rl_home_point_counts: Dict[float, int] = {}
-        rl_away_by_point: Dict[float, float] = {}
-        rl_away_point_counts: Dict[float, int] = {}
-        pin_rl_home_point: Optional[float] = None
-        pin_rl_away_point: Optional[float] = None
+    event = candidates[0][1]
+    best_home = 0.0
+    best_away = 0.0
+    pin_home: Optional[float] = None
+    pin_away: Optional[float] = None
+    best_f5_home = 0.0
+    best_f5_away = 0.0
 
-        f5_over_by_point: Dict[float, float] = {}
-        f5_over_point_counts: Dict[float, int] = {}
-        f5_under_by_point: Dict[float, float] = {}
+    # Line-based markets: grouped by point, same reasoning as
+    # _normalize_event() — see _consensus_line_and_price()'s docstring.
+    over_by_point: Dict[float, float] = {}
+    over_point_counts: Dict[float, int] = {}
+    under_by_point: Dict[float, float] = {}
+    pin_total_point: Optional[float] = None
 
-        f5_rl_home_by_point: Dict[float, float] = {}
-        f5_rl_home_point_counts: Dict[float, int] = {}
-        f5_rl_away_by_point: Dict[float, float] = {}
-        f5_rl_away_point_counts: Dict[float, int] = {}
+    rl_home_by_point: Dict[float, float] = {}
+    rl_home_point_counts: Dict[float, int] = {}
+    rl_away_by_point: Dict[float, float] = {}
+    rl_away_point_counts: Dict[float, int] = {}
+    pin_rl_home_point: Optional[float] = None
+    pin_rl_away_point: Optional[float] = None
 
-        for bm in event.get("bookmakers", []):
-            is_pinnacle = (
-                bm.get("key", "").lower() == _PINNACLE_KEY
-                or "pinnacle" in bm.get("title", "").lower()
-            )
-            for market in bm.get("markets", []):
-                mkey     = market.get("key", "")
-                outcomes = market.get("outcomes", [])
+    f5_over_by_point: Dict[float, float] = {}
+    f5_over_point_counts: Dict[float, int] = {}
+    f5_under_by_point: Dict[float, float] = {}
 
-                if mkey == "h2h":
-                    for outcome in outcomes:
-                        name  = outcome.get("name", "").strip()
-                        price = outcome.get("price", 0.0) or 0.0
-                        if name == g_home:
-                            best_home = max(best_home, price)
-                            if is_pinnacle:
-                                pin_home = price
-                        elif name == g_away:
-                            best_away = max(best_away, price)
-                            if is_pinnacle:
-                                pin_away = price
+    f5_rl_home_by_point: Dict[float, float] = {}
+    f5_rl_home_point_counts: Dict[float, int] = {}
+    f5_rl_away_by_point: Dict[float, float] = {}
+    f5_rl_away_point_counts: Dict[float, int] = {}
 
-                elif mkey == "totals":
-                    for outcome in outcomes:
-                        n     = outcome.get("name", "").lower()
-                        price = outcome.get("price", 0.0) or 0.0
-                        point = outcome.get("point")
-                        if n == "over":
-                            _accumulate_point_price(over_by_point, over_point_counts, point, price)
-                            if is_pinnacle and point is not None:
-                                pin_total_point = point
-                        elif n == "under":
-                            _accumulate_point_price(under_by_point, {}, point, price)
+    for bm in event.get("bookmakers", []):
+        is_pinnacle = (
+            bm.get("key", "").lower() == _PINNACLE_KEY
+            or "pinnacle" in bm.get("title", "").lower()
+        )
+        for market in bm.get("markets", []):
+            mkey     = market.get("key", "")
+            outcomes = market.get("outcomes", [])
 
-                elif mkey == "spreads":
-                    for outcome in outcomes:
-                        name  = outcome.get("name", "").strip()
-                        price = outcome.get("price", 0.0) or 0.0
-                        point = outcome.get("point")
-                        if name == g_home:
-                            _accumulate_point_price(rl_home_by_point, rl_home_point_counts, point, price)
-                            if is_pinnacle and point is not None:
-                                pin_rl_home_point = point
-                        elif name == g_away:
-                            _accumulate_point_price(rl_away_by_point, rl_away_point_counts, point, price)
-                            if is_pinnacle and point is not None:
-                                pin_rl_away_point = point
+            if mkey == "h2h":
+                for outcome in outcomes:
+                    name  = outcome.get("name", "").strip()
+                    price = outcome.get("price", 0.0) or 0.0
+                    if name == g_home:
+                        best_home = max(best_home, price)
+                        if is_pinnacle:
+                            pin_home = price
+                    elif name == g_away:
+                        best_away = max(best_away, price)
+                        if is_pinnacle:
+                            pin_away = price
 
-                elif mkey == "h2h_h1":
-                    for outcome in outcomes:
-                        name  = outcome.get("name", "").strip()
-                        price = outcome.get("price", 0.0) or 0.0
-                        if name == g_home:
-                            best_f5_home = max(best_f5_home, price)
-                        elif name == g_away:
-                            best_f5_away = max(best_f5_away, price)
+            elif mkey == "totals":
+                for outcome in outcomes:
+                    n     = outcome.get("name", "").lower()
+                    price = outcome.get("price", 0.0) or 0.0
+                    point = outcome.get("point")
+                    if n == "over":
+                        _accumulate_point_price(over_by_point, over_point_counts, point, price)
+                        if is_pinnacle and point is not None:
+                            pin_total_point = point
+                    elif n == "under":
+                        _accumulate_point_price(under_by_point, {}, point, price)
 
-                elif mkey == "totals_h1":
-                    for outcome in outcomes:
-                        n     = outcome.get("name", "").lower()
-                        price = outcome.get("price", 0.0) or 0.0
-                        point = outcome.get("point")
-                        if n == "over":
-                            _accumulate_point_price(f5_over_by_point, f5_over_point_counts, point, price)
-                        elif n == "under":
-                            _accumulate_point_price(f5_under_by_point, {}, point, price)
+            elif mkey == "spreads":
+                for outcome in outcomes:
+                    name  = outcome.get("name", "").strip()
+                    price = outcome.get("price", 0.0) or 0.0
+                    point = outcome.get("point")
+                    if name == g_home:
+                        _accumulate_point_price(rl_home_by_point, rl_home_point_counts, point, price)
+                        if is_pinnacle and point is not None:
+                            pin_rl_home_point = point
+                    elif name == g_away:
+                        _accumulate_point_price(rl_away_by_point, rl_away_point_counts, point, price)
+                        if is_pinnacle and point is not None:
+                            pin_rl_away_point = point
 
-                elif mkey == "spreads_h1":
-                    for outcome in outcomes:
-                        name  = outcome.get("name", "").strip()
-                        price = outcome.get("price", 0.0) or 0.0
-                        point = outcome.get("point")
-                        if name == g_home:
-                            _accumulate_point_price(f5_rl_home_by_point, f5_rl_home_point_counts, point, price)
-                        elif name == g_away:
-                            _accumulate_point_price(f5_rl_away_by_point, f5_rl_away_point_counts, point, price)
+            elif mkey == "h2h_h1":
+                for outcome in outcomes:
+                    name  = outcome.get("name", "").strip()
+                    price = outcome.get("price", 0.0) or 0.0
+                    if name == g_home:
+                        best_f5_home = max(best_f5_home, price)
+                    elif name == g_away:
+                        best_f5_away = max(best_f5_away, price)
 
-        total_line, total_over = _consensus_line_and_price(over_by_point, over_point_counts, pin_total_point)
-        _, total_under = _consensus_line_and_price(under_by_point, over_point_counts, pin_total_point)
-        rl_home_point, best_rl_home = _consensus_line_and_price(rl_home_by_point, rl_home_point_counts, pin_rl_home_point)
-        rl_away_point, best_rl_away = _consensus_line_and_price(rl_away_by_point, rl_away_point_counts, pin_rl_away_point)
-        f5_total_line, best_f5_over = _consensus_line_and_price(f5_over_by_point, f5_over_point_counts, None)
-        _, best_f5_under = _consensus_line_and_price(f5_under_by_point, f5_over_point_counts, None)
-        _, best_f5_rl_home = _consensus_line_and_price(f5_rl_home_by_point, f5_rl_home_point_counts, None)
-        _, best_f5_rl_away = _consensus_line_and_price(f5_rl_away_by_point, f5_rl_away_point_counts, None)
-        pin_total = pin_total_point
+            elif mkey == "totals_h1":
+                for outcome in outcomes:
+                    n     = outcome.get("name", "").lower()
+                    price = outcome.get("price", 0.0) or 0.0
+                    point = outcome.get("point")
+                    if n == "over":
+                        _accumulate_point_price(f5_over_by_point, f5_over_point_counts, point, price)
+                    elif n == "under":
+                        _accumulate_point_price(f5_under_by_point, {}, point, price)
 
-        return {
-            "home_team":     g_home,
-            "away_team":     g_away,
-            "ml_home":       best_home if best_home > 0 else None,
-            "ml_away":       best_away if best_away > 0 else None,
-            "pin_home":      pin_home,
-            "pin_away":      pin_away,
-            "pin_total":     pin_total,
-            "total_line":    total_line,
-            "total_over":    total_over,
-            "total_under":   total_under,
-            "runline_home":  best_rl_home,
-            "runline_away":  best_rl_away,
-            # Magnitude only — see _normalize_event()'s identical field for
-            # why (home/away sign convention is decided elsewhere, and the
-            # two points aren't guaranteed to agree in sign).
-            "runline_line": (
-                abs(rl_home_point) if rl_home_point is not None
-                else (abs(rl_away_point) if rl_away_point is not None else None)
-            ),
-            # f5_ml_home/f5_ml_away/f5_total_over/f5_total_under: named to
-            # match GameOdds' established convention (core/value_detector.py)
-            # and run_module.py's read side. Previously these were
-            # "f5_home"/"f5_away"/"f5_over"/"f5_under" — a naming mismatch
-            # that silently meant F5 markets could never activate anywhere
-            # run_module() relies on this function for real odds (e.g.
-            # track_record/publisher.py's publish_mlb_picks, which calls
-            # run_mlb() without an explicit market_odds override) — only
-            # f5_total_line happened to match by coincidence, letting
-            # analyze_first5()'s outer gate pass while every inner F5
-            # ML/totals check silently failed on None. Found + fixed
-            # 2026-07-06, confirmed via GameOdds' own self-test data
-            # (value_detector.py) using this exact naming.
-            "f5_ml_home":    best_f5_home if best_f5_home > 0 else None,
-            "f5_ml_away":    best_f5_away if best_f5_away > 0 else None,
-            "f5_total_line": f5_total_line,
-            "f5_total_over": best_f5_over,
-            "f5_total_under": best_f5_under,
-            "f5_rl_home":    best_f5_rl_home,
-            "f5_rl_away":    best_f5_rl_away,
-            "game_id":       event.get("id"),
-        }
+            elif mkey == "spreads_h1":
+                for outcome in outcomes:
+                    name  = outcome.get("name", "").strip()
+                    price = outcome.get("price", 0.0) or 0.0
+                    point = outcome.get("point")
+                    if name == g_home:
+                        _accumulate_point_price(f5_rl_home_by_point, f5_rl_home_point_counts, point, price)
+                    elif name == g_away:
+                        _accumulate_point_price(f5_rl_away_by_point, f5_rl_away_point_counts, point, price)
 
-    return {}
+    total_line, total_over = _consensus_line_and_price(over_by_point, over_point_counts, pin_total_point)
+    _, total_under = _consensus_line_and_price(under_by_point, over_point_counts, pin_total_point)
+    rl_home_point, best_rl_home = _consensus_line_and_price(rl_home_by_point, rl_home_point_counts, pin_rl_home_point)
+    rl_away_point, best_rl_away = _consensus_line_and_price(rl_away_by_point, rl_away_point_counts, pin_rl_away_point)
+    f5_total_line, best_f5_over = _consensus_line_and_price(f5_over_by_point, f5_over_point_counts, None)
+    _, best_f5_under = _consensus_line_and_price(f5_under_by_point, f5_over_point_counts, None)
+    _, best_f5_rl_home = _consensus_line_and_price(f5_rl_home_by_point, f5_rl_home_point_counts, None)
+    _, best_f5_rl_away = _consensus_line_and_price(f5_rl_away_by_point, f5_rl_away_point_counts, None)
+    pin_total = pin_total_point
+
+    return {
+        "home_team":     g_home,
+        "away_team":     g_away,
+        "ml_home":       best_home if best_home > 0 else None,
+        "ml_away":       best_away if best_away > 0 else None,
+        "pin_home":      pin_home,
+        "pin_away":      pin_away,
+        "pin_total":     pin_total,
+        "total_line":    total_line,
+        "total_over":    total_over,
+        "total_under":   total_under,
+        "runline_home":  best_rl_home,
+        "runline_away":  best_rl_away,
+        # Magnitude only — see _normalize_event()'s identical field for
+        # why (home/away sign convention is decided elsewhere, and the
+        # two points aren't guaranteed to agree in sign).
+        "runline_line": (
+            abs(rl_home_point) if rl_home_point is not None
+            else (abs(rl_away_point) if rl_away_point is not None else None)
+        ),
+        # f5_ml_home/f5_ml_away/f5_total_over/f5_total_under: named to
+        # match GameOdds' established convention (core/value_detector.py)
+        # and run_module.py's read side. Previously these were
+        # "f5_home"/"f5_away"/"f5_over"/"f5_under" — a naming mismatch
+        # that silently meant F5 markets could never activate anywhere
+        # run_module() relies on this function for real odds (e.g.
+        # track_record/publisher.py's publish_mlb_picks, which calls
+        # run_mlb() without an explicit market_odds override) — only
+        # f5_total_line happened to match by coincidence, letting
+        # analyze_first5()'s outer gate pass while every inner F5
+        # ML/totals check silently failed on None. Found + fixed
+        # 2026-07-06, confirmed via GameOdds' own self-test data
+        # (value_detector.py) using this exact naming.
+        "f5_ml_home":    best_f5_home if best_f5_home > 0 else None,
+        "f5_ml_away":    best_f5_away if best_f5_away > 0 else None,
+        "f5_total_line": f5_total_line,
+        "f5_total_over": best_f5_over,
+        "f5_total_under": best_f5_under,
+        "f5_rl_home":    best_f5_rl_home,
+        "f5_rl_away":    best_f5_rl_away,
+        "game_id":       event.get("id"),
+    }
