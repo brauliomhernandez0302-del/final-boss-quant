@@ -82,6 +82,7 @@ Each sport has a `run_module()` function that returns `Dict[str, Any]` with keys
 - **Safe module loading**: `safe_import()` in `app.py` gracefully handles missing modules; analyzers fall back gracefully when sport modules are unavailable.
 - **Streamlit + terminal dual mode**: `run_module.py` detects Streamlit availability with a try/except around `import streamlit as st`; falls back to selecting the first game in terminal mode.
 - **Backtest-validated calibration does not reach live automatically**: since CHRON-002, `ml_state`/`kalman_state` are split by `state_source` (`'live'` vs `'backtest'`). A model/pipeline change validated via a backtest run must be followed by `python3 scripts/promote_calibration.py --season <N> --mechanism <...> --confirm` before it's trusted in production — see `CONTRACTS.md`'s `ml_state` entry and the operational-rule callout right above the `calibration/learning_engine.py` row for the full mechanism list and TTL/promotion details.
+- **The live ledger is production — testing `run_module()` needs `persist=False`**: every call writes a permanent row to `game_outcomes(source='live')` via `LearningEngine.record_prediction()`, indistinguishable from a real pick, unless you pass `persist=False` (or set `FBQ_NO_PERSIST=1` in the environment, which forces it regardless of the argument). Found live 2026-07-19 after a session of diagnostic calls wrote 46 real rows in one afternoon — see `audit_20260714/verificacion_operativa/nota_46_rows.md`.
 
 ## Estado actual
 

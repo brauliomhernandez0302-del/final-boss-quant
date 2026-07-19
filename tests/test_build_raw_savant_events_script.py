@@ -74,9 +74,16 @@ def test_pit_raw_directory_and_database_are_gitignored(tmp_path):
     assert tracked.returncode != 0
 
 
-def test_importing_script_does_not_import_pipeline_modules():
+def test_importing_script_does_not_import_pipeline_modules(monkeypatch):
+    # monkeypatch.delitem (not a raw sys.modules.pop()) so these 5 modules
+    # are restored to their pre-test cached state after this test — a raw
+    # pop() here permanently evicted them from sys.modules for the rest of
+    # the pytest session (found 2026-07-19: it made a later test's
+    # monkeypatch.setattr() on an already-imported module silently
+    # ineffective, since the next `import` after the eviction rebuilds a
+    # fresh, unpatched module object instead of reusing the patched one).
     for module_name in FORBIDDEN_IMPORTS:
-        sys.modules.pop(module_name, None)
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
 
     _load_script()
 

@@ -100,14 +100,48 @@ def run_module(
     analyze_f5: bool = True,
     n_max: int = MLB_SIMULATIONS,
     market_odds: Optional[Dict] = None,  # pre-fetched odds from UI — skips second API call
+    persist: bool = True,
 ) -> Dict[str, Any]:
     """
     Ejecuta el análisis completo de un juego MLB.
+
+    `persist` (2026-07-19, roadmap Fase 2A commit 1): gates every DB write
+    reachable from this function's prediction path. Before this flag existed,
+    there was no way to call run_module() for debugging/testing without
+    permanently writing to the live calibration ledger (game_outcomes,
+    source='live') — confirmed live: a session of diagnostic calls wrote 46
+    real rows in one afternoon (see audit_20260714/verificacion_operativa/
+    nota_46_rows.md). Enumerated by grep, exactly two write points exist in
+    this function's reachable call graph, both gated below:
+      1. `_learning.fetch_pending_outcomes()` — resolves OTHER pending
+         predictions' actual scores (writes actual_home_runs/actual_away_runs
+         to game_outcomes, and triggers Kalman/gradient-descent state writes
+         via update_outcome()).
+      2. `_learning.record_prediction(...)` — inserts this game's own
+         prediction row (or COALESCE-backfills a few NULL fields on an
+         existing row — see that method's docstring for exactly which
+         fields, and why p_home/p_away/lambda_home/lambda_away are never
+         touched by the backfill).
+    No other write is reachable from here — every other `_learning.*` call
+    in this function (`calibration_health`, `get_kalman_lambda_adjustment`,
+    `compute_team_bias_kalman_adjusted`, `get_pipeline_weights`,
+    `get_platt_params`, `get_kalman_n_obs`, `apply_platt_2d`) is read-only,
+    verified directly (no `save_state`/`INSERT`/`UPDATE` in any of their
+    bodies).
+
+    `FBQ_NO_PERSIST=1` in the environment forces persist=False regardless of
+    the argument passed — an escape hatch for ad-hoc debugging sessions that
+    call this function through other code paths (e.g. track_record/) that
+    don't yet pass `persist` through explicitly.
     """
+    import os as _os
+    _persist = persist and _os.environ.get("FBQ_NO_PERSIST") != "1"
 
     logger.info("=" * 70)
     logger.info("🎯 INICIANDO ANÁLISIS MLB - SISTEMA G10 ULTRA PRO")
     logger.info("=" * 70)
+    if not _persist:
+        logger.info("   ⚠️  persist=False — no DB writes will occur (test/debug mode)")
 
     results = {
         'game_id': game_id,
@@ -121,10 +155,11 @@ def run_module(
     # Learning engine — initialised once per run; fetches pending outcomes first
     from config import DATA_DIR
     _learning = LearningEngine(db_path=DATA_DIR / "predictions_history.db")
-    try:
-        _learning.fetch_pending_outcomes()
-    except Exception:
-        pass  # never block analysis on learning failures
+    if _persist:
+        try:
+            _learning.fetch_pending_outcomes()
+        except Exception:
+            pass  # never block analysis on learning failures
 
     # LEARN-002 (audit_20260714/, roadmap Step 2 Commit C) — cheap "is
     # calibration alive" check, once per live run. Logs a warning (does not
@@ -881,7 +916,7 @@ def run_module(
         # Persist prediction for future learning
         _gk = game_data.get('game_pk') or game_id
         _gd = str(game_data.get('game_date', datetime.now().strftime("%Y-%m-%d")))[:10]
-        if _gk:
+        if _gk and _persist:
             try:
                 _learning.record_prediction(
                     game_pk=int(_gk),

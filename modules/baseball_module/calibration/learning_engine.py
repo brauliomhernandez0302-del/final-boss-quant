@@ -516,6 +516,19 @@ class LearningEngine:
         (required by gradient descent) and p_home_raw (required by clean Platt
         refitting).  INSERT OR IGNORE alone would silently skip this, leaving
         gradient descent permanently starved of stage factor data.
+
+        Pin-backfill semantics (2026-07-19, Fase 2A commit 1): the COALESCE
+        backfill below also applies to ml_home_pin/ml_away_pin, which in
+        practice is its most common trigger — a "tomorrow" game is often
+        first analyzed before Pinnacle has posted a line for it, so the
+        first call records the prediction with pins NULL, and a later same-
+        day re-run (once the line exists) fills them in. This means
+        ml_home_pin/ml_away_pin means "the earliest pre-game Pinnacle price
+        this pipeline observed for this game", NOT "the price at the exact
+        moment p_home/p_away were computed" — those two calls can be hours
+        apart. The backfill NEVER touches p_home, p_away, lambda_home, or
+        lambda_away (not in the UPDATE below) — a prediction, once recorded,
+        is immutable; only telemetry fields fill in gaps afterward.
         """
         month = None
         try:
