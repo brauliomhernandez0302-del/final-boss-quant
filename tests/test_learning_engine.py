@@ -207,6 +207,56 @@ class TestPersistence:
         assert row["actual_home_runs"] == 5
         assert row["actual_away_runs"] == 3
 
+
+class TestOfficialDate:
+    """Fase 2B commit B1 (audit_20260714/fase2b/): official_date is the MLB
+    schedule's own day, distinct from game_date's raw UTC timestamp (which
+    is one day ahead for any night game crossing midnight UTC). Every PIT
+    walk-forward cutoff and bias-window comparison should key off this
+    field going forward — these tests just confirm record_prediction()
+    stores and backfills it correctly; the actual cutoff cutover is Fase 2B
+    commit B2, not this one."""
+
+    def test_record_prediction_stores_official_date(self, engine):
+        engine.record_prediction(
+            game_pk=7001, game_date="2026-07-19", season=2026,
+            home_team="A", away_team="B",
+            lambda_home=4.5, lambda_away=3.8,
+            p_home=0.55, p_away=0.45,
+            official_date="2026-07-18",  # e.g. a night game crossing midnight UTC
+        )
+        with engine._get_conn() as conn:
+            row = conn.execute(
+                "SELECT game_date, official_date FROM game_outcomes WHERE game_pk=7001"
+            ).fetchone()
+        assert row["game_date"] == "2026-07-19"
+        assert row["official_date"] == "2026-07-18"
+
+    def test_official_date_backfills_without_touching_prediction_fields(self, engine):
+        engine.record_prediction(
+            game_pk=7002, game_date="2026-07-19", season=2026,
+            home_team="A", away_team="B",
+            lambda_home=4.5, lambda_away=3.8,
+            p_home=0.55, p_away=0.45,
+            official_date=None,
+        )
+        # Second call (e.g. a later same-day re-run) now has official_date —
+        # backfilled via COALESCE, same pattern as ml_home_pin.
+        engine.record_prediction(
+            game_pk=7002, game_date="2026-07-19", season=2026,
+            home_team="A", away_team="B",
+            lambda_home=9.9, lambda_away=9.9,  # must NOT land
+            p_home=0.99, p_away=0.01,          # must NOT land
+            official_date="2026-07-18",
+        )
+        with engine._get_conn() as conn:
+            row = conn.execute(
+                "SELECT lambda_home, p_home, official_date FROM game_outcomes WHERE game_pk=7002"
+            ).fetchone()
+        assert row["lambda_home"] == 4.5  # untouched
+        assert row["p_home"] == 0.55      # untouched
+        assert row["official_date"] == "2026-07-18"  # backfilled
+
     def test_update_outcome_home_loss(self, engine):
         engine.record_prediction(
             game_pk=7777, game_date="2026-05-01", season=2026,

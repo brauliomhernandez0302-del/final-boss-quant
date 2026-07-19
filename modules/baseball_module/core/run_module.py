@@ -938,6 +938,11 @@ def run_module(
                     # record_prediction()'s docstring.
                     ml_home_pin=(_fetched_odds or {}).get('pin_home'),
                     ml_away_pin=(_fetched_odds or {}).get('pin_away'),
+                    # Fase 2B commit B1: the MLB schedule's own officialDate
+                    # (data_fetchers.py's _parse_game(), added post-58edf4e) —
+                    # distinct from game_date's raw UTC timestamp. Rows born
+                    # from here on have the correct field from day one.
+                    official_date=game_data.get('official_date'),
                 )
             except Exception as _e:
                 logger.debug(f"[learning] record_prediction failed: {_e}")

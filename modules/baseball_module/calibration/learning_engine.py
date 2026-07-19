@@ -343,6 +343,22 @@ class LearningEngine:
                 ("backtest_p_home_raw", "REAL"),
                 ("backtest_p_away_raw", "REAL"),
                 ("backtest_stage_factors_json", "TEXT"),
+                # Fase 2B commit B1 (audit_20260714/fase2b/): game_date is the
+                # raw UTC gameDate timestamp truncated to a date — for any
+                # night game crossing midnight UTC (the norm for west-coast
+                # teams), that's one calendar day AHEAD of the MLB schedule's
+                # own officialDate. Every PIT walk-forward cutoff derived
+                # from game_date was therefore requesting one day too late,
+                # and with PITCache.get_latest()'s inclusive `<=` comparison,
+                # silently including the target game's own game-day in its
+                # own PIT snapshot — a confirmed real leak (see
+                # audit_20260714/verificacion_operativa/reporte.md, V4, and
+                # b0_verificacion_previa.md for the empirical proof against
+                # game_pk=745199). This column is the correct field for any
+                # future chronological comparison; game_date itself is left
+                # untouched (still needed wherever the actual UTC start time
+                # matters, e.g. weather-forecast fetch alignment).
+                ("official_date", "TEXT"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE game_outcomes ADD COLUMN {col} {typedef}")
@@ -497,6 +513,7 @@ class LearningEngine:
         p_away_raw: Optional[float] = None,
         ml_home_pin: Optional[float] = None,  # Pinnacle moneyline price at prediction time
         ml_away_pin: Optional[float] = None,
+        official_date: Optional[str] = None,
     ) -> bool:
         """Insert a pre-game prediction row. Returns True if newly inserted.
 
@@ -529,6 +546,14 @@ class LearningEngine:
         apart. The backfill NEVER touches p_home, p_away, lambda_home, or
         lambda_away (not in the UPDATE below) — a prediction, once recorded,
         is immutable; only telemetry fields fill in gaps afterward.
+
+        official_date (Fase 2B commit B1, audit_20260714/fase2b/): the MLB
+        schedule's own officialDate, distinct from game_date (a raw UTC
+        timestamp truncated to a date — one day ahead of officialDate for
+        any night game crossing midnight UTC). This is the field every PIT
+        walk-forward cutoff and chronological bias-window comparison should
+        use going forward; game_date itself stays as-is (still needed where
+        the actual UTC start time matters, e.g. weather-forecast alignment).
         """
         month = None
         try:
@@ -545,12 +570,12 @@ class LearningEngine:
                     (game_pk, game_date, season, home_team, away_team, venue, month,
                      lambda_home, lambda_away, p_home, p_away,
                      p_home_raw, p_away_raw, ml_home_pin, ml_away_pin, stage_factors_json,
-                     source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live')
+                     official_date, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live')
                 """,
                 (game_pk, game_date, season, home_team, away_team, venue, month,
                  lambda_home, lambda_away, p_home, p_away,
-                 p_home_raw, p_away_raw, ml_home_pin, ml_away_pin, sf_json),
+                 p_home_raw, p_away_raw, ml_home_pin, ml_away_pin, sf_json, official_date),
             )
             inserted = cursor.rowcount == 1
             if not inserted:
@@ -577,10 +602,11 @@ class LearningEngine:
                         p_away_raw         = COALESCE(p_away_raw, ?),
                         ml_home_pin        = COALESCE(ml_home_pin, ?),
                         ml_away_pin        = COALESCE(ml_away_pin, ?),
+                        official_date      = COALESCE(official_date, ?),
                         source             = COALESCE(source, 'live')
                     WHERE game_pk = ?
                     """,
-                    (sf_json, p_home_raw, p_away_raw, ml_home_pin, ml_away_pin, game_pk),
+                    (sf_json, p_home_raw, p_away_raw, ml_home_pin, ml_away_pin, official_date, game_pk),
                 )
         logger.debug(f"[learning] recorded prediction game_pk={game_pk} inserted={inserted}")
         return inserted
