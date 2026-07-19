@@ -14,7 +14,7 @@ def db(tmp_path):
     return TrackRecordDB(db_path=tmp_path / "test_track_record.db")
 
 
-def _publish(db, pick_uid="778000:ML_HOME", market="ML_HOME", odds_decimal=2.00):
+def _publish(db, pick_uid="778000:ML_HOME", market="ML_HOME", odds_decimal=2.00, commence_time=None):
     db.publish_pick(
         pick_uid=pick_uid,
         game_date="2026-07-12",
@@ -26,6 +26,7 @@ def _publish(db, pick_uid="778000:ML_HOME", market="ML_HOME", odds_decimal=2.00)
         model_prob=0.55,
         ev_pct=0.05,
         odds_decimal=odds_decimal,
+        commence_time=commence_time,
     )
 
 
@@ -77,34 +78,107 @@ class TestClosingLineCapture:
         assert row["closing_odds_decimal"] == 1.87
         assert row["clv_pct"] is None
 
-    def test_capture_is_idempotent_second_call_noop(self, db):
-        _publish(db)
-        first = db.capture_closing_line(
-            "778000:ML_HOME", closing_odds_decimal=1.90,
-            closing_pin_home=1.90, closing_pin_away=2.05,
-        )
-        second = db.capture_closing_line(
-            "778000:ML_HOME", closing_odds_decimal=1.50,
-            closing_pin_home=1.50, closing_pin_away=2.50,
-        )
-        assert first is True
-        assert second is False  # already captured, WHERE closing_captured_at IS NULL blocks it
-        row = db.get_picks()[0]
-        assert row["closing_odds_decimal"] == 1.90  # unchanged by the second call
-
     def test_capture_unknown_pick_uid_returns_false(self, db):
         assert db.capture_closing_line("does-not-exist", closing_odds_decimal=1.9) is False
 
-    def test_get_picks_needing_closing_capture_filters_correctly(self, db):
-        _publish(db, pick_uid="778000:ML_HOME", market="ML_HOME")
-        _publish(db, pick_uid="778001:ML_HOME", market="ML_HOME")
+    def test_get_picks_needing_closing_capture_returns_not_yet_started_games(self, db):
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        _publish(db, pick_uid="778000:ML_HOME", market="ML_HOME",
+                 commence_time=(now + timedelta(hours=3)).isoformat())
+        _publish(db, pick_uid="778001:ML_HOME", market="ML_HOME",
+                 commence_time=(now - timedelta(minutes=5)).isoformat())  # already started
+
+        pending = db.get_picks_needing_closing_capture(sport="MLB")
+        assert {p["pick_uid"] for p in pending} == {"778000:ML_HOME"}
+
+    def test_get_picks_needing_closing_capture_never_excludes_null_commence_time(self, db):
+        # Rows with no commence_time (a sport/publisher that doesn't
+        # populate it) must never be silently stranded by this query — the
+        # caller (capture_closing_lines.py) decides to skip them with a
+        # warning instead.
+        _publish(db, pick_uid="778000:ML_HOME", market="ML_HOME", commence_time=None)
+        pending = db.get_picks_needing_closing_capture(sport="MLB")
+        assert {p["pick_uid"] for p in pending} == {"778000:ML_HOME"}
+
+    def test_get_picks_needing_closing_capture_returns_already_captured_pre_start_picks(self, db):
+        # "Last pre-start capture wins" means an already-captured pick must
+        # still be returned (so a later sweep can overwrite it) as long as
+        # its game hasn't started — this is the opposite of the old
+        # closing_captured_at IS NULL one-shot design.
+        from datetime import datetime, timedelta, timezone
+        commence = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        _publish(db, pick_uid="778000:ML_HOME", market="ML_HOME", commence_time=commence)
         db.capture_closing_line(
             "778000:ML_HOME", closing_odds_decimal=1.90,
             closing_pin_home=1.90, closing_pin_away=2.05,
         )
         pending = db.get_picks_needing_closing_capture(sport="MLB")
-        assert len(pending) == 1
-        assert pending[0]["pick_uid"] == "778001:ML_HOME"
+        assert {p["pick_uid"] for p in pending} == {"778000:ML_HOME"}
+
+    def test_later_pre_start_capture_overwrites_earlier(self, db):
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        commence = (now + timedelta(hours=2)).isoformat()
+        _publish(db, commence_time=commence)
+
+        early = db.capture_closing_line(
+            "778000:ML_HOME", closing_odds_decimal=2.10,
+            closing_pin_home=2.10, closing_pin_away=1.80,
+            captured_at=(now + timedelta(minutes=10)).isoformat(),
+        )
+        late = db.capture_closing_line(
+            "778000:ML_HOME", closing_odds_decimal=1.90,
+            closing_pin_home=1.90, closing_pin_away=2.05,
+            captured_at=(now + timedelta(hours=1, minutes=50)).isoformat(),
+        )
+        assert early is True
+        assert late is True  # NOT idempotent-blocked — the later pre-start capture wins
+        row = db.get_picks()[0]
+        assert row["closing_odds_decimal"] == 1.90  # the later value, not the earlier one
+        # minutes_before_start reflects the LATEST capture's own staleness,
+        # not the first one's.
+        assert row["minutes_before_start"] == pytest.approx(10.0, abs=0.1)
+
+    def test_capture_at_or_after_commence_time_is_rejected(self, db):
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        commence = (now + timedelta(minutes=30)).isoformat()
+        _publish(db, commence_time=commence)
+
+        # Attempt to capture 1 minute AFTER the game already started.
+        rejected = db.capture_closing_line(
+            "778000:ML_HOME", closing_odds_decimal=1.90,
+            closing_pin_home=1.90, closing_pin_away=2.05,
+            captured_at=(now + timedelta(minutes=31)).isoformat(),
+        )
+        assert rejected is False
+        row = db.get_picks()[0]
+        assert row["closing_odds_decimal"] is None  # untouched
+        assert row["clv_pct"] is None
+
+    def test_capture_exactly_at_commence_time_is_rejected(self, db):
+        commence = "2026-07-19T20:00:00+00:00"
+        _publish(db, commence_time=commence)
+        rejected = db.capture_closing_line(
+            "778000:ML_HOME", closing_odds_decimal=1.90,
+            closing_pin_home=1.90, closing_pin_away=2.05,
+            captured_at=commence,  # exactly at commence_time, not after
+        )
+        assert rejected is False
+
+    def test_capture_without_commence_time_is_never_rejected(self, db):
+        # No commence_time on the pick at all — capture_closing_line() has
+        # no basis to reject on timing, so it must proceed normally.
+        _publish(db, commence_time=None)
+        ok = db.capture_closing_line(
+            "778000:ML_HOME", closing_odds_decimal=1.90,
+            closing_pin_home=1.90, closing_pin_away=2.05,
+        )
+        assert ok is True
+        row = db.get_picks()[0]
+        assert row["closing_odds_decimal"] == 1.90
+        assert row["minutes_before_start"] is None
 
     def test_clv_stats_aggregate(self, db):
         _publish(db, pick_uid="778000:ML_HOME", market="ML_HOME", odds_decimal=2.00)

@@ -4,20 +4,27 @@
 prior "CLV" reference in this codebase (backtest_and_retrain.py's clv_home/
 clv_away) is edge-as-ratio against a single Pinnacle snapshot, not a real
 bet-time-vs-closing-time price pair — see feedback_clv_misnomer memory. This
-script closes that gap for live picks: it sweeps picks published today that
-don't have a closing-line snapshot yet, fetches the current market via the
-existing get_best_odds_for_teams() (reused, not reimplemented), and records
-the closing Pinnacle price on the same side the pick was made. CLV converges
-to a skill/no-skill answer in roughly 100 picks — an order of magnitude
-faster than live ROI, whose confidence interval stays several points wide
-for hundreds of picks (see project memory for the full reasoning).
+script closes that gap for live picks: it sweeps picks whose game hasn't
+started yet, fetches the current market via the existing
+get_best_odds_for_teams() (reused, not reimplemented), and records the
+closing Pinnacle price on the same side the pick was made. CLV converges to
+a skill/no-skill answer in roughly 100 picks — an order of magnitude faster
+than live ROI, whose confidence interval stays several points wide for
+hundreds of picks (see project memory for the full reasoning).
 
-Intended to run as a scheduled sweep shortly before first pitch each day
-(cron, or any periodic runner) — NOT immediately after publish_mlb_picks(),
-since the closing line only means something captured close to game time.
-Safe to run more than once: get_picks_needing_closing_capture() only
-returns picks with no snapshot yet, and capture_closing_line()'s UPDATE is
-idempotent (WHERE closing_captured_at IS NULL).
+Intended to run as a scheduled sweep, repeatedly, throughout the day (cron,
+or any periodic runner) — NOT just once. "Last pre-start capture wins"
+(2026-07-19, Fase 2A commit 3): every call re-captures and overwrites every
+pick whose game hasn't started yet, so the LATEST sweep before first pitch
+is what ends up recorded as the closing line — there's no need to time a
+single sweep precisely, and no harm in running several. Once a pick's game
+starts, get_picks_needing_closing_capture() stops returning it (its last
+pre-start capture is final) and capture_closing_line() independently rejects
+any attempt to capture at or after that point, as a second line of defense.
+
+Picks with no commence_time (a sport/publisher that doesn't populate it) are
+skipped WITH A WARNING, never captured anyway — there is no honest "closing"
+concept without knowing when the game starts.
 
 Usage:
     python3 -m track_record.capture_closing_lines
@@ -30,7 +37,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -54,9 +60,22 @@ def capture_closing_lines(
     _ODDS_FETCHER_SPORT = {"MLB": "baseball_mlb"}
 
     picks = db.get_picks_needing_closing_capture(sport=sport, game_date=game_date)
-    summary = {"considered": len(picks), "captured": 0, "no_market_data": 0, "errors": 0}
+    summary = {
+        "considered": len(picks), "captured": 0, "no_market_data": 0,
+        "skipped_no_commence_time": 0, "rejected_post_start": 0, "errors": 0,
+    }
 
     for pick in picks:
+        if not pick["commence_time"]:
+            log.warning(
+                "Skipping pick_uid=%s (%s @ %s): no commence_time — cannot "
+                "know when this game starts, so there is no honest 'closing' "
+                "line to capture for it",
+                pick["pick_uid"], pick["away_team"], pick["home_team"],
+            )
+            summary["skipped_no_commence_time"] += 1
+            continue
+
         odds_sport = _ODDS_FETCHER_SPORT.get(pick["sport"])
         if odds_sport is None:
             log.debug("Skipping pick_uid=%s: no odds-fetcher sport mapping for %s",
@@ -65,7 +84,7 @@ def capture_closing_lines(
         try:
             market_odds = get_best_odds_for_teams(
                 home_team=pick["home_team"], away_team=pick["away_team"],
-                sport=odds_sport,
+                commence_time=pick["commence_time"], sport=odds_sport,
             ) or {}
         except Exception as exc:
             log.warning("get_best_odds_for_teams failed for pick_uid=%s: %s",
@@ -108,6 +127,16 @@ def capture_closing_lines(
             summary["captured"] += 1
             log.info("Captured closing line: pick_uid=%s market=%s closing_odds=%s",
                       pick["pick_uid"], pick["market"], side_closing_price)
+        else:
+            # get_picks_needing_closing_capture() already filters to
+            # not-yet-started games, so this should be rare — but a slow
+            # sweep could still cross commence_time between query and here.
+            summary["rejected_post_start"] += 1
+            log.warning(
+                "Rejected capture for pick_uid=%s: game appears to have "
+                "started between the query and this capture attempt",
+                pick["pick_uid"],
+            )
 
     return summary
 

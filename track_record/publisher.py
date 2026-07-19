@@ -316,6 +316,7 @@ def publish_mlb_picks(
                     stake_units=stake,
                     pipeline_json=json.dumps(pipeline_snap),
                     total_line=total_line,
+                    commence_time=commence_raw or None,
                 )
                 if row_id:
                     log.info(

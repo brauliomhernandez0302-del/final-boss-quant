@@ -192,9 +192,16 @@ def test_savant_raw_ingestor_rejects_possible_daily_truncation(monkeypatch, tmp_
         ingestor.ingest_date_range(start_date="2024-04-01", end_date="2024-04-01")
 
 
-def test_savant_raw_ingestor_does_not_import_live_or_backtest_modules(tmp_path):
+def test_savant_raw_ingestor_does_not_import_live_or_backtest_modules(tmp_path, monkeypatch):
+    # monkeypatch.delitem (not a raw sys.modules.pop()) restores these to
+    # their pre-test cached state after this test — a raw pop() here
+    # permanently evicted them from sys.modules for the rest of the pytest
+    # session, silently breaking any later test's monkeypatch.setattr() on
+    # one of these already-imported modules (found 2026-07-19 bisecting a
+    # flaky odds_fetcher test; see test_build_raw_savant_events_script.py's
+    # identical fix for the first instance of this pattern).
     for module_name in PIPELINE_MODULES:
-        sys.modules.pop(module_name, None)
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
 
     importlib.import_module("modules.baseball_module.advanced_pit_enrichment.savant_raw_ingestor")
     cache = RawSavantEventsCache(tmp_path / "raw.db")

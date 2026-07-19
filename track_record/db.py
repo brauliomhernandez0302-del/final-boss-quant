@@ -17,6 +17,22 @@ from typing import Any, Dict, Generator, List, Optional
 
 DB_PATH = Path(__file__).parent.parent / "data" / "track_record.db"
 
+
+def _parse_iso(value: str) -> Optional[datetime]:
+    """Parse an ISO-8601 timestamp (any 'Z'-suffixed or offset-aware form)
+    into a tz-aware datetime. None on any parse failure."""
+    if not value:
+        return None
+    try:
+        v = value[:-1] + "+00:00" if value.endswith("Z") else value
+        dt = datetime.fromisoformat(v)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 _SCHEMA = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -132,6 +148,32 @@ class TrackRecordDB:
                     conn.execute(ddl)
                 except Exception:
                     pass  # column already exists
+            # 2026-07-19: without a per-pick game start time, a closing-line
+            # sweep run any time after publish captures WHATEVER price is
+            # live at that moment — including a tonight's-game pick published
+            # this morning, hours before its real close, with no way to tell
+            # a stale early snapshot from a true closing one. This column is
+            # what get_picks_needing_closing_capture() uses to know a pick's
+            # game hasn't started yet (still capturable) and what
+            # capture_closing_line() checks to reject any capture attempted
+            # at or after the game's own start — see both methods' docstrings
+            # for the "last pre-start capture wins" design this enables.
+            # Nullable/backfill-free: old rows and non-MLB picks (whose
+            # publishers may not populate it) are still returned by the query
+            # above rather than being silently stranded forever — the caller
+            # decides whether to skip them with a warning.
+            try:
+                conn.execute("ALTER TABLE picks ADD COLUMN commence_time TEXT")
+            except Exception:
+                pass  # column already exists
+            # 2026-07-19: per-capture staleness, so CLV analysis can report
+            # its own distribution of "how close to first pitch was this
+            # actually captured" instead of assuming every snapshot is
+            # equally close to the true close (see capture_closing_line()).
+            try:
+                conn.execute("ALTER TABLE picks ADD COLUMN minutes_before_start REAL")
+            except Exception:
+                pass  # column already exists
 
     # ------------------------------------------------------------------ writes
 
@@ -155,6 +197,7 @@ class TrackRecordDB:
         pipeline_json: Optional[str] = None,
         published_at: Optional[str] = None,
         total_line: Optional[float] = None,
+        commence_time: Optional[str] = None,
     ) -> int:
         """Insert a pre-game pick. Returns the new row id (0 if already exists)."""
         ts = published_at or datetime.now(timezone.utc).isoformat()
@@ -166,15 +209,15 @@ class TrackRecordDB:
                     home_team, away_team, market,
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
-                    notes, pipeline_json, total_line
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    notes, pipeline_json, total_line, commence_time
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     pick_uid, ts, game_date, sport, game_pk,
                     home_team, away_team, market,
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
-                    notes, pipeline_json, total_line,
+                    notes, pipeline_json, total_line, commence_time,
                 ),
             )
             return int(cur.lastrowid or 0)
@@ -242,11 +285,23 @@ class TrackRecordDB:
     def get_picks_needing_closing_capture(
         self, sport: Optional[str] = None, game_date: Optional[str] = None,
     ) -> List[sqlite3.Row]:
-        """Picks with no closing-line snapshot yet. Independent of `result` —
-        capture the close as soon as it's available (near first pitch), don't
-        wait for the game to resolve; CLV is meant to be known before the
-        outcome, that's the whole point of it as a faster skill signal."""
-        clauses = ["closing_captured_at IS NULL"]
+        """Picks still capturable — i.e. their game hasn't started yet.
+
+        2026-07-19 (Fase 2A commit 3, V-closing-lines audit): replaced the
+        earlier "closing_captured_at IS NULL" one-shot-capture design with
+        "last pre-start capture wins" — a sweep is expected to re-capture and
+        overwrite an already-captured pick as long as its game hasn't
+        started, so this returns EVERY not-yet-started pick on every call,
+        not just never-captured ones. Once commence_time passes, a pick
+        drops out of this query permanently — its last pre-start capture IS
+        the closing line, nothing touches it again.
+
+        Picks with no `commence_time` (a sport/publisher that doesn't
+        populate it) are still returned — the caller decides whether to skip
+        them with a warning (see capture_closing_lines.py) rather than this
+        query silently stranding them forever.
+        """
+        clauses = ["(commence_time IS NULL OR datetime(commence_time) > datetime('now'))"]
         params: list = []
         if sport:
             clauses.append("sport = ?"); params.append(sport)
@@ -276,15 +331,39 @@ class TrackRecordDB:
         side is unambiguous; other markets store the closing snapshot for
         future use but leave clv_pct NULL (v1 scope — see track_record
         project memory).
+
+        "Last pre-start capture wins" (2026-07-19, Fase 2A commit 3): this
+        OVERWRITES any prior capture, not just the first one — the caller
+        (a scheduled sweep) is expected to call this repeatedly as first
+        pitch approaches, and each call updates closing_* to the freshest
+        pre-game snapshot. A capture attempted AT OR AFTER the pick's own
+        commence_time is REJECTED outright (returns False, row untouched) —
+        once the game has started there is no more "closing" line to
+        capture, and honoring a late call here would silently mislabel an
+        in-game or post-game price as the close. Also stores
+        minutes_before_start (commence_time - captured_at, in minutes) so
+        CLV analysis can report its own staleness distribution instead of
+        assuming every snapshot is equally close to the true close.
         """
         ts = captured_at or datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT market, odds_decimal FROM picks WHERE pick_uid = ?",
+                "SELECT market, odds_decimal, commence_time FROM picks WHERE pick_uid = ?",
                 (pick_uid,),
             ).fetchone()
             if row is None:
                 return False
+
+            minutes_before_start = None
+            if row["commence_time"]:
+                commence_dt = _parse_iso(row["commence_time"])
+                captured_dt = _parse_iso(ts)
+                if commence_dt is not None and captured_dt is not None:
+                    if captured_dt >= commence_dt:
+                        return False  # post-start — reject, never capture
+                    minutes_before_start = round(
+                        (commence_dt - captured_dt).total_seconds() / 60.0, 2
+                    )
 
             clv_pct = None
             odds_decimal = row["odds_decimal"]
@@ -300,15 +379,16 @@ class TrackRecordDB:
             cur = conn.execute(
                 """
                 UPDATE picks
-                SET closing_odds_decimal = ?,
-                    closing_pin_home     = ?,
-                    closing_pin_away     = ?,
-                    closing_captured_at  = ?,
-                    clv_pct              = ?
-                WHERE pick_uid = ? AND closing_captured_at IS NULL
+                SET closing_odds_decimal  = ?,
+                    closing_pin_home      = ?,
+                    closing_pin_away      = ?,
+                    closing_captured_at   = ?,
+                    minutes_before_start  = ?,
+                    clv_pct               = ?
+                WHERE pick_uid = ?
                 """,
                 (closing_odds_decimal, closing_pin_home, closing_pin_away,
-                 ts, clv_pct, pick_uid),
+                 ts, minutes_before_start, clv_pct, pick_uid),
             )
             return cur.rowcount > 0
 

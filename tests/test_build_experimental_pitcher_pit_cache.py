@@ -83,8 +83,13 @@ class _FakeSavantRollingPITPersistence:
 
 
 def _load_script(monkeypatch):
+    # monkeypatch.delitem (not a raw sys.modules.pop()) restores these after
+    # the test — a raw pop() permanently evicts them from sys.modules for
+    # the rest of the pytest session, silently breaking a later test's
+    # monkeypatch.setattr() on one of these already-imported modules (found
+    # 2026-07-19; see test_build_raw_savant_events_script.py's identical fix).
     for module_name in PIPELINE_MODULES:
-        sys.modules.pop(module_name, None)
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
 
     script = importlib.import_module(SCRIPT_MODULE)
     monkeypatch.setattr(script, "SavantRawIngestor", _FakeSavantRawIngestor)
