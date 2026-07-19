@@ -53,7 +53,7 @@ Seis validaciones de identidad byte a byte del baseline completo (que además re
 
 ## Siguientes acciones fuera del alcance del audit
 
-1. Reactivar ODDS_API_KEY → arranca el reloj de acumulación de CLV (4-6 semanas de datos de Pinnacle; prerequisito de toda evaluación de edge en vivo).
+1. ~~Reactivar ODDS_API_KEY~~ — **corrección 2026-07-18**: la key ya estaba activa (confirmado en `.env`, corroborado por un cache de odds real del 2026-07-14). El punto real pendiente es otro: el **cron de `run_daily_picks.py` no está corriendo** — `track_record.db` tiene 0 picks publicados pese a que la key funciona. Sin el cron activo, el reloj de acumulación de CLV (4-6 semanas de datos de Pinnacle, prerequisito de toda evaluación de edge en vivo) no arranca solo.
 2. Cron de `run_daily_picks.py` completando ciclos reales publicar→resolver.
 3. Cablear `historical_weather.py` al backtest (cierra el caveat #1 del veredicto 1; el módulo ya existe, es un paso propio con before/after).
 4. De ahí, el blueprint retoma el mando.
