@@ -1,9 +1,25 @@
 # FINAL BOSS QUANT — MASTER BLUEPRINT G∞
 ## De sistema casero a operación cuantitativa de nivel institucional
 
-**Versión:** 1.7 — Julio 2026 (fallbacks honestos FALL-001 + FALL-002, roadmap paso 4, sesión 2026-07-18)
-**Punto de partida:** MLB pipeline con Brier honesto **0.24482 / accuracy 55.34%** (sin cambio — ver nota v1.7, ambos fixes son señalización de procedencia pura, confirmada no-op por su propio gate), 504 tests, remediación look-ahead sustancialmente completada (ver 0.1)
+**Versión:** 1.8 — Julio 2026 (Fase 2A/2B, sesión 2026-07-19 — cron de track_record en cuarentena + remediación del leak V4)
+**Punto de partida:** MLB pipeline con Brier honesto **0.24650 / accuracy 54.80%** (baja de 0.24483/55.51% — ver nota v1.8: el backtest era point-in-time solo de nombre, el número anterior tenía un leak real de walk-forward; este es más bajo pero por primera vez genuinamente sin leak conocido), 4825 juegos, 569+ tests, remediación look-ahead sustancialmente completada (ver 0.1)
 **Principio rector:** Un cambio a la vez. Backtest después de cada uno. Nada entra sin validación PIT.
+
+**Nota de esta versión (v1.8)**: dos fases del roadmap `audit_20260714/` cerradas. **Fase 2A**
+arrancó el reloj de CLV real: modo de prueba en `run_module()` (`persist=False`), odds
+emparejadas por equipo+`commence_time` (no solo nombre — evita el error de "juego equivocado
+de la serie"), closing-lines rediseñado a "última captura pre-inicio gana", y el cron de
+`track_record/` instalado en **modo cuarentena** (`config.QUARANTINE_MODE`) — todo pick se
+publica y se le captura CLV, pero la banda de publicación pública queda para la Fase 2C, con
+baseline ya limpio en la mano. **Fase 2B** remedió el hallazgo V4 del sweep de verificación:
+`game_outcomes.game_date` es el timestamp UTC crudo (un día adelante del día oficial de
+schedule para juegos nocturnos) — los 5 cutoffs PIT walk-forward y el corte de entrenamiento de
+team-bias/Kalman derivaban de ese campo contaminado, incluyendo silenciosamente el propio día
+del juego en su snapshot point-in-time. Backfill de `official_date` al 100% (identidad,
+audit_20260714/fase2b/) + cutover de los cutoffs (delta aprobado por el dueño, el baseline cae
+a 0.24650/54.80% — peor pero honesto, éxito según este roadmap, no fracaso). Ver
+`audit_20260714/fase2b/` para el detalle completo y `audit_20260714/verificacion_operativa/`
+para el sweep que lo encontró.
 
 **Nota de esta versión (v1.7)**: roadmap paso 4 — eleva a principio de proyecto un patrón que
 ya existía en el mejor código del repo (`ui/odds_loader.py`/REG-028, `get_platt_2d_params()`):

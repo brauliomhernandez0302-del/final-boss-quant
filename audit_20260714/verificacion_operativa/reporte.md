@@ -249,6 +249,17 @@ oeste) es candidato a su propio paso dedicado, con gate de identidad/delta — d
 blast radius (podría mover el Brier/accuracy del baseline canónico actual, 0.24483/55.51%, en
 cualquier dirección), no debe tocarse sin ese proceso completo.
 
+### V4.5 — CERRADO (2026-07-19, Fase 2B)
+
+Remediado en `audit_20260714/fase2b/` (B0 verificación previa, B1 schema+backfill de
+`official_date` con gate de identidad, B2 cutover de los 5 cutoffs + el corte de bias/Kalman
+con gate de delta aprobado por el dueño). Veredicto confirmado: era leak real, no cosmético —
+el delta al remediarlo empeoró el baseline en todas las métricas (accuracy 55.51%→54.80%, Brier
+0.24483→0.24650, ROI negativo en los 5 buckets de edge), exactamente la dirección que este
+hallazgo predijo. **Nuevo baseline canónico**: `audit_20260714/fase2b/gate_delta/
+backtest_report_20260719_1420.json` — ver CLAUDE.md (Actualización 2026-07-19) para el detalle
+completo. El hallazgo queda cerrado; ya no es un item abierto del sweep.
+
 ---
 
 ## V5 — Sweep de claims operativos
