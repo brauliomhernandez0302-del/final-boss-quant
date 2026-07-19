@@ -217,3 +217,49 @@ nunca pasa por este entrypoint) cuando `weather_source`/`travel_source` llegan `
 para que la próxima falla clase REG-015 aparezca en logs y no solo en metadata sin abrir.
 
 Memoria de la sesión: `project_math002_math003_20260718.md`.
+
+### Actualización 2026-07-19 — Fase 2B: remediación del leak V4 (día oficial en el camino PIT)
+
+**Baseline vigente: Brier 0.24650 / accuracy 54.80%** (mismo comando `--season 2024,2025
+--use-full-pit`, 4,825 juegos — 5 menos que antes, ver nota abajo) — **supersede el
+0.24483/55.51% de arriba, que queda re-etiquetado como "baseline con leak V4"**, no como
+número honesto del modelo. **Reporte canónico**:
+`audit_20260714/fase2b/gate_delta/backtest_report_20260719_1420.json`.
+
+**El hallazgo**: `game_outcomes.game_date` es el timestamp UTC crudo de inicio del juego
+truncado a fecha — para cualquier juego nocturno que cruce medianoche UTC (la norma para
+equipos de la costa oeste), eso es un día de calendario ADELANTE del día oficial real de
+schedule (`officialDate` de la API de MLB). Cada uno de los 5 cutoffs PIT walk-forward de
+`backtest_and_retrain.py` (Pitcher, TTE, Defense, Bullpen, más el corte general) y el corte de
+entrenamiento de team-bias/Kalman (`_bias_before_date`, el mecanismo anti-leak de CHRON-001)
+derivaban de ese campo contaminado — con `PITCache.get_latest()` usando `<=` inclusivo, el
+snapshot resuelto terminaba incluyendo el propio día del juego que se estaba prediciendo. Leak
+real, confirmado empíricamente (`audit_20260714/verificacion_operativa/reporte.md` V4,
+`audit_20260714/fase2b/b0_verificacion_previa.md`), caso de prueba: `game_pk=745199`
+(oficial=2024-09-18, contaminado a 2024-09-19).
+
+**Remediación en 2 commits** (B0 de verificación read-only decidió el alcance: los 3 builders
+PIT —defense, bullpen, TTE ofensa— agrupan limpio por dentro usando el `game_date` propio de
+Statcast, sin componente de hora — cero rebuilds de cache necesarios; solo schema + derivación
+de cutoffs):
+- **B1** (identidad, 7ª de este proyecto): nueva columna `official_date`, backfileada al 100%
+  desde el endpoint de schedule de la API de MLB (5520/5520 filas, 0 sin resolver; 22.2% con
+  `official_date != date(game_date)` — sustancial, no ~0%, confirmando la tesis). Nada leía la
+  columna todavía.
+- **B2** (delta, aprobado por el dueño): los 5 cutoffs + el corte de bias/Kalman pasan a derivar
+  de `official_date`. Resultado: **peor en absolutamente todas las métricas** — accuracy
+  55.51%→54.80% (-0.71pp), Brier 0.24483→0.24650 (+0.00167), ROI empeora en los 5 buckets de
+  edge (varios pasan de positivo a negativo). 57.2% de los juegos movieron su `p_home` más de
+  0.5pp (mucho más que el 22.2% de filas nocturnas — el leak se propagaba en cascada por el
+  entrenamiento walk-forward de team-bias, no solo al juego puntual contaminado). Tabla completa
+  y aprobación en `audit_20260714/fase2b/b2_gate_delta_reporte.md`. **Esto es éxito, no
+  fracaso** — un baseline más bajo pero honesto es exactamente lo que este roadmap se propuso
+  medir; el ROI positivo que el baseline anterior mostraba en varios buckets de edge dependía en
+  parte de este leak.
+
+**Nota de conteo de juegos**: 4830→4825. Un puñado de juegos de inicio de temporada que antes
+"colaban" porque el día extra del leak alcanzaba a incluir la primera snapshot disponible, ahora
+correctamente no encuentran cobertura PIT previa a su propio primer juego y se excluyen —
+comportamiento honesto esperado, no un bug nuevo.
+
+Ver `audit_20260714/fase2b/` para B0/B1/B2 completos.

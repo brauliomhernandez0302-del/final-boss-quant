@@ -821,7 +821,15 @@ class LearningEngine:
         """
         params: List[Any] = [season, team, team]
         if before_date is not None:
-            query += " AND game_date < ?"
+            # Fase 2B commit B2 (audit_20260714/fase2b/): compare against
+            # official_date, not game_date — before_date is now itself an
+            # official_date (see backtest_and_retrain.py's
+            # _bias_before_date), and mixing bases (official on one side,
+            # raw UTC-timestamp game_date on the other) would silently
+            # reintroduce the same leak this whole phase exists to close.
+            # COALESCE falls back to game_date only for a row the Fase 2B
+            # backfill couldn't resolve (expected to be zero).
+            query += " AND COALESCE(official_date, game_date) < ?"
             params.append(before_date)
 
         with self._get_conn() as conn:
@@ -1013,7 +1021,10 @@ class LearningEngine:
             where += " AND month = ?"
             params.append(month)
         if before_date is not None:
-            where += " AND game_date < ?"
+            # Fase 2B commit B2 — same reasoning as compute_team_bias()'s
+            # identical change: before_date is now an official_date, and
+            # comparing it against the raw game_date column would mix bases.
+            where += " AND COALESCE(official_date, game_date) < ?"
             params.append(before_date)
 
         with self._get_conn() as conn:

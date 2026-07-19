@@ -687,13 +687,32 @@ _PIT_REQUIRED_FIELDS = (
 )
 
 
+def _official_day_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
+    """The MLB schedule's own officialDate for this row (Fase 2B commit B2,
+    audit_20260714/fase2b/) — every PIT cutoff and chronological bias-window
+    comparison in this file derives from this, never from game_date
+    directly. game_date is the raw UTC start-time timestamp: for any night
+    game crossing midnight UTC (the norm for west-coast teams), its date
+    portion is one calendar day AHEAD of the true schedule day, which
+    previously made every one of these cutoffs request one day too late —
+    with PITCache.get_latest()'s inclusive `<=` comparison, that silently
+    included the target game's own game-day in its own PIT snapshot (a real
+    leak, confirmed against game_pk=745199 — see
+    audit_20260714/fase2b/b0_verificacion_previa.md). Falls back to
+    game_date's date portion only for a row the Fase 2B backfill couldn't
+    resolve official_date for (expected to be zero — 5520/5520 resolved)."""
+    keys = row.keys() if hasattr(row, "keys") else row
+    official = row["official_date"] if "official_date" in keys else None
+    return str(official) if official else str(row["game_date"])[:10]
+
+
 def _prediction_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
     """Return the PIT cutoff for a historical game row."""
     keys = row.keys() if hasattr(row, "keys") else row
     for field in ("prediction_cutoff_utc", "prediction_cutoff", "as_of_date"):
         if field in keys and row[field]:
             return str(row[field])
-    return f"{str(row['game_date'])[:10]}T23:59:59Z"
+    return f"{_official_day_for_row(row)}T23:59:59Z"
 
 
 def _experimental_pitcher_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
@@ -702,7 +721,7 @@ def _experimental_pitcher_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) 
     for field in ("prediction_cutoff_utc", "prediction_cutoff", "as_of_date"):
         if field in keys and row[field]:
             return str(row[field])
-    game_day = datetime.strptime(str(row["game_date"])[:10], "%Y-%m-%d").replace(
+    game_day = datetime.strptime(_official_day_for_row(row), "%Y-%m-%d").replace(
         tzinfo=timezone.utc
     )
     return (game_day - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -710,7 +729,7 @@ def _experimental_pitcher_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) 
 
 def _team_tte_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
     """Return the Team/TTE PIT cutoff aligned to previous-day team snapshots."""
-    game_day = datetime.strptime(str(row["game_date"])[:10], "%Y-%m-%d").replace(
+    game_day = datetime.strptime(_official_day_for_row(row), "%Y-%m-%d").replace(
         tzinfo=timezone.utc
     )
     return (game_day - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -718,7 +737,7 @@ def _team_tte_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
 
 def _defense_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
     """Return the previous-day cutoff required by Defense PIT."""
-    game_day = datetime.strptime(str(row["game_date"])[:10], "%Y-%m-%d").replace(
+    game_day = datetime.strptime(_official_day_for_row(row), "%Y-%m-%d").replace(
         tzinfo=timezone.utc
     )
     return (game_day - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -726,7 +745,7 @@ def _defense_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
 
 def _bullpen_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
     """Return the previous-day cutoff required by Bullpen PIT."""
-    game_day = datetime.strptime(str(row["game_date"])[:10], "%Y-%m-%d").replace(
+    game_day = datetime.strptime(_official_day_for_row(row), "%Y-%m-%d").replace(
         tzinfo=timezone.utc
     )
     return (game_day - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1782,7 +1801,14 @@ def run_pipeline(
         _game_month = int(str(game_data.get("game_date", ""))[5:7])
     except (ValueError, TypeError):
         _game_month = None
-    _bias_before_date = str(game_data.get("game_date", "")) or None
+    # Fase 2B commit B2: prefer official_date (the correct schedule day)
+    # over game_date (raw UTC timestamp, contaminated for night games) —
+    # see _official_day_for_row()'s docstring. Consistency matters here:
+    # this value is compared against OTHER rows' official_date in
+    # learning_engine.py's before_date-gated queries (same commit), so
+    # mixing bases would silently reintroduce the same class of leak this
+    # whole phase exists to close.
+    _bias_before_date = str(game_data.get("official_date") or game_data.get("game_date", "")) or None
     # Diagnostic only (2026-07-11, revised 2026-07-12) — see run_module.py's
     # matching comment: this is NOT the bias-learning denominator (an
     # earlier version of this fix used it as one and caused a measured
@@ -2975,6 +3001,13 @@ def main() -> None:
                 # can't drift out of sync and silently reopen the leak.
                 use_team_full_season_pitching_base=not args.use_defense_pit,
             )
+            # Fase 2B commit B2: threads official_date into game_data so
+            # run_pipeline()'s _bias_before_date (the CHRON-001 walk-forward
+            # boundary for team-bias/Kalman training) can use the same
+            # correct field the 5 PIT cutoffs above already switched to,
+            # instead of the contaminated game_date — see
+            # _official_day_for_row()'s docstring.
+            game_data["official_date"] = _official_day_for_row(row)
             if args.experimental_pitcher_pit_mode:
                 pit_meta = apply_experimental_pitcher_pit_mode(
                     game_data=game_data,
