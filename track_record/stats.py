@@ -156,6 +156,7 @@ def compute_stats(
             "published_at":   row["published_at"],
             "game_date":      row["game_date"],
             "sport":          row["sport"],
+            "modo":           row["publish_mode"] if "publish_mode" in row.keys() else "quarantine",
             "matchup":        f"{row['away_team']} @ {row['home_team']}",
             "market":         row["market"],
             "model_prob":     row["model_prob"],

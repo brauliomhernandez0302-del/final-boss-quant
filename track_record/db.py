@@ -174,6 +174,16 @@ class TrackRecordDB:
                 conn.execute("ALTER TABLE picks ADD COLUMN minutes_before_start REAL")
             except Exception:
                 pass  # column already exists
+            # 2026-07-19 (Fase 2A commit 4): every pick publishes tagged
+            # 'quarantine' until the public band (an EV/tier cutoff) is
+            # fixed against a freshly re-measured baseline (Fase 2C) — see
+            # config.QUARANTINE_MODE. 'public' is the only other value, set
+            # by a future migration/promotion step, never by publish_pick()
+            # itself while QUARANTINE_MODE is true.
+            try:
+                conn.execute("ALTER TABLE picks ADD COLUMN publish_mode TEXT NOT NULL DEFAULT 'quarantine'")
+            except Exception:
+                pass  # column already exists
 
     # ------------------------------------------------------------------ writes
 
@@ -198,6 +208,7 @@ class TrackRecordDB:
         published_at: Optional[str] = None,
         total_line: Optional[float] = None,
         commence_time: Optional[str] = None,
+        publish_mode: str = "quarantine",
     ) -> int:
         """Insert a pre-game pick. Returns the new row id (0 if already exists)."""
         ts = published_at or datetime.now(timezone.utc).isoformat()
@@ -209,15 +220,15 @@ class TrackRecordDB:
                     home_team, away_team, market,
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
-                    notes, pipeline_json, total_line, commence_time
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    notes, pipeline_json, total_line, commence_time, publish_mode
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     pick_uid, ts, game_date, sport, game_pk,
                     home_team, away_team, market,
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
-                    notes, pipeline_json, total_line, commence_time,
+                    notes, pipeline_json, total_line, commence_time, publish_mode,
                 ),
             )
             return int(cur.lastrowid or 0)

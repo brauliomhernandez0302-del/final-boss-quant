@@ -2,6 +2,7 @@
 Central configuration — single source of truth for all constants.
 """
 
+import os
 from pathlib import Path
 
 # ── Paths ──────────────────────────────────────────────────────────────────
@@ -35,6 +36,16 @@ CI_LEVEL        = 0.95
 # ── EV / rating thresholds ─────────────────────────────────────────────────
 DEFAULT_MIN_EV     = 3.0   # % minimum EV to flag a bet
 DEFAULT_MIN_RATING = 6.5
+
+# ── Track record publish mode (Fase 2A commit 4) ───────────────────────────
+# Every pick the pipeline generates publishes as 'quarantine' — visible in
+# track_record's UI with an explicit badge, closing lines captured for all
+# of it, but not presented as the public official record. The public band
+# (an EV/tier cutoff for what counts as a real pick) is Fase 2C's job, fixed
+# against a freshly re-measured baseline — not decided here. Set
+# QUARANTINE_MODE=false in .env to flip this once that band exists; not
+# meant to be flipped casually before then.
+QUARANTINE_MODE = os.getenv("QUARANTINE_MODE", "true").strip().lower() != "false"
 
 # ── MLB league averages (2024 season) ──────────────────────────────────────
 LEAGUE_AVG_RUNS = 4.5    # D2 reverted: empirical 4.427 degraded Brier 0.24209→0.24307; hfa_mult formula was tuned at 4.5

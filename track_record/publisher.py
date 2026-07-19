@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
+import config
 from track_record.db import TrackRecordDB
 from core.value_detector import kelly_criterion
 
@@ -29,7 +30,11 @@ log = logging.getLogger("track_record.publisher")
 # Minimum minutes before first pitch that we must publish
 MIN_LEAD_MINUTES = 30
 
-# Only publish picks at or above this tier (SLIGHT|MEDIUM|HIGH|ULTRA)
+# Only publish picks at or above this tier (SLIGHT|MEDIUM|HIGH|ULTRA) — NOT
+# enforced while config.QUARANTINE_MODE is true (Fase 2A commit 4): every
+# pick the pipeline generates publishes to the quarantine ledger, extreme
+# EVs included, so they're observable with real CLV instead of being
+# silently discarded before the public band (Fase 2C) exists to judge them.
 MIN_TIER = "SLIGHT"
 
 _TIER_RANK = {"SLIGHT": 1, "MEDIUM": 2, "HIGH": 3, "ULTRA": 4}
@@ -187,6 +192,16 @@ def publish_mlb_picks(
                 use_hfa=True,
                 use_pitcher=True,
                 analyze_f5=True,
+                # 2026-07-19 fix: this call never passed `persist` at all, so
+                # it always used run_module()'s default persist=True — a
+                # publisher-level --dry-run never actually stopped the
+                # underlying pipeline call from writing to the live
+                # game_outcomes ledger (source='live'). Confirmed live: it
+                # contaminated the ledger again with a real dry-run batch
+                # after commit 1 shipped persist=False, since nothing here
+                # ever passed it through. dry_run=True now means what it
+                # says at every layer, not just track_record.db's own write.
+                persist=not dry_run,
             )
         except Exception as e:
             log.warning(f"  Pipeline error for game {game_pk}: {e}")
@@ -240,7 +255,7 @@ def publish_mlb_picks(
         for bet in best_bets:
             market = _market_label(bet)
             tier = (bet.get("confidence_tier") or bet.get("tier") or "")
-            if not _tier_ok(tier):
+            if not config.QUARANTINE_MODE and not _tier_ok(tier):
                 continue
 
             # pick_uid is deterministic so re-runs are idempotent
@@ -317,6 +332,7 @@ def publish_mlb_picks(
                     pipeline_json=json.dumps(pipeline_snap),
                     total_line=total_line,
                     commence_time=commence_raw or None,
+                    publish_mode="quarantine" if config.QUARANTINE_MODE else "public",
                 )
                 if row_id:
                     log.info(

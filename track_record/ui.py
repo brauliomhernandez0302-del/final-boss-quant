@@ -16,6 +16,7 @@ import pandas as pd
 def render_track_record() -> None:
     import streamlit as st
 
+    import config
     from track_record.db import TrackRecordDB
     from track_record.stats import compute_stats
 
@@ -24,6 +25,15 @@ def render_track_record() -> None:
         "Cada pick tiene un timestamp publicado **antes** del inicio del juego. "
         "Los resultados se resuelven automaticamente via MLB Stats API."
     )
+    if config.QUARANTINE_MODE:
+        st.warning(
+            "🔬 **MODO CUARENTENA** — todos los picks mostrados aqui son de "
+            "observacion (Fase 2A), publicados sin banda de EV todavia. "
+            "Esto NO es el registro publico oficial; ese arranca cuando la "
+            "banda de publicacion se fije en la Fase 2C sobre un baseline "
+            "re-medido.",
+            icon="🔬",
+        )
 
     db = TrackRecordDB()
 
@@ -160,13 +170,17 @@ def render_track_record() -> None:
             return "color: #90A4AE"
 
         display_cols = [
-            "published_at", "game_date", "sport", "matchup",
+            "published_at", "game_date", "sport", "modo", "matchup",
             "market", "model_prob", "ev_pct", "tier",
             "odds", "stake", "result", "score", "pnl",
         ]
         display_cols = [c for c in display_cols if c in picks_df.columns]
         picks_df = picks_df[display_cols].copy()
         picks_df["published_at"] = picks_df["published_at"].str[:16].str.replace("T", " ")
+        if "modo" in picks_df.columns:
+            picks_df["modo"] = picks_df["modo"].map(
+                lambda m: "🔬 Cuarentena" if m == "quarantine" else "✅ Publico"
+            )
         picks_df["model_prob"] = picks_df["model_prob"].map(
             lambda x: f"{x:.1%}" if x is not None else "—"
         )
