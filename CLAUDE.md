@@ -6,6 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **FINAL BOSS QUANT G8+** — a quantitative sports betting prediction system. It analyzes MLB, NBA, and UFC games and identifies positive-EV betting opportunities using Monte Carlo simulation, Poisson modeling, Kelly criterion sizing, and odds API integration.
 
+## ⚠️ Motor de ML congelado — `docs/PROTOCOLO_CLV_V1.md`
+
+Desde que el protocolo de evaluación de CLV se commiteó, **el motor de predicción de moneyline MLB está congelado en el `engine_commit` registrado en ese documento** hasta que la ventana de evaluación cierre con un veredicto. Esto significa, mientras dure la ventana:
+- **No correr `scripts/promote_calibration.py`** — una promoción cambia las probabilidades live, y el protocolo exige que cualquier cambio de motor a media ventana reinicie la muestra primaria.
+- No tocar ningún engine de predicción (`tte_*`, `hfa_engine.py`, `park_weather_engine.py`, `pitcher_engine.py`, `bullpen_engine.py`, `defensive_efficiency_engine.py`, `learning_engine.py`, `montecarlo/simulator.py`, `core/value_detector.py`) ni `backtest_and_retrain.py` ni los builders PIT.
+- Trabajo en paralelo permitido SOLO fuera del camino de predicción de ML: mercados derivados (F5, totals), higiene de backlog, tooling, track_record (siempre que no toque probabilidades).
+- Verifica `docs/PROTOCOLO_CLV_V1.md`'s sección "Registro" antes de asumir que el congelamiento sigue vigente — ahí vive la fecha de D0 y cualquier cierre de ventana.
+
 ## Running the app
 
 ```bash

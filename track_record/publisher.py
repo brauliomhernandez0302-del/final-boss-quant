@@ -11,8 +11,10 @@ Only publishes if published_at < game_commence_time - min_lead_minutes.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
+import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -26,6 +28,23 @@ from track_record.db import TrackRecordDB
 from core.value_detector import kelly_criterion
 
 log = logging.getLogger("track_record.publisher")
+
+
+@functools.lru_cache(maxsize=1)
+def _get_engine_commit() -> Optional[str]:
+    """The prediction engine's git HEAD, stamped onto every published pick
+    (docs/PROTOCOLO_CLV_V1.md's engine-freeze validity condition needs this
+    to detect a mid-window engine change). Cached — one subprocess call per
+    process, not one per pick."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT, capture_output=True, text=True, timeout=5, check=True,
+        )
+        return result.stdout.strip() or None
+    except Exception:
+        log.warning("Could not resolve engine_commit (git rev-parse HEAD failed)")
+        return None
 
 # Minimum minutes before first pitch that we must publish
 MIN_LEAD_MINUTES = 30
@@ -333,6 +352,7 @@ def publish_mlb_picks(
                     total_line=total_line,
                     commence_time=commence_raw or None,
                     publish_mode="quarantine" if config.QUARANTINE_MODE else "public",
+                    engine_commit=_get_engine_commit(),
                 )
                 if row_id:
                     log.info(

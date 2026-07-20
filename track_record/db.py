@@ -184,6 +184,16 @@ class TrackRecordDB:
                 conn.execute("ALTER TABLE picks ADD COLUMN publish_mode TEXT NOT NULL DEFAULT 'quarantine'")
             except Exception:
                 pass  # column already exists
+            # 2026-07-20 (docs/PROTOCOLO_CLV_V1.md): the CLV evaluation
+            # protocol's engine-freeze validity condition needs a record of
+            # which prediction-engine commit each pick was actually made
+            # under — if the engine changes mid-window, the protocol
+            # requires the primary sample to reset. This is what lets a
+            # future audit tell whether that condition held.
+            try:
+                conn.execute("ALTER TABLE picks ADD COLUMN engine_commit TEXT")
+            except Exception:
+                pass  # column already exists
 
     # ------------------------------------------------------------------ writes
 
@@ -209,6 +219,7 @@ class TrackRecordDB:
         total_line: Optional[float] = None,
         commence_time: Optional[str] = None,
         publish_mode: str = "quarantine",
+        engine_commit: Optional[str] = None,
     ) -> int:
         """Insert a pre-game pick. Returns the new row id (0 if already exists)."""
         ts = published_at or datetime.now(timezone.utc).isoformat()
@@ -220,8 +231,9 @@ class TrackRecordDB:
                     home_team, away_team, market,
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
-                    notes, pipeline_json, total_line, commence_time, publish_mode
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    notes, pipeline_json, total_line, commence_time, publish_mode,
+                    engine_commit
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     pick_uid, ts, game_date, sport, game_pk,
@@ -229,6 +241,7 @@ class TrackRecordDB:
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
                     notes, pipeline_json, total_line, commence_time, publish_mode,
+                    engine_commit,
                 ),
             )
             return int(cur.lastrowid or 0)
