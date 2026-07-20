@@ -52,6 +52,46 @@ def test_commence_time_is_passed_through_to_odds_lookup(monkeypatch, tmp_path):
     assert summary["captured"] == 1
 
 
+def test_all_books_h2h_is_persisted_as_json(monkeypatch, tmp_path):
+    db = TrackRecordDB(db_path=tmp_path / "t.db")
+    commence = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    _publish(db, commence_time=commence)
+
+    all_books = [
+        {"book": "Pinnacle", "home": 1.85, "away": 2.05},
+        {"book": "DraftKings", "home": 1.91, "away": 1.95},
+    ]
+    monkeypatch.setattr(
+        odds_fetcher, "get_best_odds_for_teams",
+        lambda **kw: {"pin_home": 1.85, "pin_away": 2.05, "ml_home": 1.91,
+                       "ml_away": 2.05, "all_books_h2h": all_books},
+    )
+
+    summary = capture_closing_lines(db, sport="MLB")
+    assert summary["captured"] == 1
+
+    row = db.get_picks()[0]
+    import json
+    assert json.loads(row["closing_all_books_json"]) == all_books
+
+
+def test_no_all_books_h2h_leaves_json_column_null(monkeypatch, tmp_path):
+    db = TrackRecordDB(db_path=tmp_path / "t.db")
+    commence = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    _publish(db, commence_time=commence)
+
+    monkeypatch.setattr(
+        odds_fetcher, "get_best_odds_for_teams",
+        lambda **kw: {"pin_home": 1.85, "pin_away": 2.05, "ml_home": 1.91, "ml_away": 2.05},
+    )
+
+    summary = capture_closing_lines(db, sport="MLB")
+    assert summary["captured"] == 1
+
+    row = db.get_picks()[0]
+    assert row["closing_all_books_json"] is None
+
+
 def test_pick_with_commence_time_but_no_market_match_is_not_captured(monkeypatch, tmp_path):
     db = TrackRecordDB(db_path=tmp_path / "t.db")
     commence = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()

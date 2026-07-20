@@ -303,6 +303,22 @@ def publish_mlb_picks(
                 else (float(odds_raw) if odds_raw else None)
             )
             implied = round(1 / odds_dec, 4) if odds_dec else None
+            # docs/PROTOCOLO_CLV_V1.md cut (c) needs to know which book gave
+            # O_taken. Only trust an EXACT match against
+            # get_best_odds_for_teams()'s own ml_home_book/ml_away_book —
+            # odds_dec may come from a differently-sourced bet dict (e.g. the
+            # synthesised fallback above, or a future odds source), and
+            # guessing a book for a price we didn't verify came from it would
+            # fabricate a plausible-looking value (see FALL-001/FALL-002).
+            odds_book = None
+            if market == "ML_HOME" and odds_dec is not None:
+                ref = market_odds.get("ml_home")
+                if ref is not None and abs(odds_dec - float(ref)) < 1e-9:
+                    odds_book = market_odds.get("ml_home_book")
+            elif market == "ML_AWAY" and odds_dec is not None:
+                ref = market_odds.get("ml_away")
+                if ref is not None and abs(odds_dec - float(ref)) < 1e-9:
+                    odds_book = market_odds.get("ml_away_book")
             kelly = float(bet.get("kelly_fraction") or bet.get("kelly") or 0.0)
             stake = round(kelly * 100, 4)  # in units (100-unit bankroll)
             total_line = (
@@ -353,6 +369,7 @@ def publish_mlb_picks(
                     commence_time=commence_raw or None,
                     publish_mode="quarantine" if config.QUARANTINE_MODE else "public",
                     engine_commit=_get_engine_commit(),
+                    odds_book=odds_book,
                 )
                 if row_id:
                     log.info(

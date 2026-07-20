@@ -194,6 +194,26 @@ class TrackRecordDB:
                 conn.execute("ALTER TABLE picks ADD COLUMN engine_commit TEXT")
             except Exception:
                 pass  # column already exists
+            # 2026-07-20 (docs/PROTOCOLO_CLV_V1.md, cut (c) "por libro de
+            # O_taken"): odds_book is the specific bookmaker whose price
+            # WAS the published odds_decimal (only set when it can be
+            # matched exactly against get_best_odds_for_teams()'s own
+            # ml_home_book/ml_away_book — left NULL rather than guessed
+            # when the match isn't exact, per this project's
+            # never-fabricate-a-plausible-value rule). closing_all_books_json
+            # is every bookmaker's two-sided h2h closing quote (not just
+            # Pinnacle's), needed for the protocol's pre-registered
+            # SECONDARY fallback (median devigged price) when no Pinnacle
+            # close is available for a pick — the primary metric still
+            # requires Pinnacle and never uses this column.
+            for ddl in (
+                "ALTER TABLE picks ADD COLUMN odds_book TEXT",
+                "ALTER TABLE picks ADD COLUMN closing_all_books_json TEXT",
+            ):
+                try:
+                    conn.execute(ddl)
+                except Exception:
+                    pass  # column already exists
 
     # ------------------------------------------------------------------ writes
 
@@ -220,6 +240,7 @@ class TrackRecordDB:
         commence_time: Optional[str] = None,
         publish_mode: str = "quarantine",
         engine_commit: Optional[str] = None,
+        odds_book: Optional[str] = None,
     ) -> int:
         """Insert a pre-game pick. Returns the new row id (0 if already exists)."""
         ts = published_at or datetime.now(timezone.utc).isoformat()
@@ -232,8 +253,8 @@ class TrackRecordDB:
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
                     notes, pipeline_json, total_line, commence_time, publish_mode,
-                    engine_commit
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    engine_commit, odds_book
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     pick_uid, ts, game_date, sport, game_pk,
@@ -241,7 +262,7 @@ class TrackRecordDB:
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
                     notes, pipeline_json, total_line, commence_time, publish_mode,
-                    engine_commit,
+                    engine_commit, odds_book,
                 ),
             )
             return int(cur.lastrowid or 0)
@@ -344,6 +365,7 @@ class TrackRecordDB:
         closing_odds_decimal: Optional[float] = None,
         closing_pin_home: Optional[float] = None,
         closing_pin_away: Optional[float] = None,
+        closing_all_books_json: Optional[str] = None,
         captured_at: Optional[str] = None,
     ) -> bool:
         """Record the closing line for a pick and compute clv_pct.
@@ -403,16 +425,17 @@ class TrackRecordDB:
             cur = conn.execute(
                 """
                 UPDATE picks
-                SET closing_odds_decimal  = ?,
-                    closing_pin_home      = ?,
-                    closing_pin_away      = ?,
-                    closing_captured_at   = ?,
-                    minutes_before_start  = ?,
-                    clv_pct               = ?
+                SET closing_odds_decimal    = ?,
+                    closing_pin_home        = ?,
+                    closing_pin_away        = ?,
+                    closing_all_books_json  = ?,
+                    closing_captured_at     = ?,
+                    minutes_before_start    = ?,
+                    clv_pct                 = ?
                 WHERE pick_uid = ?
                 """,
                 (closing_odds_decimal, closing_pin_home, closing_pin_away,
-                 ts, minutes_before_start, clv_pct, pick_uid),
+                 closing_all_books_json, ts, minutes_before_start, clv_pct, pick_uid),
             )
             return cur.rowcount > 0
 

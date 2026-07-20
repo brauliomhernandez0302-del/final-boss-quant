@@ -35,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -94,6 +95,13 @@ def capture_closing_lines(
 
         pin_home = market_odds.get("pin_home")
         pin_away = market_odds.get("pin_away")
+        # Every book's own two-sided closing quote (docs/PROTOCOLO_CLV_V1.md's
+        # pre-registered SECONDARY fallback: median devigged price across
+        # books when this pick has no usable Pinnacle close) — stored
+        # alongside pin_home/pin_away, never used in place of them for the
+        # primary metric.
+        all_books_h2h = market_odds.get("all_books_h2h") or []
+        all_books_json = json.dumps(all_books_h2h) if all_books_h2h else None
         # Closing "odds_decimal" for this specific pick's own side/market —
         # best-market price (not necessarily Pinnacle) on the matching side,
         # so a non-ML market still gets SOME closing reference recorded even
@@ -122,6 +130,7 @@ def capture_closing_lines(
             closing_odds_decimal=side_closing_price,
             closing_pin_home=pin_home,
             closing_pin_away=pin_away,
+            closing_all_books_json=all_books_json,
         )
         if ok:
             summary["captured"] += 1

@@ -594,10 +594,17 @@ def get_best_odds_for_teams(
     event = candidates[0][1]
     best_home = 0.0
     best_away = 0.0
+    best_home_book: Optional[str] = None
+    best_away_book: Optional[str] = None
     pin_home: Optional[float] = None
     pin_away: Optional[float] = None
     best_f5_home = 0.0
     best_f5_away = 0.0
+    # Every bookmaker with a valid two-sided h2h quote, kept so
+    # docs/PROTOCOLO_CLV_V1.md's pre-registered fallback (median devigged
+    # price across books when Pinnacle's close is unavailable) has real
+    # per-book data to work with — not just the aggregate best price.
+    all_books_h2h: List[Dict[str, Any]] = []
 
     # Line-based markets: grouped by point, same reasoning as
     # _normalize_event() — see _consensus_line_and_price()'s docstring.
@@ -623,10 +630,13 @@ def get_best_odds_for_teams(
     f5_rl_away_point_counts: Dict[float, int] = {}
 
     for bm in event.get("bookmakers", []):
+        book_name = bm.get("title") or bm.get("key") or "unknown"
         is_pinnacle = (
             bm.get("key", "").lower() == _PINNACLE_KEY
             or "pinnacle" in bm.get("title", "").lower()
         )
+        bm_h2h_home: Optional[float] = None
+        bm_h2h_away: Optional[float] = None
         for market in bm.get("markets", []):
             mkey     = market.get("key", "")
             outcomes = market.get("outcomes", [])
@@ -636,11 +646,17 @@ def get_best_odds_for_teams(
                     name  = outcome.get("name", "").strip()
                     price = outcome.get("price", 0.0) or 0.0
                     if name == g_home:
-                        best_home = max(best_home, price)
+                        bm_h2h_home = price
+                        if price > best_home:
+                            best_home = price
+                            best_home_book = book_name
                         if is_pinnacle:
                             pin_home = price
                     elif name == g_away:
-                        best_away = max(best_away, price)
+                        bm_h2h_away = price
+                        if price > best_away:
+                            best_away = price
+                            best_away_book = book_name
                         if is_pinnacle:
                             pin_away = price
 
@@ -699,6 +715,9 @@ def get_best_odds_for_teams(
                     elif name == g_away:
                         _accumulate_point_price(f5_rl_away_by_point, f5_rl_away_point_counts, point, price)
 
+        if bm_h2h_home is not None and bm_h2h_home > 0 and bm_h2h_away is not None and bm_h2h_away > 0:
+            all_books_h2h.append({"book": book_name, "home": bm_h2h_home, "away": bm_h2h_away})
+
     total_line, total_over = _consensus_line_and_price(over_by_point, over_point_counts, pin_total_point)
     _, total_under = _consensus_line_and_price(under_by_point, over_point_counts, pin_total_point)
     rl_home_point, best_rl_home = _consensus_line_and_price(rl_home_by_point, rl_home_point_counts, pin_rl_home_point)
@@ -714,8 +733,11 @@ def get_best_odds_for_teams(
         "away_team":     g_away,
         "ml_home":       best_home if best_home > 0 else None,
         "ml_away":       best_away if best_away > 0 else None,
+        "ml_home_book":  best_home_book,
+        "ml_away_book":  best_away_book,
         "pin_home":      pin_home,
         "pin_away":      pin_away,
+        "all_books_h2h": all_books_h2h,
         "pin_total":     pin_total,
         "total_line":    total_line,
         "total_over":    total_over,
