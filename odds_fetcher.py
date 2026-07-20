@@ -744,13 +744,20 @@ def get_best_odds_for_teams(
         "total_under":   total_under,
         "runline_home":  best_rl_home,
         "runline_away":  best_rl_away,
-        # Magnitude only — see _normalize_event()'s identical field for
-        # why (home/away sign convention is decided elsewhere, and the
-        # two points aren't guaranteed to agree in sign).
+        # Magnitude only — kept for the live EV path (core/value_detector.py
+        # ::analyze_runline, frozen — see CLAUDE.md), which still assumes
+        # "home is always the favorite" and doesn't consume a sign.
         "runline_line": (
             abs(rl_home_point) if rl_home_point is not None
             else (abs(rl_away_point) if rl_away_point is not None else None)
         ),
+        # Signed points — home/away aren't guaranteed to agree in sign if
+        # books disagree on who's favored, so both are exposed independently
+        # rather than derived from one another. Used by track_record's
+        # post-game grading (reconciler.py) to know which side was actually
+        # favored for THIS pick, instead of assuming home always is.
+        "runline_home_point": rl_home_point,
+        "runline_away_point": rl_away_point,
         # f5_ml_home/f5_ml_away/f5_total_over/f5_total_under: named to
         # match GameOdds' established convention (core/value_detector.py)
         # and run_module.py's read side. Previously these were

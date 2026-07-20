@@ -108,11 +108,26 @@ def _resolve_market(
     home_score: int,
     away_score: int,
     total_line: Optional[float] = None,
-    runline: float = 1.5,
+    runline_point: Optional[float] = None,
     f5_home: Optional[int] = None,
     f5_away: Optional[int] = None,
 ) -> str:
-    """Determine WIN / LOSS / PUSH for a given market and final score."""
+    """Determine WIN / LOSS / PUSH for a given market and final score.
+
+    runline_point is the SIGNED run-line point for the specific side this
+    pick was placed on (e.g. -1.5 if that side was favored, +1.5 if it was
+    the underdog) — NOT a magnitude, and NOT an assumption that home is
+    always favored. General cover formula for a team with signed point `p`:
+    cover = (that team's own run differential) + p > 0. For RL_HOME the
+    team's own differential is `diff` (home - away); for RL_AWAY it's
+    `-diff` (away - home). This replaces a prior version that (a) hardcoded
+    "home is always -1.5, away is always +1.5" regardless of which team the
+    market actually favored, and (b) had an independent sign error in the
+    RL_AWAY formula itself (`-diff - runline`, which flipped WIN/LOSS
+    exactly in the diff∈{0,1} region — verified 2026-07-20, see the
+    run-line detection review). VOID (never guessed) when runline_point is
+    unavailable — e.g. picks published before this column existed.
+    """
     diff = home_score - away_score  # positive = home wins
     total = home_score + away_score
 
@@ -131,7 +146,9 @@ def _resolve_market(
         return "PUSH"
 
     if market == "RL_HOME":
-        cover = diff - runline
+        if runline_point is None:
+            return "VOID"
+        cover = diff + runline_point
         if cover > 0:
             return "WIN"
         if cover < 0:
@@ -139,7 +156,9 @@ def _resolve_market(
         return "PUSH"
 
     if market == "RL_AWAY":
-        cover = -diff - runline
+        if runline_point is None:
+            return "VOID"
+        cover = -diff + runline_point
         if cover > 0:
             return "WIN"
         if cover < 0:
@@ -235,12 +254,14 @@ def reconcile_pending(
         home_score, away_score = score
         market = pick["market"]
         total_line = pick["total_line"] if "total_line" in pick.keys() else None
+        runline_point = pick["runline_point"] if "runline_point" in pick.keys() else None
         f5_score = None
         if market in ("F5_HOME", "F5_AWAY", "F5_OVER", "F5_UNDER"):
             f5_score = _fetch_f5_score(int(game_pk))
         result = _resolve_market(
             market, home_score, away_score,
             total_line=total_line,
+            runline_point=runline_point,
             f5_home=f5_score[0] if f5_score else None,
             f5_away=f5_score[1] if f5_score else None,
         )

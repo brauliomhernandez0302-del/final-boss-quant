@@ -214,6 +214,19 @@ class TrackRecordDB:
                     conn.execute(ddl)
                 except Exception:
                     pass  # column already exists
+            # 2026-07-20: run-line grading was silently wrong for both sides
+            # whenever the away team was the actual run-line favorite —
+            # reconciler.py's _resolve_market() hardcoded "home is always
+            # -1.5" with no way to know otherwise, since nothing stored the
+            # SIGNED point for the specific side a pick was placed on.
+            # runline_point is that signed value (e.g. -1.5 if this pick's
+            # side was favored, +1.5 if it was the underdog) — NULL for any
+            # market other than RL_HOME/RL_AWAY, and for picks published
+            # before this column existed (graded VOID rather than guessed).
+            try:
+                conn.execute("ALTER TABLE picks ADD COLUMN runline_point REAL")
+            except Exception:
+                pass  # column already exists
 
     # ------------------------------------------------------------------ writes
 
@@ -241,6 +254,7 @@ class TrackRecordDB:
         publish_mode: str = "quarantine",
         engine_commit: Optional[str] = None,
         odds_book: Optional[str] = None,
+        runline_point: Optional[float] = None,
     ) -> int:
         """Insert a pre-game pick. Returns the new row id (0 if already exists)."""
         ts = published_at or datetime.now(timezone.utc).isoformat()
@@ -253,8 +267,8 @@ class TrackRecordDB:
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
                     notes, pipeline_json, total_line, commence_time, publish_mode,
-                    engine_commit, odds_book
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    engine_commit, odds_book, runline_point
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     pick_uid, ts, game_date, sport, game_pk,
@@ -262,7 +276,7 @@ class TrackRecordDB:
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
                     notes, pipeline_json, total_line, commence_time, publish_mode,
-                    engine_commit, odds_book,
+                    engine_commit, odds_book, runline_point,
                 ),
             )
             return int(cur.lastrowid or 0)

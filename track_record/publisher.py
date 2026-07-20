@@ -319,6 +319,15 @@ def publish_mlb_picks(
                 ref = market_odds.get("ml_away")
                 if ref is not None and abs(odds_dec - float(ref)) < 1e-9:
                     odds_book = market_odds.get("ml_away_book")
+            # Signed run-line point for THIS pick's own side (e.g. -1.5 if
+            # this side is favored, +1.5 if it's the underdog) — needed by
+            # reconciler.py to grade RL_HOME/RL_AWAY correctly regardless of
+            # which team is actually favored. NULL for any other market.
+            runline_point = None
+            if market == "RL_HOME":
+                runline_point = market_odds.get("runline_home_point")
+            elif market == "RL_AWAY":
+                runline_point = market_odds.get("runline_away_point")
             kelly = float(bet.get("kelly_fraction") or bet.get("kelly") or 0.0)
             stake = round(kelly * 100, 4)  # in units (100-unit bankroll)
             total_line = (
@@ -370,6 +379,7 @@ def publish_mlb_picks(
                     publish_mode="quarantine" if config.QUARANTINE_MODE else "public",
                     engine_commit=_get_engine_commit(),
                     odds_book=odds_book,
+                    runline_point=runline_point,
                 )
                 if row_id:
                     log.info(
