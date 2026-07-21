@@ -592,6 +592,23 @@ def get_best_odds_for_teams(
         return {}
 
     event = candidates[0][1]
+    # The winning event's OWN team names — distinct from the search loop's
+    # g_home/g_away above, which by this point hold whatever candidate_event
+    # was LAST examined in `raw` (any MLB game, not necessarily this one).
+    # Every block below that matches an outcome's `name` against the home/
+    # away side, plus the return dict's home_team/away_team, must use these,
+    # not g_home/g_away — using the stale loop variables here was a real bug
+    # (found 2026-07-21 building the React matchup dashboard): h2h/spreads
+    # outcome names never matched g_home/g_away's stale value whenever the
+    # matched event wasn't also the last MLB event in the raw list, so
+    # ml_home/ml_away/pin_home/pin_away silently stayed None and the
+    # returned home_team/away_team labeled a different game entirely. Every
+    # existing test fixture used the same two teams for every event in its
+    # mocked raw list, so g_home/g_away's stale value always coincidentally
+    # matched — masking this in the full suite until a real multi-game
+    # schedule was fetched. See tests/test_odds_fetcher_wrong_event_team_names.py.
+    home_name = event.get("home_team", "")
+    away_name = event.get("away_team", "")
     best_home = 0.0
     best_away = 0.0
     best_home_book: Optional[str] = None
@@ -645,14 +662,14 @@ def get_best_odds_for_teams(
                 for outcome in outcomes:
                     name  = outcome.get("name", "").strip()
                     price = outcome.get("price", 0.0) or 0.0
-                    if name == g_home:
+                    if name == home_name:
                         bm_h2h_home = price
                         if price > best_home:
                             best_home = price
                             best_home_book = book_name
                         if is_pinnacle:
                             pin_home = price
-                    elif name == g_away:
+                    elif name == away_name:
                         bm_h2h_away = price
                         if price > best_away:
                             best_away = price
@@ -677,11 +694,11 @@ def get_best_odds_for_teams(
                     name  = outcome.get("name", "").strip()
                     price = outcome.get("price", 0.0) or 0.0
                     point = outcome.get("point")
-                    if name == g_home:
+                    if name == home_name:
                         _accumulate_point_price(rl_home_by_point, rl_home_point_counts, point, price)
                         if is_pinnacle and point is not None:
                             pin_rl_home_point = point
-                    elif name == g_away:
+                    elif name == away_name:
                         _accumulate_point_price(rl_away_by_point, rl_away_point_counts, point, price)
                         if is_pinnacle and point is not None:
                             pin_rl_away_point = point
@@ -690,9 +707,9 @@ def get_best_odds_for_teams(
                 for outcome in outcomes:
                     name  = outcome.get("name", "").strip()
                     price = outcome.get("price", 0.0) or 0.0
-                    if name == g_home:
+                    if name == home_name:
                         best_f5_home = max(best_f5_home, price)
-                    elif name == g_away:
+                    elif name == away_name:
                         best_f5_away = max(best_f5_away, price)
 
             elif mkey == "totals_h1":
@@ -710,9 +727,9 @@ def get_best_odds_for_teams(
                     name  = outcome.get("name", "").strip()
                     price = outcome.get("price", 0.0) or 0.0
                     point = outcome.get("point")
-                    if name == g_home:
+                    if name == home_name:
                         _accumulate_point_price(f5_rl_home_by_point, f5_rl_home_point_counts, point, price)
-                    elif name == g_away:
+                    elif name == away_name:
                         _accumulate_point_price(f5_rl_away_by_point, f5_rl_away_point_counts, point, price)
 
         if bm_h2h_home is not None and bm_h2h_home > 0 and bm_h2h_away is not None and bm_h2h_away > 0:
@@ -729,8 +746,8 @@ def get_best_odds_for_teams(
     pin_total = pin_total_point
 
     return {
-        "home_team":     g_home,
-        "away_team":     g_away,
+        "home_team":     home_name,
+        "away_team":     away_name,
         "ml_home":       best_home if best_home > 0 else None,
         "ml_away":       best_away if best_away > 0 else None,
         "ml_home_book":  best_home_book,
