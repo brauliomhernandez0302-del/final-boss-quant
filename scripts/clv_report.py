@@ -203,7 +203,16 @@ def evaluate_sample(pool: List[Dict[str, Any]], label: str) -> Dict[str, Any]:
         model_briers, close_briers = [], []
         for r in resolved_primary:
             outcome = 1 if r["result"] == "WIN" else 0
-            model_briers.append(_brier(r["model_prob"], outcome))
+            # decision_prob is the exact probability the pick's own EV/Kelly
+            # was computed from (Platt-2D-corrected when fair_source ==
+            # "pinnacle" — see track_record/db.py's schema comment). Picks
+            # published before that column existed have it NULL; fall back
+            # to model_prob for those rather than dropping them from the
+            # comparison.
+            model_prob = r.get("decision_prob")
+            if model_prob is None:
+                model_prob = r["model_prob"]
+            model_briers.append(_brier(model_prob, outcome))
             close_briers.append(_brier(r["p_close"], outcome))
         result["secondary"]["model_brier"] = round(sum(model_briers) / len(model_briers), 5)
         result["secondary"]["p_close_brier"] = round(sum(close_briers) / len(close_briers), 5)

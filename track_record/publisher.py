@@ -296,6 +296,15 @@ def publish_mlb_picks(
                 or (p_home if "HOME" in market else p_away)
             )
             ev_pct = float(bet.get("ev_pct") or bet.get("ev") or 0.0)
+            # decision_prob: the exact probability this bet's own EV/Kelly
+            # (ev_pct, just above) was computed from — core/value_detector.py
+            # already folds its Platt-2D correction into bet['probability']
+            # before EV/Kelly are calculated (only when fair_source ==
+            # "pinnacle"; otherwise 'probability' is the uncorrected Platt-1D
+            # value), so reading the same bet dict here, via the same
+            # fallback chain as model_prob above, captures it directly — no
+            # NULL, no re-deriving Platt math outside value_detector.
+            decision_prob = model_prob
             odds_raw = bet.get("odds") or bet.get("odds_decimal")
             odds_dec = (
                 _american_to_decimal(odds_raw)
@@ -380,6 +389,7 @@ def publish_mlb_picks(
                     engine_commit=_get_engine_commit(),
                     odds_book=odds_book,
                     runline_point=runline_point,
+                    decision_prob=decision_prob,
                 )
                 if row_id:
                     log.info(
@@ -397,6 +407,7 @@ def publish_mlb_picks(
                 "game_date": game_date,
                 "market": market,
                 "model_prob": model_prob,
+                "decision_prob": decision_prob,
                 "ev_pct": ev_pct,
                 "confidence_tier": tier,
                 "odds_decimal": odds_dec,

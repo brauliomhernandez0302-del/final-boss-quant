@@ -227,6 +227,25 @@ class TrackRecordDB:
                 conn.execute("ALTER TABLE picks ADD COLUMN runline_point REAL")
             except Exception:
                 pass  # column already exists
+            # 2026-07-21 (docs/PROTOCOLO_CLV_V1.md, auditability gap): the
+            # published pick is decided on the Platt-2D-corrected probability
+            # (core/value_detector.py's per-market Platt-2D shrink toward the
+            # Pinnacle fair line, applied only when fair_source=="pinnacle"),
+            # but game_outcomes.p_home — the row the ML pipeline persists for
+            # learning — only ever stores the Platt-1D probability. Neither
+            # table previously recorded the exact probability that generated
+            # the pick's own EV/Kelly, which is what any CLV/EV audit actually
+            # needs. decision_prob is that value: publisher.py stamps it from
+            # the same best_bets bet dict ev_pct comes from. When
+            # fair_source != "pinnacle" (no Pinnacle line to correct against),
+            # decision_prob IS the Platt-1D probability — still stamped, never
+            # left NULL. NULL only for picks published before this column
+            # existed; readers (scripts/clv_report.py) fall back to
+            # model_prob for those.
+            try:
+                conn.execute("ALTER TABLE picks ADD COLUMN decision_prob REAL")
+            except Exception:
+                pass  # column already exists
 
     # ------------------------------------------------------------------ writes
 
@@ -255,9 +274,19 @@ class TrackRecordDB:
         engine_commit: Optional[str] = None,
         odds_book: Optional[str] = None,
         runline_point: Optional[float] = None,
+        decision_prob: Optional[float] = None,
     ) -> int:
-        """Insert a pre-game pick. Returns the new row id (0 if already exists)."""
+        """Insert a pre-game pick. Returns the new row id (0 if already exists).
+
+        decision_prob: the probability the pick's own EV/Kelly was computed
+        from (see the schema comment above `decision_prob` in _init_schema).
+        Falls back to model_prob when the caller doesn't supply it, so a
+        freshly-published row is never left with a NULL here — only pre-
+        migration historical rows lack it.
+        """
         ts = published_at or datetime.now(timezone.utc).isoformat()
+        if decision_prob is None:
+            decision_prob = model_prob
         with self._conn() as conn:
             cur = conn.execute(
                 """
@@ -267,8 +296,8 @@ class TrackRecordDB:
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
                     notes, pipeline_json, total_line, commence_time, publish_mode,
-                    engine_commit, odds_book, runline_point
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    engine_commit, odds_book, runline_point, decision_prob
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     pick_uid, ts, game_date, sport, game_pk,
@@ -276,7 +305,7 @@ class TrackRecordDB:
                     model_prob, implied_prob, ev_pct, kelly_fraction,
                     confidence_tier, odds_decimal, stake_units,
                     notes, pipeline_json, total_line, commence_time, publish_mode,
-                    engine_commit, odds_book, runline_point,
+                    engine_commit, odds_book, runline_point, decision_prob,
                 ),
             )
             return int(cur.lastrowid or 0)
