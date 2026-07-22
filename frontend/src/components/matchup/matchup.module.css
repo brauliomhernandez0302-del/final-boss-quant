@@ -1,0 +1,78 @@
+/* Shared layout primitives for the matchup dashboard sections. */
+
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--fbq-space-4);
+}
+
+@media (max-width: 720px) {
+  .grid2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.card {
+  background: var(--fbq-bg-card);
+  border: 1px solid var(--fbq-border-hairline);
+  border-radius: var(--fbq-radius-md);
+  padding: var(--fbq-space-4);
+}
+
+.teamLabel {
+  font-family: var(--fbq-font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fbq-text-secondary);
+  margin-bottom: var(--fbq-space-3);
+}
+
+.statRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 13px;
+}
+
+.statLabel {
+  color: var(--fbq-text-secondary);
+}
+
+.statValue {
+  font-family: var(--fbq-font-mono);
+  color: var(--fbq-text-primary);
+  font-weight: 600;
+}
+
+.playerRow {
+  display: flex;
+  align-items: center;
+  gap: var(--fbq-space-3);
+}
+
+.playerName {
+  font-family: var(--fbq-font-sans);
+  color: var(--fbq-text-primary);
+  font-size: 14px;
+}
+
+.playerMeta {
+  font-family: var(--fbq-font-mono);
+  color: var(--fbq-text-muted);
+  font-size: 11px;
+}
+
+.emptyNote {
+  color: var(--fbq-text-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fbq-space-3);
+}

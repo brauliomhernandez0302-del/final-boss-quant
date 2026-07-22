@@ -1,0 +1,54 @@
+.pinnacleRef {
+  font-family: var(--fbq-font-sans);
+  font-size: 12px;
+  color: var(--fbq-text-secondary);
+  margin-bottom: var(--fbq-space-3);
+}
+
+.table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--fbq-border-hairline);
+  border-radius: var(--fbq-radius-md);
+  overflow: hidden;
+}
+
+.headerRow,
+.row {
+  display: grid;
+  grid-template-columns: 2fr 1.6fr 1fr 1fr 1fr;
+  align-items: center;
+  padding: var(--fbq-space-3) var(--fbq-space-4);
+  gap: var(--fbq-space-3);
+}
+
+.headerRow {
+  background: var(--fbq-bg-inset);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fbq-text-muted);
+}
+
+.row {
+  border-top: 1px solid var(--fbq-border-hairline);
+  background: var(--fbq-bg-card);
+  font-size: 13px;
+}
+
+.market {
+  color: var(--fbq-text-primary);
+  font-family: var(--fbq-font-sans);
+}
+
+.ev {
+  font-weight: 600;
+}
+
+.positive {
+  color: var(--fbq-accent-teal);
+}
+
+.negative {
+  color: var(--fbq-accent-red);
+}

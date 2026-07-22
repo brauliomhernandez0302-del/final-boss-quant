@@ -1,0 +1,32 @@
+.indent {
+  padding-left: 16px;
+}
+
+.line {
+  line-height: 1.6;
+}
+
+.key {
+  color: var(--fbq-accent-blue-soft);
+  font-family: var(--fbq-font-mono);
+}
+
+.colon {
+  color: var(--fbq-text-muted);
+}
+
+.string {
+  color: var(--fbq-accent-teal);
+}
+
+.number {
+  color: var(--fbq-text-primary);
+}
+
+.bool {
+  color: var(--fbq-accent-amber);
+}
+
+.null {
+  color: var(--fbq-text-muted);
+}

@@ -1,0 +1,13 @@
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: var(--fbq-radius-sm);
+  background: var(--fbq-provenance-warn-bg);
+  border: 1px solid var(--fbq-provenance-warn-border);
+  color: var(--fbq-provenance-warn-text);
+  font-family: var(--fbq-font-sans);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}

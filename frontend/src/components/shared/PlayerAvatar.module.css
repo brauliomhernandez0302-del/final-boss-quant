@@ -1,0 +1,19 @@
+.avatar {
+  display: block;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--fbq-bg-inset);
+  border: 1px solid var(--fbq-border-hairline);
+}
+
+.fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--fbq-bg-inset);
+  border: 1px solid var(--fbq-border-hairline);
+  color: var(--fbq-text-muted);
+  font-family: var(--fbq-font-mono);
+  font-weight: 600;
+}

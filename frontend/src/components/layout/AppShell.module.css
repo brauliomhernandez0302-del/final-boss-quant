@@ -1,0 +1,57 @@
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--fbq-bg-card);
+  border-right: 1px solid var(--fbq-border-hairline);
+  padding: var(--fbq-space-5) var(--fbq-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--fbq-space-6);
+}
+
+.brand {
+  font-family: var(--fbq-font-mono);
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  color: var(--fbq-text-primary);
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fbq-space-1);
+}
+
+.link {
+  padding: var(--fbq-space-2) var(--fbq-space-3);
+  border-radius: var(--fbq-radius-sm);
+  color: var(--fbq-text-secondary);
+  text-decoration: none;
+  font-size: 13px;
+  font-family: var(--fbq-font-sans);
+}
+
+.link:hover {
+  background: var(--fbq-bg-inset);
+  color: var(--fbq-text-primary);
+}
+
+.active {
+  background: var(--fbq-bg-inset);
+  color: var(--fbq-accent-blue-soft);
+  font-weight: 600;
+}
+
+.main {
+  flex: 1;
+  padding: var(--fbq-space-6);
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+}

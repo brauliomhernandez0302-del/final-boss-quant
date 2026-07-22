@@ -1,0 +1,30 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--fbq-radius-sm);
+  border: 1px solid var(--fbq-border-hairline);
+  background: var(--fbq-bg-inset);
+  font-family: var(--fbq-font-sans);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.grade {
+  font-family: var(--fbq-font-mono);
+  font-weight: 700;
+}
+
+.label {
+  color: var(--fbq-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+}
+
+.gradeS .grade { color: var(--fbq-tier-s); }
+.gradeA .grade { color: var(--fbq-tier-a); }
+.gradeB .grade { color: var(--fbq-tier-b); }
+.gradeC .grade { color: var(--fbq-tier-c); }

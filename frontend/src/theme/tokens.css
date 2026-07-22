@@ -1,0 +1,144 @@
+/* FBQ theme tokens — single source of truth for color/type/spacing.
+   Every component reads these variables; never a hardcoded hex outside
+   this file. Dark is the default and primary target ("quant trading
+   terminal"); light is provided via the same tokens, not a separate
+   hardcoded palette, following prefers-color-scheme and an optional
+   [data-theme] override. */
+
+:root {
+  /* ---- surfaces ---- */
+  --fbq-bg-canvas: #0A0E14;
+  --fbq-bg-card: #0D141D;
+  --fbq-bg-inset: #111823;
+
+  /* ---- borders ---- */
+  --fbq-border-hairline: #1B2430;
+  --fbq-border-strong: #2A3A4D;
+
+  /* ---- text ---- */
+  --fbq-text-primary: #E8EEF5;
+  --fbq-text-secondary: #8FA3B5;
+  --fbq-text-muted: #5A6B7D;
+
+  /* ---- semantic accents (never decorative) ---- */
+  --fbq-accent-blue: #378ADD;      /* highlight / probability */
+  --fbq-accent-blue-soft: #85B7EB;
+  --fbq-accent-teal: #5DCAA5;      /* positive / favorable */
+  --fbq-accent-amber: #EF9F27;     /* alert / high tier */
+  --fbq-accent-red: #E15B5B;       /* negative / unfavorable */
+
+  /* ---- value-bet tier grades ---- */
+  --fbq-tier-s: var(--fbq-accent-amber);
+  --fbq-tier-a: var(--fbq-accent-teal);
+  --fbq-tier-b: var(--fbq-accent-blue);
+  --fbq-tier-c: var(--fbq-text-secondary);
+
+  /* ---- provenance / data-quality states ---- */
+  --fbq-provenance-warn-bg: rgba(239, 159, 39, 0.12);
+  --fbq-provenance-warn-border: rgba(239, 159, 39, 0.4);
+  --fbq-provenance-warn-text: var(--fbq-accent-amber);
+
+  /* ---- typography ---- */
+  --fbq-font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code",
+    Menlo, Consolas, "Liberation Mono", monospace;
+  --fbq-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+
+  /* ---- spacing scale ---- */
+  --fbq-space-1: 4px;
+  --fbq-space-2: 8px;
+  --fbq-space-3: 12px;
+  --fbq-space-4: 16px;
+  --fbq-space-5: 24px;
+  --fbq-space-6: 32px;
+  --fbq-space-7: 48px;
+
+  --fbq-radius-sm: 4px;
+  --fbq-radius-md: 8px;
+
+  color-scheme: dark;
+}
+
+/* Light mode — same tokens, different values, no separate design. Applies
+   automatically via prefers-color-scheme, or forced with [data-theme]. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --fbq-bg-canvas: #F4F6F9;
+    --fbq-bg-card: #FFFFFF;
+    --fbq-bg-inset: #ECF0F4;
+
+    --fbq-border-hairline: #DDE3EA;
+    --fbq-border-strong: #C3CCD6;
+
+    --fbq-text-primary: #131B24;
+    --fbq-text-secondary: #4C5A68;
+    --fbq-text-muted: #7C8A98;
+
+    --fbq-accent-blue: #1D6FBD;
+    --fbq-accent-blue-soft: #4A8FCB;
+    --fbq-accent-teal: #1E9B75;
+    --fbq-accent-amber: #B9760E;
+    --fbq-accent-red: #C23F3F;
+
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="dark"] {
+  --fbq-bg-canvas: #0A0E14;
+  --fbq-bg-card: #0D141D;
+  --fbq-bg-inset: #111823;
+  --fbq-border-hairline: #1B2430;
+  --fbq-border-strong: #2A3A4D;
+  --fbq-text-primary: #E8EEF5;
+  --fbq-text-secondary: #8FA3B5;
+  --fbq-text-muted: #5A6B7D;
+  --fbq-accent-blue: #378ADD;
+  --fbq-accent-blue-soft: #85B7EB;
+  --fbq-accent-teal: #5DCAA5;
+  --fbq-accent-amber: #EF9F27;
+  --fbq-accent-red: #E15B5B;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --fbq-bg-canvas: #F4F6F9;
+  --fbq-bg-card: #FFFFFF;
+  --fbq-bg-inset: #ECF0F4;
+  --fbq-border-hairline: #DDE3EA;
+  --fbq-border-strong: #C3CCD6;
+  --fbq-text-primary: #131B24;
+  --fbq-text-secondary: #4C5A68;
+  --fbq-text-muted: #7C8A98;
+  --fbq-accent-blue: #1D6FBD;
+  --fbq-accent-blue-soft: #4A8FCB;
+  --fbq-accent-teal: #1E9B75;
+  --fbq-accent-amber: #B9760E;
+  --fbq-accent-red: #C23F3F;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--fbq-bg-canvas);
+  color: var(--fbq-text-primary);
+  font-family: var(--fbq-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+code, .fbq-num {
+  font-family: var(--fbq-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: inherit;
+}
