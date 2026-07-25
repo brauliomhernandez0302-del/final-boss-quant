@@ -46,6 +46,15 @@ Desde D0, los umbrales y definiciones de este documento son inmutables. Solo se 
 
 ## Registro
 - Protocolo commiteado: 2026-07-20, commit siguiente a `80d0fae` en `feature/point-in-time-rebuild`
-- engine_commit congelado: `80d0faea8fae96a1bb11fd18d53cafcb382a1682`
-- D0: pendiente — completar cuando V1(a) + keepalive estén verificados
+- engine_commit congelado: `b3325a52680e44ea75e1b1dcc26f9d9af6369393` (2026-07-25 — rebaseline
+  del simulador post-auditoría VAL: truncamiento de walk-off, `rho_game` efectivo sobre las
+  carreras, empates proporcionales. Baseline 0.24675 Brier / 55.05% accuracy,
+  `audit_20260714/val_audit/rebaseline/backtest_report_20260725_0644.json`)
+  - Anterior: `80d0faea8fae96a1bb11fd18d53cafcb382a1682` (2026-07-20). **Re-apuntado sin
+    reiniciar muestra primaria**: D0 seguía pendiente al momento del cambio, así que la ventana
+    no había arrancado y no existían picks primarios que invalidar. La regla de "cambio de motor
+    a media ventana reinicia la muestra" no se activó porque no había ventana corriendo.
+- D0: pendiente — completar cuando V1(a) + keepalive estén verificados. **Debe fijarse después
+  de este engine_commit, nunca antes**: arrancar la ventana con el motor viejo y cambiarlo a
+  mitad es exactamente el escenario que reinicia la primaria.
 - Clarificaciones: (ninguna)
