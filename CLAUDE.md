@@ -271,3 +271,77 @@ correctamente no encuentran cobertura PIT previa a su propio primer juego y se e
 comportamiento honesto esperado, no un bug nuevo.
 
 Ver `audit_20260714/fase2b/` para B0/B1/B2 completos.
+
+### Actualización 2026-07-25 — auditoría VAL + rebaseline del simulador
+
+**Baseline vigente: Brier 0.24675 / accuracy 55.05%** (mismo comando `--season 2024,2025
+--use-full-pit`, 4,825 juegos) — supersede el 0.24650/54.80% de arriba. **Reporte canónico**:
+`audit_20260714/val_audit/rebaseline/backtest_report_20260725_0644.json`; delta completo contra
+el canónico anterior en `audit_20260714/val_audit/rebaseline/reporte_delta.md`.
+
+**⚠️ Framing obligatorio de este número — leer antes de citarlo en cualquier prosa futura**:
+esto es un **baseline del motor corregido, neutro en moneyline — la justificación del fix vive
+en runline/total, que este backtest no mide**. `backtest_and_retrain.py` evalúa
+*exclusivamente* moneyline (Brier/accuracy/ROI sobre `home_won`), y el sesgo que estos fixes
+corrigen vive en la **cola** de la distribución de carreras (margen y total), no en el signo de
+quién gana. El movimiento observado en moneyline es pequeño y sin dirección clara: Brier +0.00025
+(peor), accuracy +0.25pp (mejor), ningún juego movió su `p_home` más de 1.82pp. **Ninguna prosa
+futura debe presentar este rebaseline como una mejora del modelo** — este instrumento no puede
+mostrar una mejora aunque exista, y tampoco mostró un deterioro. La evidencia de que el fix
+corrige un sesgo real es la del reporte VAL (`audit_20260714/val_audit/reporte.md` VAL-1.3): sobre
+881 juegos reales, la brecha real-vs-modelo en P(margen local ≥2 | ganó) bajó de ~8.7pp a ~0.9pp
+— y eso es sobre mercados que este backtest no evalúa.
+
+Cambios del motor incluidos en el rebaseline (todos derivados de la auditoría VAL,
+`audit_20260714/val_audit/reporte.md`):
+1. **Truncamiento de walk-off** (`montecarlo/simulator.py`, VAL-1.3): el simulador no modelaba
+   que la baja del 9no no se juega si el local ya va arriba. Implementado como binomial thinning
+   con `WALKOFF_9TH_SHARE=1/9` — **constante asumida, no ajustada empíricamente** (no existe un
+   split real por inning en este repo todavía); nombrada explícitamente para que una calibración
+   futura tenga dónde enchufar el número real. Flag `model_walkoff=True` por default; `False`
+   reproduce el comportamiento viejo para comparaciones analíticas.
+2. **`rho_game` ahora sí llega a las carreras** (mismo archivo, hallazgo bonus de VAL-1): la
+   versión anterior aplicaba la correlación solo al ruido de λ (~5% de λ), y quedaba tragada por
+   la varianza condicional del NB — ρ=-0.008 de input daba ρ≈-0.0007 observado (~11x de
+   atenuación), y hasta ρ=-0.5 solo daba -0.0024. Reimplementado compartiendo una unidad de la
+   mezcla Gamma del NB con probabilidad derivada en forma cerrada. La marginal NB de cada lado se
+   preserva EXACTAMENTE. Una versión con cópula gaussiana exacta acierta el target mejor pero
+   depende de `nbinom.ppf`/`gamma.ppf` de scipy, ~22x más lento (6s → 34s en una corrida de 5M) —
+   descartada por costo; la actual queda dentro de ~10-15% del target.
+3. **Resolución de empates proporcional** (mismo archivo): un empate en la simulación representa
+   un juego real que iría a extra innings. Antes 50/50 implícito; ahora el crédito se reparte
+   según el λ_noise de esa misma simulación, así que un empate entre desiguales se inclina hacia
+   el favorito. `p_home + p_away` sigue sumando exactamente 1.0.
+4. **CI de bootstrap al n real** (`core/value_detector.py`, VAL-1.4): submuestreaba a 10,000
+   draws fijos sin importar cuántas simulaciones corrieron (500K-5M live), reportando un CI
+   hasta ~7-22x más ancho que el real — y eso alimentaba `ev_std`, `sharpe` y el
+   `sharpe_component` del `composite_score`. Para arrays binarios (todos los callers actuales)
+   ahora usa la forma cerrada Binomial(n, p̂)/n al n verdadero.
+5. **Transparencia de Kelly** (mismo archivo, VAL-4.4): el piso `MIN_KELLY=1%` puede inflar un
+   edge marginal (caso real: quarter-Kelly 0.28% → 1.00%, 3.6x). Es diseño deliberado, no bug;
+   ahora `analyze_market_generic` expone además `kelly_unfractional` y `kelly_floor_applied`
+   para que se vea cuándo el piso cambió el stake. `kelly_criterion()` sigue siendo la única
+   fuente de verdad para sizing.
+6. **Tres conteos de relevistas etiquetados** (`context_engine/bullpen_engine.py` +
+   `api/mlb_presentation.py`, VAL-7.2): `n_pitchers` (cobertura Savant), `n_siera_pitchers`
+   (cobertura FanGraphs) y el roster que ve la UI son tres números distintos por construcción,
+   ninguno afecta λ directamente, y se mostraban sin etiqueta. Documentados en el sitio; además
+   `fetch_bullpen_roster` ahora reusa `_fetch_reliever_ids` del propio engine en vez de un filtro
+   "posición == P" que colaba abridores de rotación (confirmado live: Buehler, King, Márquez,
+   Sears).
+
+**Tests permanentes**: `tests/verification/test_val_audit_invariants.py` (17 tests) — incluye dos
+que fueron escritos rojos a propósito contra los bugs de VAL-1.3 y VAL-1.4 y que estos fixes
+ponen en verde.
+
+**`promote_calibration.py`: NO se corrió — decisión tomada, no pendiente.** Razón operativa: lo
+que promovería no es lo que hace falta. La Platt-1D live vigente es `season=2026`,
+`state_source='live'`; esta corrida solo re-ajustó Platt de `season=2024/2025`,
+`state_source='backtest'`, y `promote_calibration.py --season N` mueve backtest→live *de esa
+misma temporada* — no existe una Platt de backtest 2026 fresca que promover. Ver
+`audit_20260714/val_audit/rebaseline/reporte_delta.md` §8 para las otras dos razones (protocolo y
+magnitud) y para qué sí correspondería hacer.
+
+**Protocolo CLV**: `engine_commit` de `docs/PROTOCOLO_CLV_V1.md` re-apuntado a este rebaseline.
+D0 sigue **pendiente**, así que la ventana no había arrancado y este cambio de motor no reinicia
+ninguna muestra primaria — pero fijar D0 debe ocurrir *después* de este motor, nunca antes.

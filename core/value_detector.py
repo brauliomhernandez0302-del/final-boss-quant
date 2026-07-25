@@ -167,20 +167,44 @@ def bootstrap_confidence_interval(
     rng_seed: Optional[int] = None
 ) -> Tuple[float, float, float]:
     """
-    Vectorized bootstrap CI.  Subsample to 10K max — sufficient for stable
-    CI estimates and 50–100× faster than a Python loop on 500K+ arrays.
+    Bootstrap CI on the mean of `samples`.
+
+    Every current caller (analyze_runline, the totals O/U block below) passes
+    a binary 0/1 indicator array (a market-cover flag per simulation), never
+    continuous data. For that case, resampling-with-replacement n times and
+    taking the mean is distributionally EXACT to Binomial(n, p_hat)/n — so we
+    generate bootstrap means directly from that closed form, at the REAL
+    sample size n, in O(n_bootstrap) instead of building an (n_bootstrap x n)
+    index matrix.
+
+    Found 2026-07-23 (audit_20260714/val_audit/reporte.md VAL-1.4): the
+    previous version subsampled to a FIXED 10,000 draws before bootstrapping,
+    regardless of how many simulations actually ran (500K-5M live). The
+    reported CI width reflected n=10,000's precision, not the real run's —
+    up to ~7-22x too wide (verified empirically), which fed directly into
+    ev_std, sharpe, and the sharpe_component of composite_score. For a
+    non-binary array (no current caller passes one), falls back to the old
+    subsample-then-bootstrap approach — imperfect for very large continuous
+    arrays, but that path isn't exercised today.
     """
     rng = np.random.default_rng(rng_seed)
     n = len(samples)
-    n_sub = min(n, 10_000)
-    sub = (
-        rng.choice(samples, size=n_sub, replace=False).astype(np.float64)
-        if n_sub < n else samples.astype(np.float64)
-    )
-    # One vectorized matrix op: n_bootstrap × n_sub → means
-    idx = rng.integers(0, n_sub, size=(n_bootstrap, n_sub))
-    bootstrap_means = sub[idx].mean(axis=1)
     alpha = 1 - ci_level
+
+    is_binary = bool(np.all(np.isin(samples, [0, 1])))
+    if is_binary:
+        p_hat = float(np.mean(samples))
+        bootstrap_means = rng.binomial(n, p_hat, size=n_bootstrap) / n
+    else:
+        n_sub = min(n, 10_000)
+        sub = (
+            rng.choice(samples, size=n_sub, replace=False).astype(np.float64)
+            if n_sub < n else samples.astype(np.float64)
+        )
+        # One vectorized matrix op: n_bootstrap × n_sub → means
+        idx = rng.integers(0, n_sub, size=(n_bootstrap, n_sub))
+        bootstrap_means = sub[idx].mean(axis=1)
+
     lower = float(np.percentile(bootstrap_means, 100 * alpha / 2))
     upper = float(np.percentile(bootstrap_means, 100 * (1 - alpha / 2)))
     return float(np.mean(samples)), lower, upper
@@ -226,7 +250,17 @@ def kelly_criterion(
     odds: float,
     fractional: float = _cfg.KELLY_FRACTION
 ) -> float:
-    """Calcula fracción Kelly óptima."""
+    """Calcula fracción Kelly óptima.
+
+    Clips to [CONFIG.MIN_KELLY, CONFIG.MAX_KELLY] — the MIN_KELLY floor
+    (1% of bankroll, config.py) can inflate a genuinely marginal edge into a
+    non-marginal stake: a real example (audit_20260714/val_audit/reporte.md
+    VAL-4.4) had full_kelly=1.10%, quarter-Kelly=0.28% (below the floor),
+    floored up to 1.00% — 3.6x the mathematically "correct" fractional-Kelly
+    stake. This is a deliberate, documented design choice (CLAUDE.md), not a
+    bug — see `unfractional_kelly()` below for a way to see the pre-floor
+    number when that distinction matters.
+    """
     if odds <= 1.0 or model_prob <= 0:
         return 0.0
 
@@ -236,6 +270,19 @@ def kelly_criterion(
 
     kelly = np.clip(full_kelly * fractional, CONFIG.MIN_KELLY, CONFIG.MAX_KELLY)
     return round(kelly, 4)
+
+
+def unfractional_kelly(model_prob: float, odds: float) -> float:
+    """Full (non-fractional, non-floored, non-capped) Kelly stake —
+    (p*odds-1)/(odds-1), clipped only to >=0. Exposed alongside
+    kelly_criterion()'s output (see analyze_market_generic) purely for
+    transparency: comparing this against the displayed `kelly` shows
+    whether CONFIG.MIN_KELLY/MAX_KELLY or the fractional multiplier changed
+    what got staked from what the raw math implied. Never used for sizing —
+    kelly_criterion() remains the single source of truth for that."""
+    if odds <= 1.0 or model_prob <= 0:
+        return 0.0
+    return max(0.0, (model_prob * odds - 1) / (odds - 1))
 
 def sharpe_ratio(ev: float, ev_std: float) -> float:
     """Calcula Sharpe ratio."""
@@ -475,6 +522,11 @@ def analyze_market_generic(
     ev_stats = calculate_ev_stats(model_prob, odds, prob_ci, push_prob)
     edge = (model_prob - true_implied) * 100
     kelly = kelly_criterion(model_prob, odds, fractional_kelly)
+    # Transparency only (see unfractional_kelly() docstring, VAL-4.4) — not
+    # used for sizing or anywhere else downstream.
+    kelly_unfractional = round(unfractional_kelly(model_prob, odds), 4)
+    kelly_pre_floor = round(kelly_unfractional * fractional_kelly, 4)
+    kelly_floor_applied = kelly_pre_floor > 0 and kelly > kelly_pre_floor
     sharpe = sharpe_ratio(ev_stats['ev'], ev_stats['ev_std'])
 
     score = calculate_composite_score(
@@ -496,6 +548,8 @@ def analyze_market_generic(
         'ev_std': ev_stats['ev_std'],
         'edge': round(edge, 3),
         'kelly': kelly,
+        'kelly_unfractional': kelly_unfractional,
+        'kelly_floor_applied': kelly_floor_applied,
         'sharpe': sharpe,
         'confidence': round(confidence, 3),
         'composite_score': score['composite_score'],

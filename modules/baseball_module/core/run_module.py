@@ -487,8 +487,16 @@ def run_module(
 
         # ── Kalman-adjusted base lambdas ──────────────────────────────────
         # Offensive Kalman: pulls each team's λ toward its observed run-scoring rate.
+        _lh_pre_kalman, _la_pre_kalman = lh, la
         lh = _learning.get_kalman_lambda_adjustment(home_team, "offense_home", _season, lh)
         la = _learning.get_kalman_lambda_adjustment(away_team, "offense_away", _season, la)
+        # Diagnostic only (added for the React dashboard's λ-waterfall — pure
+        # exposure, no math changed): the implied ratio of this step, so a
+        # UI reading results['metadata'] doesn't have to guess it from
+        # lambdas_history deltas (which also carry the team-bias step below,
+        # inseparably, since that one isn't its own lambdas_history stage).
+        _kalman_ratio_home = lh / _lh_pre_kalman if _lh_pre_kalman else 1.0
+        _kalman_ratio_away = la / _la_pre_kalman if _la_pre_kalman else 1.0
 
         # REVERTIDO (Sprint 2 F8+F6 backtest, commit ad908c5):
         # Kalman defense_home was applied here in Fase 2.1 and removed again after
@@ -560,6 +568,7 @@ def run_module(
             f"bp:{_weights.get('bullpen',1):.3f} "
             f"ctx:{_weights.get('context',1):.3f}"
         )
+
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 2: PITCHER ENGINE — sobre λ park-neutral del TTE
@@ -782,6 +791,30 @@ def run_module(
                     "penalty, not a fabricated guess. Check venue coordinate "
                     "resolution in data_fetchers.py::get_travel_fatigue()."
                 )
+
+        # Pure exposure of values already computed above — nothing here
+        # changes lh/la or any downstream calculation, and this must sit
+        # AFTER PASO 7 so `_stage_factors` is fully populated (it's built up
+        # incrementally, one stage at a time, through PASO 2-7 above).
+        # Added for the React dashboard's λ-waterfall, which was previously
+        # missing three real things: the Kalman-offense step, the team-bias
+        # step (neither is its own lambdas_history entry — both are folded
+        # into whatever becomes the next stage's "_pre" value), and the fact
+        # that every stage's raw engine ratio is NOT what gets applied to λ
+        # once a pipeline weight != 1.0 is learned (λ_out = λ_in × (1 + w ×
+        # (raw − 1)), see PASO 2-7 above) — `raw_ratios` here is the exact
+        # `_stage_factors` dict already used internally for gradient
+        # descent, not a value re-derived/rounded for display, so it also
+        # correctly carries the asymmetric HFA away-side value
+        # (`hfa_on_away_lambda`, the travel-fatigue ratio — a real,
+        # previously-unrepresented stage on the away side, distinct from
+        # `hfa_mult`, which only ever applies to the home team).
+        results['metadata']['pipeline_diagnostics'] = {
+            'kalman_ratio': {'home': _kalman_ratio_home, 'away': _kalman_ratio_away},
+            'team_bias': {'home': _home_bias, 'away': _away_bias},
+            'pipeline_weights': dict(_weights),
+            'raw_ratios': dict(_stage_factors),
+        }
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         # PASO 8: MARKET ODDS (usa las pre-cargadas del selector o las fetcha)

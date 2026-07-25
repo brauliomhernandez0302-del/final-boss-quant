@@ -18,7 +18,11 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from data_fetchers import MLBStatsAPI
+from data_fetchers import MLBStatsAPI, _current_mlb_season
+from modules.baseball_module.context_engine.bullpen_engine import (
+    _fetch_reliever_ids,
+    _fetch_team_roster,
+)
 
 _BASE_URL = "https://statsapi.mlb.com/api/v1"
 _mlb_api = MLBStatsAPI()
@@ -29,9 +33,20 @@ def _today_and_tomorrow() -> tuple[str, str]:
     return now.strftime("%Y-%m-%d"), (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
 
+# Games in these states aren't upcoming/live predictions — a "Final" game
+# has already been decided (no market to evaluate against, hero falls back
+# to Platt-1D-only, best_bets is empty — the whole dashboard degrades to
+# explain a game that's over) and a "Postponed" entry is a rained-out
+# placeholder, not the game that will actually be played (see the makeup
+# game's own, different game_pk). Exact-match on MLB Stats API's
+# `detailedState` — not a substring/fuzzy filter.
+_PICKER_EXCLUDED_STATUSES = {"Final", "Postponed"}
+
+
 def list_scheduled_games() -> List[Dict[str, Any]]:
     """Today + tomorrow's MLB schedule, same window publisher.py itself
-    scans, trimmed to what a game picker needs."""
+    scans, trimmed to what a game picker needs. Excludes games that are
+    already decided or rained out — see _PICKER_EXCLUDED_STATUSES."""
     today, tomorrow = _today_and_tomorrow()
     games = (_mlb_api.get_todays_games(date=today) or []) + \
             (_mlb_api.get_todays_games(date=tomorrow) or [])
@@ -48,7 +63,7 @@ def list_scheduled_games() -> List[Dict[str, Any]]:
             "official_date": g.get("official_date"),
         }
         for g in games
-        if g.get("game_pk")
+        if g.get("game_pk") and g.get("status") not in _PICKER_EXCLUDED_STATUSES
     ]
 
 
@@ -72,15 +87,16 @@ def find_scheduled_game(game_pk: int) -> Optional[Dict[str, Any]]:
     return None
 
 
-def fetch_bullpen_roster(
-    team_id: int, exclude_pitcher_id: Optional[int] = None
+def _fetch_active_pitchers_fallback(
+    team_id: int, exclude_pitcher_id: Optional[int]
 ) -> List[Dict[str, Any]]:
-    """Active-roster pitchers for `team_id`, minus the probable starter.
-
-    NOT "today's confirmed available relievers" — MLB doesn't publish that
-    pre-game, and this project's provenance rule forbids presenting a guess
-    as a confirmed fact. Callers/UI must label this as roster info, not a
-    bullpen-availability confirmation.
+    """Old behavior: every active-roster player listed at position P, minus
+    today's starter. Used ONLY when _fetch_reliever_ids can't classify roles
+    (fetch failure) — same fallback bullpen_engine.py itself falls back to,
+    so a degraded call degrades to the same thing the model degrades to,
+    not to something worse. Known to include non-today's-starter rotation
+    pitchers (starters between outings) — that's exactly the gap this
+    function exists to avoid on the happy path.
     """
     try:
         r = requests.get(
@@ -104,6 +120,40 @@ def fetch_bullpen_roster(
             continue
         out.append({"id": pid, "name": person.get("fullName")})
     return out
+
+
+def fetch_bullpen_roster(
+    team_id: int, exclude_pitcher_id: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """The same relievers bullpen_engine.py actually aggregated into
+    `total_mult` — not an independent approximation of "who's in the
+    bullpen". Reuses bullpen_engine.py's own `_fetch_team_roster` (gameday
+    roster) + `_fetch_reliever_ids` (classifies a player as a reliever iff
+    zero games started this season, one MLB Stats API call per roster
+    pitcher, 24h-cached — same cache the engine itself reads, so this pays
+    no extra cost on a day the pipeline already ran) instead of a cruder
+    "position == P, minus today's starter" filter, which silently included
+    rotation starters not pitching today (confirmed live: Buehler, King,
+    Márquez, Sears all appeared in a bullpen list this way).
+
+    Falls back to the old active-roster/position-P behavior when role
+    classification fails entirely (network/API issue) — never worse than
+    before, but no longer the default path.
+    """
+    season = _current_mlb_season()
+    roster = _fetch_team_roster(team_id, season)
+    if not roster:
+        return _fetch_active_pitchers_fallback(team_id, exclude_pitcher_id)
+
+    reliever_ids = _fetch_reliever_ids(team_id, season, roster)
+    if reliever_ids is None:
+        return _fetch_active_pitchers_fallback(team_id, exclude_pitcher_id)
+
+    return [
+        {"id": pid, "name": name}
+        for pid, name in roster.items()
+        if pid in reliever_ids and pid != exclude_pitcher_id
+    ]
 
 
 def fetch_pitcher_bio(player_id: int) -> Dict[str, Any]:

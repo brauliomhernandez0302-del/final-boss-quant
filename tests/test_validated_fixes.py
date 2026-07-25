@@ -257,13 +257,20 @@ class TestSimulatorInvariants:
         assert result["p_home"] < 0.85, "Even heavy favorites must stay below 85% with NB"
 
     def test_mean_preserved(self):
-        """NB must preserve E[runs] = λ (within noise)."""
+        """NB must preserve E[runs] = λ (within noise).
+
+        model_walkoff=False: isolates this to the NB sampling mechanism —
+        with the walk-off rule on (default), mean_home is intentionally
+        lower than λ_home (home doesn't always bat the 9th; see
+        audit_20260714/val_audit/reporte.md VAL-1.3).
+        """
         lh, la = 4.8, 3.6
         result = monte_carlo_advanced(
             lh=lh, la=la,
             n_max=500_000, block=100_000,
             rng_seed=42, store_samples=True,
             early_stop_se=0.001,
+            model_walkoff=False,
         )
         assert abs(result["mean_home"] - lh) < 0.10, "E[home_runs] must ≈ λ_home"
         assert abs(result["mean_away"] - la) < 0.10, "E[away_runs] must ≈ λ_away"

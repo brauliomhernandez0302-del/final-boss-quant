@@ -719,8 +719,13 @@ class BullpenEngine:
             "avg_ips":        round(avg_ips,         2),
             "innings_weight": round(innings_weight,  3),
             "total_mult":     round(total_mult,      4),
-            "n_pitchers":     n_pitchers,
-            "n_siera_pitchers": siera_info["n_pitchers"],
+            # Three DIFFERENT "how many relievers" counts coexist here and in
+            # api/mlb_presentation.py's UI roster list — found 2026-07-23
+            # (audit_20260714/val_audit/reporte.md VAL-7.2) to be shown
+            # without labels distinguishing them, none guaranteed equal:
+            "n_pitchers":     n_pitchers,        # relievers with Savant xwOBA/barrel coverage (feeds 55%/40%+10% of quality_raw)
+            "n_siera_pitchers": siera_info["n_pitchers"],  # relievers with FanGraphs SIERA/xFIP coverage (feeds 35%/20% of quality_raw)
+            "n_reliever_ids": len(reliever_ids) if reliever_ids is not None else None,  # full classified roster (zero starts this season) BEFORE either coverage filter above — None means role classification failed and this call fell back to the whole roster
         }
 
     @staticmethod

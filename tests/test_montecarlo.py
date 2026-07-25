@@ -45,13 +45,20 @@ class TestProbabilityCalibration:
         assert r["p_home"] + r["p_away"] == pytest.approx(1.0, abs=1e-9)
 
     def test_mean_total_near_sum_of_lambdas(self):
+        # model_walkoff=False: this tests the raw NB sampling mechanism
+        # (does it preserve E[total]=lh+la), not the walk-off game rule —
+        # with the rule on (default), mean_total is intentionally LOWER
+        # than lh+la, since home doesn't always bat the 9th (see
+        # audit_20260714/val_audit/reporte.md VAL-1.3 and the fix in
+        # montecarlo/simulator.py).
         lh, la = 4.5, 3.8
-        r = monte_carlo_advanced(lh=lh, la=la, **FAST)
+        r = monte_carlo_advanced(lh=lh, la=la, model_walkoff=False, **FAST)
         expected = lh + la
         assert r["mean_total"] == pytest.approx(expected, abs=0.15)
 
     def test_mean_home_near_lh(self):
-        r = monte_carlo_advanced(lh=5.0, la=3.5, **FAST)
+        # model_walkoff=False — see test_mean_total_near_sum_of_lambdas.
+        r = monte_carlo_advanced(lh=5.0, la=3.5, model_walkoff=False, **FAST)
         assert r["mean_home"] == pytest.approx(5.0, abs=0.15)
 
     def test_mean_away_near_la(self):
@@ -73,11 +80,17 @@ class TestOverUnder:
         assert total == pytest.approx(1.0, abs=1e-9)
 
     def test_line_at_mean_near_fifty_percent_over(self):
+        # model_walkoff=False: with the rule on, home's runs (and hence
+        # mean_total) are asymmetrically truncated only when home is ahead,
+        # which skews the total distribution around its own mean away from
+        # 50/50 — a real, intentional effect (see VAL-1.3), not what this
+        # test is checking (that a line AT the mean bisects the distribution
+        # for a walkoff-free/symmetric-noise total).
         lh, la = 4.5, 3.8
-        r = monte_carlo_advanced(lh=lh, la=la, **FAST)
+        r = monte_carlo_advanced(lh=lh, la=la, model_walkoff=False, **FAST)
         mean = r["mean_total"]
         # Use the mean as the line → p_over should be close to 50%
-        r2 = monte_carlo_advanced(lh=lh, la=la, total_line=mean, **FAST)
+        r2 = monte_carlo_advanced(lh=lh, la=la, total_line=mean, model_walkoff=False, **FAST)
         assert r2["p_over"] == pytest.approx(0.50, abs=0.08)
 
     def test_low_line_high_p_over(self):
@@ -218,7 +231,10 @@ class TestBivariatePoisson:
 
     def test_marginal_means_preserved_with_negative_rho(self):
         # Bivariate correlation must not shift the marginal means.
-        r = monte_carlo_advanced(lh=4.5, la=3.8, rho_game=-0.30, **FAST)
+        # model_walkoff=False: isolates this to the correlation mechanism
+        # under test — walk-off truncation is a separate, intentional mean
+        # shift (see VAL-1.3), not a correlation artifact.
+        r = monte_carlo_advanced(lh=4.5, la=3.8, rho_game=-0.30, model_walkoff=False, **FAST)
         assert r["mean_home"] == pytest.approx(4.5, abs=0.15)
         assert r["mean_away"] == pytest.approx(3.8, abs=0.15)
 
