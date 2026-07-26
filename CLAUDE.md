@@ -393,4 +393,13 @@ Resultados (los tres primeros, evidencia positiva del fix; el cuarto, el residua
   **Disparador de re-visita: el arranque del motor de derivados**, donde la balanza cambia de lado
   y este evaluador es la balanza (el costo distribucional de r=6.0 ya está medido).
 
+**UI (VAL-6)**: el duelo de abridores (`frontend/src/components/matchup/StartingPitchers.tsx`)
+ahora grafica **aportes = peso × (crudo − 1)**, que suman al delta total, en vez de los cinco
+multiplicadores crudos — la combinación del pitcher engine es lineal, nunca un producto. Los pesos
+los expone el API desde `config.py::PITCHER_ENGINE_WEIGHTS` (`engine_weights.pitcher` en
+`api/server.py`), no se hardcodean en el frontend; el crudo y el peso de cada factor están en el
+detalle de cada fila, la suma se escribe explícita bajo las barras, y el recorte a [0.65, 1.45] se
+marca cuando aplica. Tests: `frontend/src/test/pitcherBreakdown.test.ts` (reproduce los casos
+Sugano/Drohan calculados a mano en VAL-6).
+
 Memoria de la sesión: `project_derived_eval_20260726.md`.

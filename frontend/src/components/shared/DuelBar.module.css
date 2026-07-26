@@ -49,6 +49,20 @@
   background: var(--fbq-border-strong);
 }
 
+/* Signed mode — same direction convention as the λ waterfall:
+   teal raises the affected λ, red lowers it. */
+.fillUp {
+  background: linear-gradient(90deg, var(--fbq-accent-teal-soft), var(--fbq-accent-teal));
+}
+
+.fillDown {
+  background: linear-gradient(90deg, var(--fbq-accent-red), var(--fbq-accent-red));
+}
+
+.fillFlat {
+  background: var(--fbq-border-strong);
+}
+
 .value {
   font-family: var(--fbq-font-mono);
   font-variant-numeric: tabular-nums;

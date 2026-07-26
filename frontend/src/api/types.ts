@@ -73,6 +73,25 @@ export interface PitcherAdjustment {
   total_multiplier: number;
 }
 
+/**
+ * The weights the pitcher engine combined its five sub-factors with
+ * (config.py::PITCHER_ENGINE_WEIGHTS, echoed by the API). The combination is a
+ * weighted sum of deltas, NOT a product (VAL-6):
+ *     total_multiplier = clamp(1 + Σ wᵢ × (factorᵢ − 1), 0.65, 1.45)
+ * The five weights sum to exactly 1.000.
+ */
+export interface PitcherEngineWeights {
+  pitcher_quality: number;
+  pitcher_form: number;
+  pitcher_matchup: number;
+  pitcher_fatigue: number;
+  pitcher_platoon: number;
+}
+
+export interface EngineWeights {
+  pitcher: PitcherEngineWeights;
+}
+
 export interface BullpenAdjustment {
   era: number;
   era_reg: number;
@@ -300,5 +319,7 @@ export interface MatchupPayload {
   prediction: Prediction;
   bullpen_roster: { home: RosterPitcher[]; away: RosterPitcher[] };
   pitcher_bio: { home?: { throws?: string }; away?: { throws?: string } };
+  /** Absent when talking to an API older than the VAL-6 contribution work. */
+  engine_weights?: EngineWeights;
   error?: string;
 }

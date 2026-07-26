@@ -37,6 +37,7 @@ from api.mlb_presentation import (
     find_scheduled_game,
     list_scheduled_games,
 )
+from config import PITCHER_ENGINE_WEIGHTS
 
 app = Flask(__name__)
 
@@ -120,6 +121,16 @@ def matchup(game_pk: int):
             "home": fetch_pitcher_bio(home_pitcher_id) if home_pitcher_id else {},
             "away": fetch_pitcher_bio(away_pitcher_id) if away_pitcher_id else {},
         },
+        # The five sub-factor weights the pitcher engine actually combined with.
+        # metadata.pitcher only carries the resulting multipliers, and
+        # total_multiplier is a WEIGHTED SUM OF DELTAS, never a product
+        # (audit_20260714/val_audit/reporte.md VAL-6):
+        #     total = 1 + Σ wᵢ × (factorᵢ − 1)
+        # Without the weights the UI cannot show per-factor contributions that
+        # actually add up to that total, and would have to hardcode constants
+        # that could silently drift from config.py. Read-only import of the same
+        # dict the engine reads — nothing here touches the engine.
+        "engine_weights": {"pitcher": dict(PITCHER_ENGINE_WEIGHTS)},
     }
     return jsonify(_json_safe(payload))
 

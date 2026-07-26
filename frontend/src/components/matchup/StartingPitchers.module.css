@@ -54,3 +54,98 @@
 .emphasizedRow {
   font-weight: 700;
 }
+
+.roleTag {
+  font-family: var(--fbq-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--fbq-text-muted);
+  margin-top: 2px;
+}
+
+.legend {
+  display: flex;
+  gap: var(--fbq-space-4);
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--fbq-text-muted);
+  margin-bottom: var(--fbq-space-3);
+}
+
+.legendDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+
+.detail {
+  margin: 0 0 4px 0;
+}
+
+.detailSummary {
+  cursor: pointer;
+  font-family: var(--fbq-font-sans);
+  font-size: 10.5px;
+  color: var(--fbq-text-muted);
+  letter-spacing: 0.04em;
+  list-style: none;
+  text-align: center;
+}
+
+.detailSummary::-webkit-details-marker {
+  display: none;
+}
+
+.detailSummary:hover {
+  color: var(--fbq-accent-blue-soft);
+}
+
+.detailBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+  font-family: var(--fbq-font-mono);
+  font-size: 11px;
+  color: var(--fbq-text-secondary);
+  padding-bottom: 4px;
+}
+
+/* The sum written out — the same identity the audit reproduced by hand,
+   rendered live so the bars can be checked against the arithmetic. */
+.identity {
+  margin-top: var(--fbq-space-3);
+  padding-top: var(--fbq-space-2);
+  border-top: 1px dashed var(--fbq-border-hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-x: auto;
+}
+
+.identityRow {
+  display: flex;
+  gap: var(--fbq-space-2);
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.identitySide {
+  font-family: var(--fbq-font-sans);
+  font-size: 10.5px;
+  color: var(--fbq-text-muted);
+  min-width: 44px;
+}
+
+.identityMath {
+  font-family: var(--fbq-font-mono);
+  font-size: 11px;
+  color: var(--fbq-text-secondary);
+}
+
+.clamp {
+  color: var(--fbq-accent-red);
+}
