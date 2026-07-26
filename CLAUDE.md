@@ -403,3 +403,28 @@ marca cuando aplica. Tests: `frontend/src/test/pitcherBreakdown.test.ts` (reprod
 Sugano/Drohan calculados a mano en VAL-6).
 
 Memoria de la sesión: `project_derived_eval_20260726.md`.
+
+### Nota operativa 2026-07-26 — D0 fijado, y el crash que lo tenía bloqueado
+
+**D0 del protocolo de CLV = 2026-07-26** (`docs/PROTOCOLO_CLV_V1.md`, sección Registro). La
+ventana primaria de 6 semanas está corriendo desde ese día; con ella corre el congelamiento del
+motor descrito al inicio de este archivo. V1 quedó cerrado como **(a)** con evidencia fresca de la
+cadena de cron (25/25 juegos analizados el mismo día tienen ambos pins de Pinnacle en
+`game_outcomes`; la cobertura baja a 1-2 días vista es horizonte de mercado, no falla de captura)
+y el keepalive de Windows está instalado y verificado (5 tareas, `Last Result: 0`).
+
+**Qué certifica el congelamiento**: NO el stamp `picks.engine_commit` — ese es el HEAD del repo y
+avanza con cualquier commit de UI o docs. Lo que certifica es que el diff de los paths del motor
+contra el `engine_commit` registrado esté **vacío**; ahora es un test
+(`tests/test_engine_freeze.py`), que también falla con cambios sin commitear en esos paths porque
+el cron corre desde el working tree.
+
+**El bloqueador que lo impedía** (`f4a4bf4`): desde que b3325a5 agregó `kelly_floor_applied`
+(VAL-4.4), ese flag llega como `np.bool_` al `json.dumps` de `pipeline_json` en
+`track_record/publisher.py`. Bajo numpy 2.x la clase se llama literalmente `bool`, así que el
+traceback decía "Object of type bool is not JSON serializable" — imposible de creer y fácil de
+pasar por alto. Las corridas de cron del 2026-07-24 (07:00 y 13:00) y del 2026-07-25 (07:00)
+corrieron el pipeline entero y murieron al guardar: **cero picks publicados esos días**, y por eso
+no existía ningún pick post-b3325a5 con el cual fijar D0. Lección transferible: cuando un cambio
+del motor agrega un campo nuevo a `bet`, ese campo viaja hasta `pipeline_json` — cualquier tipo de
+numpy ahí rompe la publicación **después** de que el pipeline ya hizo todo el trabajo.

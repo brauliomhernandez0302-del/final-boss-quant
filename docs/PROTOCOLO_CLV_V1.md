@@ -54,7 +54,36 @@ Desde D0, los umbrales y definiciones de este documento son inmutables. Solo se 
     reiniciar muestra primaria**: D0 seguía pendiente al momento del cambio, así que la ventana
     no había arrancado y no existían picks primarios que invalidar. La regla de "cambio de motor
     a media ventana reinicia la muestra" no se activó porque no había ventana corriendo.
-- D0: pendiente — completar cuando V1(a) + keepalive estén verificados. **Debe fijarse después
-  de este engine_commit, nunca antes**: arrancar la ventana con el motor viejo y cambiarlo a
-  mitad es exactamente el escenario que reinicia la primaria.
-- Clarificaciones: (ninguna)
+- **D0 = 2026-07-26** (fijado ese mismo día). Cumple las dos condiciones y es posterior al
+  engine_commit de arriba, como exige la regla:
+  - **(i) V1 cerrado como (a) — telemetría de pins certificada.** Evidencia fresca de la cadena
+    de cron, no de llamadas de sesión: en `game_outcomes(source='live')`, **25 de 25** juegos
+    analizados el mismo día de su horario tienen `ml_home_pin` y `ml_away_pin` poblados (19/19 el
+    2026-07-19, 5/5 el 2026-07-23, 1/1 el 2026-07-25), más un lote completo de 15/15 para juegos
+    del día siguiente el 2026-07-20. La cobertura baja en juegos a 1-2 días vista (31/72 en total)
+    queda explicada por horizonte de análisis —el libro todavía no postea `h2h`— y no por una
+    falla de captura: la misma tubería, el mismo código, pobla al 100% cuando el mercado existe.
+    Esto es lo que el reporte del Commit 4 de la Fase 2A dejó pendiente de confirmar con un dato
+    fresco. Residual honesto, registrado y no bloqueante: el lote de 15 del 2026-07-21 13:03 PDT
+    salió con 0 pins siendo todos de día siguiente — consistente con horizonte, aunque un lote
+    entero en cero se parece más a una pasada sin odds que a 15 ausencias independientes.
+  - **(ii) Keepalive de Windows instalado y verificado.** Las cinco tareas
+    (`WSL Keepalive FBQ 0655/0910/1255/1525/1825`) responden `Scheduled Task State: Enabled`,
+    `Last Result: 0` y próxima ejecución agendada, consultadas con `schtasks.exe /query /v` desde
+    WSL el 2026-07-26.
+  - **Primeros picks primarios**: 25 picks publicados el 2026-07-26 entre 14:00:14 y 14:04:50 UTC
+    (`picks` #144–#168), todos `publish_mode='quarantine'`, todos con `decision_prob` poblado.
+    Son los primeros picks posteriores al engine_commit: la cadena de cron llevaba desde el
+    2026-07-23 sin publicar por un crash de serialización en el publisher, ajeno al motor y
+    arreglado en `f4a4bf4` (ver Clarificaciones).
+- Clarificaciones:
+  - **2026-07-26 — qué certifica el congelamiento del motor (y qué no).** El stamp
+    `picks.engine_commit` es el HEAD del repo (`track_record/publisher.py::_get_engine_commit()`),
+    así que avanza con cualquier commit —UI, docs, tests— sin que el motor haya cambiado: los
+    picks de D0 quedaron estampados `840aa6e`, que es el commit de docs cuyo padre es el
+    `engine_commit` registrado y que no toca una sola línea de motor. Lo que certifica la
+    condición de validez #1 es el diff de los paths del motor contra el `engine_commit`
+    registrado, y tiene que estar vacío. Verificado el 2026-07-26 (0 archivos) y automatizado en
+    `tests/test_engine_freeze.py`, que además falla si hay cambios sin commitear en esos paths
+    (el cron corre desde el working tree, no desde HEAD). No cambia ningún número ni definición
+    del protocolo: aclara con qué instrumento se comprueba una condición ya escrita.
