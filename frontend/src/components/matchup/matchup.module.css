@@ -13,17 +13,52 @@
 }
 
 .card {
+  position: relative;
   background: var(--fbq-bg-card);
   border: 1px solid var(--fbq-border-hairline);
   border-radius: var(--fbq-radius-md);
   padding: var(--fbq-space-4);
+  backdrop-filter: blur(var(--fbq-blur-card));
+  -webkit-backdrop-filter: blur(var(--fbq-blur-card));
+  box-shadow: var(--fbq-shadow-card);
+  overflow: hidden;
+  transition:
+    border-color var(--fbq-dur-med) var(--fbq-ease),
+    box-shadow var(--fbq-dur-med) var(--fbq-ease),
+    transform var(--fbq-dur-med) var(--fbq-ease),
+    background-color var(--fbq-dur-med) var(--fbq-ease);
+}
+
+/* Top accent bar — the HUD signature: every card is "instrument-panel",
+   not a generic rounded rectangle. */
+.card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--fbq-accent-blue) 0%, transparent 75%);
+  opacity: 0.7;
+}
+
+.card:hover {
+  border-color: var(--fbq-border-strong);
+  background: var(--fbq-bg-card-elevated);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--fbq-shadow-elevated);
+  }
 }
 
 .teamLabel {
   font-family: var(--fbq-font-sans);
-  font-size: 12px;
+  font-size: var(--fbq-size-label);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--fbq-tracking-label);
   text-transform: uppercase;
   color: var(--fbq-text-secondary);
   margin-bottom: var(--fbq-space-3);
@@ -33,8 +68,13 @@
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  padding: 3px 0;
-  font-size: 13px;
+  padding: 5px 0;
+  font-size: var(--fbq-size-body);
+  border-bottom: 1px solid transparent;
+}
+
+.statRow + .statRow {
+  border-top: 1px solid var(--fbq-border-hairline);
 }
 
 .statLabel {
@@ -45,6 +85,7 @@
   font-family: var(--fbq-font-mono);
   color: var(--fbq-text-primary);
   font-weight: 600;
+  font-size: var(--fbq-size-data);
 }
 
 .playerRow {
@@ -57,17 +98,19 @@
   font-family: var(--fbq-font-sans);
   color: var(--fbq-text-primary);
   font-size: 14px;
+  font-weight: 500;
 }
 
 .playerMeta {
   font-family: var(--fbq-font-mono);
   color: var(--fbq-text-muted);
-  font-size: 11px;
+  font-size: var(--fbq-size-micro);
+  letter-spacing: var(--fbq-tracking-micro);
 }
 
 .emptyNote {
   color: var(--fbq-text-muted);
-  font-size: 13px;
+  font-size: var(--fbq-size-body);
   font-style: italic;
 }
 

@@ -16,6 +16,47 @@ interface Props {
 // is labeled alongside it, never silently dropped. See CLAUDE.md's estado
 // actual section and docs/PROTOCOLO_CLV_V1.md for the full history of this
 // bug class.
+// Two real probabilities (model, market-decision) on one 0-100% axis with
+// the gap between them shaded — that gap IS the edge the pipeline is
+// betting on, made visible instead of left as two numbers to subtract.
+function EdgeOverlay({ modelHome, marketHome }: { modelHome: number; marketHome: number }) {
+  const lo = Math.min(modelHome, marketHome) * 100;
+  const hi = Math.max(modelHome, marketHome) * 100;
+  const gapPts = (marketHome - modelHome) * 100;
+
+  return (
+    <div className={styles.edgeOverlay}>
+      <div className={styles.edgeLabels}>
+        <span>0%</span>
+        <span>
+          gap: {gapPts >= 0 ? "+" : ""}
+          {gapPts.toFixed(1)}pp
+        </span>
+        <span>100%</span>
+      </div>
+      <div className={styles.edgeTrack}>
+        <div className={styles.edgeBaseline} />
+        <div className={styles.edgeGap} style={{ left: `${lo}%`, width: `${hi - lo}%` }} />
+        <div className={`${styles.edgeMarker} ${styles.edgeMarkerModel}`} style={{ left: `${modelHome * 100}%` }} />
+        <div
+          className={`${styles.edgeMarker} ${styles.edgeMarkerMarket}`}
+          style={{ left: `${marketHome * 100}%` }}
+        />
+      </div>
+      <div className={styles.edgeLegend}>
+        <span>
+          <span className={styles.edgeLegendDot} style={{ background: "var(--fbq-accent-blue-soft)" }} />
+          marca: modelo
+        </span>
+        <span>
+          <span className={styles.edgeLegendDot} style={{ background: "var(--fbq-accent-amber)" }} />
+          marca: decisión (home)
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function CoreMetrics({ prediction, schedule }: Props) {
   const { probabilities, lambdas_history } = prediction;
   const moneyline = prediction.metadata.value?.markets?.moneyline;
@@ -57,6 +98,10 @@ export function CoreMetrics({ prediction, schedule }: Props) {
             <span className={styles.tag}>MODELO · Platt-1D (sin línea Pinnacle para ajustar)</span>
           )}
         </div>
+
+        {hasDecisionLayer && (
+          <EdgeOverlay modelHome={modelHome} marketHome={decisionHome} />
+        )}
       </div>
 
       <div className={matchupStyles.grid2}>

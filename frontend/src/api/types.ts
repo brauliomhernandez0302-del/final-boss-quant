@@ -75,14 +75,25 @@ export interface PitcherAdjustment {
 
 export interface BullpenAdjustment {
   era: number;
+  era_reg: number;
   effective_era: number;
   quality_mult: number;
   workload_mult: number;
   total_mult: number;
+  // Three different "how many relievers" counts — none guaranteed equal,
+  // see audit_20260714/val_audit/reporte.md VAL-7.2. n_pitchers = Savant
+  // xwOBA/barrel coverage; n_siera_pitchers = FanGraphs SIERA/xFIP coverage;
+  // n_reliever_ids = full classified roster before either coverage filter
+  // (null when role classification itself failed, not just under-covered).
   n_pitchers: number;
+  n_siera_pitchers?: number;
+  n_reliever_ids?: number | null;
   tier_label: string;
   used_siera: boolean;
   siera_ag: number | null;
+  xwoba_ag?: number;
+  k_bb?: number;
+  ip_3d?: number;
 }
 
 export interface ValueBet {
@@ -137,17 +148,131 @@ export interface ValueMetadata {
   };
 }
 
+export interface ContextualAdjustment {
+  home_rest_days: number;
+  home_rest_mult: number;
+  home_rest_reason: string;
+  away_rest_days: number;
+  away_rest_mult: number;
+  away_rest_reason: string;
+}
+
+export interface TeamDefenseAdjustment {
+  der_observed: number;
+  der_regressed: number;
+  der_factor: number;
+  oaa: number;
+  oaa_factor: number;
+  bip_sample: number;
+  games_played_est: number;
+  final_mult: number;
+  raw_mult: number;
+}
+
+export interface DefenseAdjustment {
+  home_defense: TeamDefenseAdjustment;
+  away_defense: TeamDefenseAdjustment;
+  // Cross-mapped: the defense fields on this side apply to the OTHER team's
+  // batting lambda (a team plays defense while its opponent bats).
+  home_mult_on_away: number;
+  away_mult_on_home: number;
+}
+
+export interface ParkWeatherAdjustment {
+  park_name: string;
+  park_factor: number;
+  // Omitted entirely by the pipeline for closed-roof games (e.g. domes) —
+  // weather doesn't apply, so these are NOT guaranteed present even though
+  // temp_mult/wind_mult/rain_mult always are (they default to neutral 1.0).
+  conditions?: string;
+  temp_f?: number;
+  temp_mult: number;
+  wind_mph?: number;
+  wind_dir?: number;
+  wind_mult: number;
+  rain_mult: number;
+  weather_mult: number;
+  total_mult: number;
+  roof_closed: boolean;
+  postponement_risk: boolean;
+  weather_source?: string;
+}
+
+export interface HfaAdjustment {
+  hfa_mult: number;
+  hfa_boost_runs: number;
+  uniform_home_mult: number;
+  travel_penalty: number;
+  travel_source?: string;
+  park_name: string;
+}
+
+export interface TrueTalentAdjustment {
+  team_id: number;
+  team_name: string;
+  season: number;
+  lambda_talent: number;
+  lambda_prior: number;
+  lambda_cur: number;
+  prior_weight: number;
+  composite: number;
+  factors: { f_xwoba: number; f_barrel: number; f_plate: number };
+  metrics: {
+    xwoba_raw: number;
+    xwoba_regressed: number;
+    barrel_pa_raw: number;
+    barrel_regressed: number;
+    bb_pct: number;
+    k_pct: number;
+    wrc_plus_approx: number;
+  };
+  lineup_confirmed: boolean;
+  n_statcast_players: number;
+  n_plate_discipline_players: number;
+}
+
+export interface PipelineDiagnostics {
+  // The Kalman-offense step's own ratio (post/pre) — pulls TTE's talent λ
+  // toward the team's observed run-scoring rate. Not a multiplier any
+  // engine reports; run_module.py computes it locally and this is its
+  // first exposure outside a log line.
+  kalman_ratio: { home: number; away: number };
+  // LearningEngine.compute_team_bias_kalman_adjusted() — applied right
+  // after Kalman, before any of the 6 downstream engines, and never its
+  // own lambdas_history stage (folded into what becomes that stage's
+  // "_pre" value).
+  team_bias: { home: number; away: number };
+  // Learned per-stage weight w in λ_out = λ_in × (1 + w × (raw_ratio − 1)).
+  // Keys match _STAGE_KEYS in learning_engine.py.
+  pipeline_weights: {
+    pitcher: number;
+    context: number;
+    bullpen: number;
+    park: number;
+    defense: number;
+    hfa: number;
+  };
+  // run_module.py's own `_stage_factors` dict, exposed verbatim — the exact
+  // raw ratio each stage computed (not re-derived/rounded for display), key
+  // format "{stage}_on_{home,away}_lambda". Includes the away-side HFA key
+  // (travel-fatigue ratio) even though there's no "hfa_away" multiplier
+  // anywhere else in metadata — hfa.hfa_mult only ever covers the home
+  // crowd-boost side.
+  raw_ratios: Record<string, number>;
+}
+
 export interface PredictionMetadata {
   pitcher?: { pitcher_home: PitcherAdjustment; pitcher_away: PitcherAdjustment };
   bullpen?: { bullpen_home: BullpenAdjustment; bullpen_away: BullpenAdjustment };
-  contextual?: Record<string, unknown>;
-  defense?: Record<string, unknown>;
-  hfa?: Record<string, unknown>;
-  park_weather?: Record<string, unknown>;
-  tte_home?: Record<string, unknown>;
-  tte_away?: Record<string, unknown>;
+  contextual?: ContextualAdjustment;
+  defense?: DefenseAdjustment;
+  hfa?: HfaAdjustment;
+  park_weather?: ParkWeatherAdjustment;
+  tte_home?: TrueTalentAdjustment;
+  tte_away?: TrueTalentAdjustment;
   market_odds?: Record<string, unknown>;
   value?: ValueMetadata;
+  pipeline_diagnostics?: PipelineDiagnostics;
 }
 
 export interface Prediction {

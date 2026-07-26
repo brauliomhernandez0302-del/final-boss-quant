@@ -2,14 +2,15 @@
   display: flex;
   align-items: center;
   gap: var(--fbq-space-3);
-  margin-bottom: var(--fbq-space-6);
+  margin-bottom: var(--fbq-space-7);
 }
 
 .pickerLabel {
-  font-size: 12px;
+  font-size: var(--fbq-size-label);
   color: var(--fbq-text-secondary);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--fbq-tracking-label);
+  font-weight: 600;
 }
 
 .select {
@@ -17,18 +18,25 @@
   border: 1px solid var(--fbq-border-hairline);
   color: var(--fbq-text-primary);
   border-radius: var(--fbq-radius-sm);
-  padding: 6px 10px;
+  padding: 8px 12px;
   font-family: var(--fbq-font-sans);
-  font-size: 13px;
-  min-width: 320px;
+  font-size: var(--fbq-size-body);
+  min-width: 340px;
+  transition: border-color var(--fbq-dur-fast) var(--fbq-ease);
+}
+
+.select:hover,
+.select:focus {
+  border-color: var(--fbq-border-strong);
+  outline: none;
 }
 
 .status {
   color: var(--fbq-text-muted);
-  font-size: 13px;
+  font-size: var(--fbq-size-body);
 }
 
 .statusError {
   color: var(--fbq-accent-red);
-  font-size: 13px;
+  font-size: var(--fbq-size-body);
 }

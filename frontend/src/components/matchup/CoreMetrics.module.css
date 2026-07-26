@@ -1,13 +1,13 @@
 .wrap {
   display: flex;
   flex-direction: column;
-  gap: var(--fbq-space-5);
+  gap: var(--fbq-space-6);
 }
 
 .probBlock {
   display: flex;
   flex-direction: column;
-  gap: var(--fbq-space-2);
+  gap: var(--fbq-space-3);
 }
 
 .layerNote {
@@ -19,8 +19,81 @@
 
 .tag {
   font-family: var(--fbq-font-sans);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-size: var(--fbq-size-micro);
+  font-weight: 700;
+  letter-spacing: var(--fbq-tracking-micro);
+  text-transform: uppercase;
   color: var(--fbq-accent-blue-soft);
+}
+
+.edgeOverlay {
+  margin-top: 2px;
+}
+
+.edgeLabels {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--fbq-font-mono);
+  font-size: 10.5px;
+  color: var(--fbq-text-muted);
+  margin-bottom: 4px;
+}
+
+.edgeTrack {
+  position: relative;
+  height: 22px;
+}
+
+.edgeBaseline {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--fbq-border-hairline);
+  border-radius: 1px;
+}
+
+.edgeGap {
+  position: absolute;
+  top: 8px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 177, 48, 0.28);
+  border: 1px solid rgba(255, 177, 48, 0.5);
+}
+
+.edgeMarker {
+  position: absolute;
+  top: 3px;
+  width: 2px;
+  height: 16px;
+  transform: translateX(-1px);
+}
+
+.edgeMarkerModel {
+  background: var(--fbq-accent-blue-soft);
+  box-shadow: var(--fbq-glow-blue-sm);
+}
+
+.edgeMarkerMarket {
+  background: var(--fbq-accent-amber);
+  box-shadow: var(--fbq-glow-amber);
+}
+
+.edgeLegend {
+  display: flex;
+  gap: var(--fbq-space-4);
+  font-family: var(--fbq-font-sans);
+  font-size: 10.5px;
+  color: var(--fbq-text-muted);
+  margin-top: 4px;
+}
+
+.edgeLegendDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 4px;
 }

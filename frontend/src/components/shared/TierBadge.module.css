@@ -2,12 +2,12 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 8px;
+  padding: 3px 10px;
   border-radius: var(--fbq-radius-sm);
   border: 1px solid var(--fbq-border-hairline);
   background: var(--fbq-bg-inset);
   font-family: var(--fbq-font-sans);
-  font-size: 12px;
+  font-size: var(--fbq-size-micro);
   line-height: 1.6;
   white-space: nowrap;
 }
@@ -20,11 +20,21 @@
 .label {
   color: var(--fbq-text-secondary);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-size: 11px;
+  letter-spacing: var(--fbq-tracking-micro);
+  font-size: 10px;
 }
 
-.gradeS .grade { color: var(--fbq-tier-s); }
-.gradeA .grade { color: var(--fbq-tier-a); }
-.gradeB .grade { color: var(--fbq-tier-b); }
+/* Every grade gets the SAME badge size/weight — only color + a matched
+   hairline glow differ. An S-tier pick is a row, not a trophy: the
+   de-leaked backtest loses money in the high-edge bucket, so nothing here
+   should read as "bet this one harder". */
+.gradeS { border-color: rgba(255, 177, 48, 0.3); }
+.gradeS .grade { color: var(--fbq-tier-s); text-shadow: 0 0 8px rgba(255, 177, 48, 0.4); }
+
+.gradeA { border-color: rgba(47, 227, 180, 0.3); }
+.gradeA .grade { color: var(--fbq-tier-a); text-shadow: 0 0 8px rgba(47, 227, 180, 0.4); }
+
+.gradeB { border-color: rgba(61, 142, 255, 0.3); }
+.gradeB .grade { color: var(--fbq-tier-b); text-shadow: 0 0 8px rgba(61, 142, 255, 0.4); }
+
 .gradeC .grade { color: var(--fbq-tier-c); }

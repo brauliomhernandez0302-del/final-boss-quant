@@ -1,11 +1,27 @@
 .section {
-  border-top: 1px solid var(--fbq-border-hairline);
-  padding: var(--fbq-space-5) 0;
+  position: relative;
+  padding: var(--fbq-space-6) 0;
 }
 
 .section:first-child {
-  border-top: none;
   padding-top: 0;
+}
+
+/* Gradient divider that fades at both ends — not a flat solid rule. */
+.section:not(:first-child)::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--fbq-border-strong) 15%,
+    var(--fbq-border-strong) 85%,
+    transparent 100%
+  );
 }
 
 .header {
@@ -30,12 +46,17 @@
 
 .title {
   font-family: var(--fbq-font-sans);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
+  font-size: var(--fbq-size-label);
+  font-weight: 700;
+  letter-spacing: var(--fbq-tracking-label);
   text-transform: uppercase;
   color: var(--fbq-text-secondary);
   margin: 0;
+}
+
+.marker {
+  color: var(--fbq-accent-blue);
+  text-shadow: var(--fbq-glow-blue-sm);
 }
 
 .body {

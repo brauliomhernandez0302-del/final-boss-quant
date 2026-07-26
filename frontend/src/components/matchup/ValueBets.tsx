@@ -1,4 +1,5 @@
 import { TierBadge } from "../shared/TierBadge";
+import { DirectionalBar } from "../shared/DirectionalBar";
 import type { Prediction } from "../../api/types";
 import matchupStyles from "./matchup.module.css";
 import styles from "./ValueBets.module.css";
@@ -47,10 +48,13 @@ export function ValueBets({ prediction }: Props) {
             <div key={`${bet.market}-${bet.side}-${bet.rank}`} className={styles.row}>
               <span className={styles.market}>{bet.side || bet.market}</span>
               <TierBadge grade={bet.tier_grade} label={stripEmoji(bet.tier)} />
-              <span className={`fbq-num ${styles.ev} ${bet.ev >= 0 ? styles.positive : styles.negative}`}>
-                {bet.ev >= 0 ? "+" : ""}
-                {bet.ev.toFixed(2)}%
-              </span>
+              <DirectionalBar
+                label=""
+                value={bet.ev}
+                center={0}
+                domainHalf={10}
+                formatValue={(v) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`}
+              />
               <span className="fbq-num">{(bet.kelly * 100).toFixed(2)}%</span>
               <span className="fbq-num">{bet.odds.toFixed(2)}</span>
             </div>
