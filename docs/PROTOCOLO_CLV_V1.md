@@ -54,8 +54,37 @@ Desde D0, los umbrales y definiciones de este documento son inmutables. Solo se 
     reiniciar muestra primaria**: D0 seguía pendiente al momento del cambio, así que la ventana
     no había arrancado y no existían picks primarios que invalidar. La regla de "cambio de motor
     a media ventana reinicia la muestra" no se activó porque no había ventana corriendo.
-- **D0 = 2026-07-26** (fijado ese mismo día). Cumple las dos condiciones y es posterior al
-  engine_commit de arriba, como exige la regla:
+- ⚠️ **D0 = 2026-07-26 — SUPERSEDED el mismo 2026-07-26, día 1.** Se conserva abajo tal como se
+  escribió, no se borra: es el registro de que la ventana arrancó y de por qué no siguió. **No se
+  fija un D0 nuevo acá** — lo fija `PROTOCOLO_CLV_V2`, que el dueño escribe con Fable una vez que
+  la captura de derivados lleve ~2 días corriendo de verdad. Hasta entonces no hay ventana
+  primaria abierta y **los picks que se sigan publicando son shakedown, no muestra primaria**.
+
+  Dos razones, ambas medidas ese mismo día (reiniciar en día 1 no cuesta nada; en semana 4 sí):
+
+  1. **La muestra primaria ML-only se muere de hambre.** La métrica primaria se define sobre el
+     devig de Pinnacle de ambos lados, que solo existe para h2h — así que la primaria ES el
+     subconjunto moneyline, no todos los picks. En D0 fueron **3 de 25 (12%)**: RUNLINE 13 (52%),
+     TOTAL 9 (36%), MONEYLINE 3. Sobre los 141 de cuarentena, MONEYLINE 36 (25.5%). ML por día
+     publicado: 1, 2, 19, 11, 3 (media 7.2, mediana 3). Proyectado a las 6 semanas con la tasa de
+     captura observada: ~257 picks ML usables al ritmo medio y ~107 al ritmo mediano, contra el
+     objetivo pre-registrado de **n≥300** (el ritmo mediano ni siquiera alcanza el n≥150 del
+     kill-switch). Medido además: atrición de ML del **24.2%** (25 de 33 maduros con `clv_pct`),
+     por encima del 15% que este mismo protocolo fija como "problema del instrumento".
+  2. **Fuga de captura en los mercados derivados.** `track_record/capture_closing_lines.py` solo
+     tenía ramas ML_HOME/ML_AWAY: cada pick de runline o total guardaba precio de cierre NULL al
+     lado del par de Pinnacle de *moneyline*, y el cierre es irrecuperable una vez que empieza el
+     juego. Estado al detectarlo: RUNLINE 53 picks → 0 con cierre; TOTAL 52 → 0. Corregido el
+     mismo día en `b629f55` (el fetcher ya pedía `totals`/`spreads` y tiraba el precio de
+     Pinnacle: costo cero de quota). Primera captura real de derivados: 2026-07-26, 24 de 24
+     picks pendientes, incluidos 12 de runline y 9 de total, todos con par de Pinnacle
+     devig-able. Cobertura repetible con `scripts/closing_capture_coverage.py`.
+
+  **El congelamiento del motor NO se levanta.** Nada de esto tocó motor, simulador, `run_module`,
+  `value_detector` ni `learning_engine`: el `engine_commit` de arriba sigue vigente y verificado
+  por `tests/test_engine_freeze.py`. "SUPERSEDED" aplica a la ventana y a su D0, no al freeze.
+
+- D0 original, tal como se escribió el 2026-07-26 (histórico, ya no vigente):
   - **(i) V1 cerrado como (a) — telemetría de pins certificada.** Evidencia fresca de la cadena
     de cron, no de llamadas de sesión: en `game_outcomes(source='live')`, **25 de 25** juegos
     analizados el mismo día de su horario tienen `ml_home_pin` y `ml_away_pin` poblados (19/19 el

@@ -406,9 +406,10 @@ Memoria de la sesión: `project_derived_eval_20260726.md`.
 
 ### Nota operativa 2026-07-26 — D0 fijado, y el crash que lo tenía bloqueado
 
-**D0 del protocolo de CLV = 2026-07-26** (`docs/PROTOCOLO_CLV_V1.md`, sección Registro). La
-ventana primaria de 6 semanas está corriendo desde ese día; con ella corre el congelamiento del
-motor descrito al inicio de este archivo. V1 quedó cerrado como **(a)** con evidencia fresca de la
+**D0 del protocolo de CLV = 2026-07-26 — y marcado SUPERSEDED ese mismo día** (ver el Registro de
+`docs/PROTOCOLO_CLV_V1.md`, y la nota del 2026-07-26 más abajo). **No hay ventana primaria abierta
+hoy**: los picks que se sigan publicando son shakedown hasta que `PROTOCOLO_CLV_V2` fije un D0
+nuevo. **El congelamiento del motor SÍ sigue vigente** — no se levantó nada. V1 quedó cerrado como **(a)** con evidencia fresca de la
 cadena de cron (25/25 juegos analizados el mismo día tienen ambos pins de Pinnacle en
 `game_outcomes`; la cobertura baja a 1-2 días vista es horizonte de mercado, no falla de captura)
 y el keepalive de Windows está instalado y verificado (5 tareas, `Last Result: 0`).
@@ -428,3 +429,36 @@ corrieron el pipeline entero y murieron al guardar: **cero picks publicados esos
 no existía ningún pick post-b3325a5 con el cual fijar D0. Lección transferible: cuando un cambio
 del motor agrega un campo nuevo a `bet`, ese campo viaja hasta `pipeline_json` — cualquier tipo de
 numpy ahí rompe la publicación **después** de que el pipeline ya hizo todo el trabajo.
+
+### Actualización 2026-07-26 (tarde) — D0 SUPERSEDED en día 1 + fuga de captura de derivados
+
+**No hay ventana de CLV corriendo.** D0 se fijó y se marcó SUPERSEDED el mismo día, con dos
+razones medidas (detalle completo en el Registro de `docs/PROTOCOLO_CLV_V1.md`):
+
+1. **La muestra primaria ML-only no da el número.** La métrica primaria se define sobre el devig
+   de Pinnacle de ambos lados, que solo existe para h2h: la primaria ES el subconjunto moneyline.
+   En D0 fueron 3 de 25 picks (12%); sobre los 141 de cuarentena, 25.5%. Proyección a 6 semanas:
+   ~257 picks ML usables al ritmo medio, ~107 al mediano, contra el objetivo pre-registrado de
+   n≥300. Atrición de ML medida: 24.2%, sobre el 15% que el propio protocolo llama "problema del
+   instrumento".
+2. **Los derivados no tenían cierre capturado en absoluto.** `capture_closing_lines.py` solo tenía
+   ramas ML: RUNLINE 53 picks → 0 con precio de cierre, TOTAL 52 → 0, y el cierre es irrecuperable
+   una vez que empieza el juego.
+
+**Arreglado el mismo día (`b629f55`), fuera del camino congelado**: `odds_fetcher.py` ya pedía
+`totals`/`spreads` y extraía solo el PUNTO de Pinnacle, nunca su precio — ahora guarda el par de
+precios de Pinnacle para total y runline (aditivo, cero quota extra, ninguna clave existente
+cambia). `capture_closing_lines.py` tiene ramas OVER/UNDER/RL_HOME/RL_AWAY, y `picks` tiene
+`closing_pin_side`/`closing_pin_opposite`/`closing_point`/`closing_point_moved` — el par del
+mercado del PROPIO pick (lo que un devig necesita) y la marca de movimiento de línea, porque un
+total que cerró en 9.0 no gradúa un pick tomado a 8.5. `clv_pct` sigue ML-only a propósito: qué
+es CLV para un derivado lo define V2; lo que cambió es que ya no falta el dato para computarlo
+después. Nada histórico se recomputó — los derivados previos son pérdida documentada.
+
+**Estado tras la primera barrida real con el arreglo** (2026-07-26, 24/24 picks pendientes):
+RUNLINE 12 y TOTAL 9 con precio de cierre y par de Pinnacle devig-able, donde antes había 0 y 0;
+2 de esos 9 totales ya cerraron en un punto distinto al que se tomaron. Instrumento repetible:
+`scripts/closing_capture_coverage.py` (solo lectura, `--live` para proyectar la barrida actual).
+
+**Pendiente, del dueño con Fable**: escribir `PROTOCOLO_CLV_V2` y fijar D0 nuevo, después de ~2
+días de captura de derivados corriendo. Hasta entonces no se cita ninguna ventana como abierta.
