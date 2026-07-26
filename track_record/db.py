@@ -247,6 +247,33 @@ class TrackRecordDB:
             except Exception:
                 pass  # column already exists
 
+            # 2026-07-26 — closing capture for DERIVED markets (runline/total).
+            # Until today `closing_odds_decimal` was only ever written for
+            # ML_HOME/ML_AWAY, and `closing_pin_home`/`closing_pin_away` hold
+            # the MONEYLINE Pinnacle pair regardless of the pick's market — so
+            # a runline or total pick had 100% attrition: nothing stored could
+            # grade it. These columns store the close of the pick's OWN market:
+            #   closing_pin_side / closing_pin_opposite — Pinnacle's two-sided
+            #     price for that market (h2h pair for ML, over/under for a
+            #     total, home/away spread for a runline), i.e. what a devig
+            #     needs, on the side the pick actually took and its opposite.
+            #   closing_point — the line the close was quoted at (NULL for ML).
+            #   closing_point_moved — 1 when that point differs from the point
+            #     the pick was taken at. A total closed at 9.0 does NOT grade a
+            #     pick taken at 8.5; this flag makes that non-comparability
+            #     explicit in the data instead of leaving it to be discovered
+            #     later by whoever runs the analysis.
+            for stmt in (
+                "ALTER TABLE picks ADD COLUMN closing_pin_side REAL",
+                "ALTER TABLE picks ADD COLUMN closing_pin_opposite REAL",
+                "ALTER TABLE picks ADD COLUMN closing_point REAL",
+                "ALTER TABLE picks ADD COLUMN closing_point_moved INTEGER",
+            ):
+                try:
+                    conn.execute(stmt)
+                except Exception:
+                    pass  # column already exists
+
     # ------------------------------------------------------------------ writes
 
     def publish_pick(
@@ -409,17 +436,30 @@ class TrackRecordDB:
         closing_pin_home: Optional[float] = None,
         closing_pin_away: Optional[float] = None,
         closing_all_books_json: Optional[str] = None,
+        closing_pin_side: Optional[float] = None,
+        closing_pin_opposite: Optional[float] = None,
+        closing_point: Optional[float] = None,
         captured_at: Optional[str] = None,
     ) -> bool:
         """Record the closing line for a pick and compute clv_pct.
 
         clv_pct = (odds_decimal_at_publish / closing_price_same_side - 1) * 100
         — positive means the pick was published at a better (higher decimal)
-        price than the market closed at, i.e. beat the close. Only computed
-        for ML_HOME/ML_AWAY, where the Pinnacle closing price on the matching
-        side is unambiguous; other markets store the closing snapshot for
-        future use but leave clv_pct NULL (v1 scope — see track_record
-        project memory).
+        price than the market closed at, i.e. beat the close. Still computed
+        ONLY for ML_HOME/ML_AWAY: what a CLV means for a runline or a total
+        (which reference price, how a line move is treated) is a protocol
+        decision, and PROTOCOLO_CLV_V2 hasn't been written yet.
+
+        What changed on 2026-07-26 is that derived markets are no longer
+        DATA-less while that decision is pending: `closing_odds_decimal`,
+        `closing_pin_side`/`closing_pin_opposite` and `closing_point` are now
+        stored for every family, so clv_pct for derivatives can be computed
+        retroactively from stored columns once V2 defines it. Before today
+        nothing was stored at all for them and the close was gone for good.
+
+        closing_point_moved is derived here, not passed in: the published
+        point lives in this table (`total_line` for totals, `runline_point`
+        for runlines), so the comparison belongs where both numbers are.
 
         "Last pre-start capture wins" (2026-07-19, Fase 2A commit 3): this
         OVERWRITES any prior capture, not just the first one — the caller
@@ -437,7 +477,8 @@ class TrackRecordDB:
         ts = captured_at or datetime.now(timezone.utc).isoformat()
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT market, odds_decimal, commence_time FROM picks WHERE pick_uid = ?",
+                "SELECT market, odds_decimal, commence_time, total_line, runline_point "
+                "FROM picks WHERE pick_uid = ?",
                 (pick_uid,),
             ).fetchone()
             if row is None:
@@ -465,6 +506,22 @@ class TrackRecordDB:
             if odds_decimal and closing_ref and closing_ref > 1.0:
                 clv_pct = round((odds_decimal / closing_ref - 1.0) * 100.0, 4)
 
+            # Which point this pick was taken at, by family. ML has no point,
+            # so it can never be flagged as moved.
+            taken_point = None
+            if market in ("OVER", "UNDER"):
+                taken_point = row["total_line"]
+            elif market in ("RL_HOME", "RL_AWAY"):
+                taken_point = row["runline_point"]
+
+            closing_point_moved = None
+            if closing_point is not None and taken_point is not None:
+                # abs(): runline points are signed and books disagree on sign
+                # (see odds_fetcher's runline_home_point/away_point note), so
+                # compare magnitudes. 0.01 tolerance for float noise, well
+                # under the 0.5 that separates two real MLB lines.
+                closing_point_moved = int(abs(abs(closing_point) - abs(taken_point)) > 0.01)
+
             cur = conn.execute(
                 """
                 UPDATE picks
@@ -472,13 +529,19 @@ class TrackRecordDB:
                     closing_pin_home        = ?,
                     closing_pin_away        = ?,
                     closing_all_books_json  = ?,
+                    closing_pin_side        = ?,
+                    closing_pin_opposite    = ?,
+                    closing_point           = ?,
+                    closing_point_moved     = ?,
                     closing_captured_at     = ?,
                     minutes_before_start    = ?,
                     clv_pct                 = ?
                 WHERE pick_uid = ?
                 """,
                 (closing_odds_decimal, closing_pin_home, closing_pin_away,
-                 closing_all_books_json, ts, minutes_before_start, clv_pct, pick_uid),
+                 closing_all_books_json, closing_pin_side, closing_pin_opposite,
+                 closing_point, closing_point_moved,
+                 ts, minutes_before_start, clv_pct, pick_uid),
             )
             return cur.rowcount > 0
 

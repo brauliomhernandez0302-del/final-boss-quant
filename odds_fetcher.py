@@ -357,6 +357,14 @@ def _normalize_event(event: Dict) -> Dict:
     over_point_counts: Dict[float, int] = {}
     under_by_point: Dict[float, float] = {}
     pin_total_point: Optional[float] = None
+    # Pinnacle's own PRICE on each side, not just its line. Until 2026-07-26
+    # only the point was kept here, so nothing downstream could ever devig
+    # Pinnacle's two-sided close for a total or a runline — the exact input
+    # docs/PROTOCOLO_CLV_V1.md's primary metric is defined on. The data was
+    # already in every response (MARKETS includes totals/spreads); it was
+    # parsed and dropped.
+    pin_total_over: Optional[float] = None
+    pin_total_under: Optional[float] = None
 
     rl_home_by_point: Dict[float, float] = {}
     rl_home_point_counts: Dict[float, int] = {}
@@ -364,6 +372,8 @@ def _normalize_event(event: Dict) -> Dict:
     rl_away_point_counts: Dict[float, int] = {}
     pin_rl_home_point: Optional[float] = None
     pin_rl_away_point: Optional[float] = None
+    pin_rl_home_price: Optional[float] = None
+    pin_rl_away_price: Optional[float] = None
 
     f5_over_by_point: Dict[float, float] = {}
     f5_over_point_counts: Dict[float, int] = {}
@@ -412,8 +422,11 @@ def _normalize_event(event: Dict) -> Dict:
                         _accumulate_point_price(over_by_point, over_point_counts, point, price)
                         if is_pinnacle and point is not None:
                             pin_total_point = point
+                            pin_total_over  = price or None
                     elif n == "under":
                         _accumulate_point_price(under_by_point, {}, point, price)
+                        if is_pinnacle and point is not None:
+                            pin_total_under = price or None
 
             elif mkey == "spreads" and outcomes:
                 for o in outcomes:
@@ -424,10 +437,12 @@ def _normalize_event(event: Dict) -> Dict:
                         _accumulate_point_price(rl_home_by_point, rl_home_point_counts, point, price)
                         if is_pinnacle and point is not None:
                             pin_rl_home_point = point
+                            pin_rl_home_price = price or None
                     elif name == away:
                         _accumulate_point_price(rl_away_by_point, rl_away_point_counts, point, price)
                         if is_pinnacle and point is not None:
                             pin_rl_away_point = point
+                            pin_rl_away_price = price or None
 
             elif mkey == "h2h_h1" and outcomes:
                 for o in outcomes:
@@ -476,6 +491,17 @@ def _normalize_event(event: Dict) -> Dict:
     result["under_odds"]   = under_price
     result["runline_home"] = rl_home_price
     result["runline_away"] = rl_away_price
+    # Pinnacle's two-sided close for the line markets, each with the point it
+    # was quoted at. Purely additive — nothing in the live prediction path
+    # reads these keys; they exist so a closing snapshot can be devigged the
+    # same way the moneyline one already is.
+    result["pin_total_over"]       = pin_total_over
+    result["pin_total_under"]      = pin_total_under
+    result["pin_total_point"]      = pin_total_point
+    result["pin_runline_home"]     = pin_rl_home_price
+    result["pin_runline_away"]     = pin_rl_away_price
+    result["pin_runline_home_point"] = pin_rl_home_point
+    result["pin_runline_away_point"] = pin_rl_away_point
     # Magnitude only (not signed) — the home/away sign convention
     # ("home is always -line") is a separate, pre-existing assumption
     # elsewhere in the pipeline (GameOdds/analyze_runline), not something
@@ -629,6 +655,12 @@ def get_best_odds_for_teams(
     over_point_counts: Dict[float, int] = {}
     under_by_point: Dict[float, float] = {}
     pin_total_point: Optional[float] = None
+    # See _normalize_event()'s note: Pinnacle's PRICE per side on the line
+    # markets, not just its point. This is the function
+    # track_record/capture_closing_lines.py sweeps with, so this is the one
+    # that decides whether a runline/total close is recoverable at all.
+    pin_total_over: Optional[float] = None
+    pin_total_under: Optional[float] = None
 
     rl_home_by_point: Dict[float, float] = {}
     rl_home_point_counts: Dict[float, int] = {}
@@ -636,6 +668,8 @@ def get_best_odds_for_teams(
     rl_away_point_counts: Dict[float, int] = {}
     pin_rl_home_point: Optional[float] = None
     pin_rl_away_point: Optional[float] = None
+    pin_rl_home_price: Optional[float] = None
+    pin_rl_away_price: Optional[float] = None
 
     f5_over_by_point: Dict[float, float] = {}
     f5_over_point_counts: Dict[float, int] = {}
@@ -686,8 +720,11 @@ def get_best_odds_for_teams(
                         _accumulate_point_price(over_by_point, over_point_counts, point, price)
                         if is_pinnacle and point is not None:
                             pin_total_point = point
+                            pin_total_over  = price or None
                     elif n == "under":
                         _accumulate_point_price(under_by_point, {}, point, price)
+                        if is_pinnacle and point is not None:
+                            pin_total_under = price or None
 
             elif mkey == "spreads":
                 for outcome in outcomes:
@@ -698,10 +735,12 @@ def get_best_odds_for_teams(
                         _accumulate_point_price(rl_home_by_point, rl_home_point_counts, point, price)
                         if is_pinnacle and point is not None:
                             pin_rl_home_point = point
+                            pin_rl_home_price = price or None
                     elif name == away_name:
                         _accumulate_point_price(rl_away_by_point, rl_away_point_counts, point, price)
                         if is_pinnacle and point is not None:
                             pin_rl_away_point = point
+                            pin_rl_away_price = price or None
 
             elif mkey == "h2h_h1":
                 for outcome in outcomes:
@@ -761,6 +800,19 @@ def get_best_odds_for_teams(
         "total_under":   total_under,
         "runline_home":  best_rl_home,
         "runline_away":  best_rl_away,
+        # Pinnacle's own two-sided close on the line markets, each with the
+        # point it was quoted at (2026-07-26). Additive: no existing key
+        # changes value, and nothing in the live prediction path reads these —
+        # they exist so track_record can store a runline/total close that is
+        # actually devig-able, instead of storing the MONEYLINE Pinnacle pair
+        # next to a runline pick, which is what it did before.
+        "pin_total_over":         pin_total_over,
+        "pin_total_under":        pin_total_under,
+        "pin_total_point":        pin_total_point,
+        "pin_runline_home":       pin_rl_home_price,
+        "pin_runline_away":       pin_rl_away_price,
+        "pin_runline_home_point": pin_rl_home_point,
+        "pin_runline_away_point": pin_rl_away_point,
         # Magnitude only — kept for the live EV path (core/value_detector.py
         # ::analyze_runline, frozen — see CLAUDE.md), which still assumes
         # "home is always the favorite" and doesn't consume a sign.

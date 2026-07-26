@@ -102,15 +102,62 @@ def capture_closing_lines(
         # primary metric.
         all_books_h2h = market_odds.get("all_books_h2h") or []
         all_books_json = json.dumps(all_books_h2h) if all_books_h2h else None
-        # Closing "odds_decimal" for this specific pick's own side/market —
-        # best-market price (not necessarily Pinnacle) on the matching side,
-        # so a non-ML market still gets SOME closing reference recorded even
-        # though clv_pct itself is only computed for ML_HOME/ML_AWAY (v1).
+        # Closing price for this specific pick's own side/market — best-market
+        # price (not necessarily Pinnacle) on the matching side.
+        #
+        # Until 2026-07-26 only the two ML branches existed, so every runline
+        # and total pick stored a NULL closing price next to the MONEYLINE
+        # Pinnacle pair: 100% attrition for those markets, and the close was
+        # unrecoverable the moment the game started. The data was already in
+        # every sweep's response (odds_fetcher.MARKETS covers h2h/totals/
+        # spreads) and was simply dropped here — so this costs zero extra API
+        # quota, it just stops throwing the answer away.
+        #
+        # pin_side/pin_opposite are Pinnacle's own two-sided quote for THIS
+        # pick's market (what a devig needs), and pin_point is the line that
+        # quote belongs to. clv_pct stays ML-only — PROTOCOLO_CLV_V2 defines
+        # what CLV means for a derived market; this stores the inputs so that
+        # decision isn't blocked on collecting data all over again.
+        market = pick["market"]
         side_closing_price = None
-        if pick["market"] == "ML_HOME":
+        pin_side = pin_opposite = pin_point = None
+
+        if market == "ML_HOME":
             side_closing_price = market_odds.get("ml_home")
-        elif pick["market"] == "ML_AWAY":
+            pin_side, pin_opposite = pin_home, pin_away
+        elif market == "ML_AWAY":
             side_closing_price = market_odds.get("ml_away")
+            pin_side, pin_opposite = pin_away, pin_home
+        elif market == "OVER":
+            side_closing_price = market_odds.get("total_over")
+            pin_side, pin_opposite = market_odds.get("pin_total_over"), market_odds.get("pin_total_under")
+            pin_point = market_odds.get("pin_total_point")
+        elif market == "UNDER":
+            side_closing_price = market_odds.get("total_under")
+            pin_side, pin_opposite = market_odds.get("pin_total_under"), market_odds.get("pin_total_over")
+            pin_point = market_odds.get("pin_total_point")
+        elif market == "RL_HOME":
+            side_closing_price = market_odds.get("runline_home")
+            pin_side, pin_opposite = market_odds.get("pin_runline_home"), market_odds.get("pin_runline_away")
+            pin_point = market_odds.get("pin_runline_home_point")
+        elif market == "RL_AWAY":
+            side_closing_price = market_odds.get("runline_away")
+            pin_side, pin_opposite = market_odds.get("pin_runline_away"), market_odds.get("pin_runline_home")
+            pin_point = market_odds.get("pin_runline_away_point")
+
+        # The point the close is quoted at: Pinnacle's own when available (it
+        # is the reference book), otherwise the consensus point of the same
+        # sweep. Stored so that a total that closed at 9.0 can be told apart
+        # from one that closed at the 8.5 the pick was taken at, instead of
+        # being silently compared as if they were the same market.
+        closing_point = pin_point
+        if closing_point is None:
+            if market in ("OVER", "UNDER"):
+                closing_point = market_odds.get("total_line")
+            elif market == "RL_HOME":
+                closing_point = market_odds.get("runline_home_point")
+            elif market == "RL_AWAY":
+                closing_point = market_odds.get("runline_away_point")
 
         if pin_home is None and pin_away is None and side_closing_price is None:
             log.debug("No market data yet for pick_uid=%s (%s @ %s) — will retry next sweep",
@@ -120,8 +167,9 @@ def capture_closing_lines(
 
         if dry_run:
             log.info("[dry-run] would capture pick_uid=%s market=%s "
-                      "closing_odds=%s pin_home=%s pin_away=%s",
-                      pick["pick_uid"], pick["market"], side_closing_price, pin_home, pin_away)
+                      "closing_odds=%s pin_side=%s pin_opposite=%s point=%s",
+                      pick["pick_uid"], market, side_closing_price,
+                      pin_side, pin_opposite, closing_point)
             summary["captured"] += 1
             continue
 
@@ -131,11 +179,14 @@ def capture_closing_lines(
             closing_pin_home=pin_home,
             closing_pin_away=pin_away,
             closing_all_books_json=all_books_json,
+            closing_pin_side=pin_side,
+            closing_pin_opposite=pin_opposite,
+            closing_point=closing_point,
         )
         if ok:
             summary["captured"] += 1
-            log.info("Captured closing line: pick_uid=%s market=%s closing_odds=%s",
-                      pick["pick_uid"], pick["market"], side_closing_price)
+            log.info("Captured closing line: pick_uid=%s market=%s closing_odds=%s point=%s",
+                      pick["pick_uid"], market, side_closing_price, closing_point)
         else:
             # get_picks_needing_closing_capture() already filters to
             # not-yet-started games, so this should be rare — but a slow
