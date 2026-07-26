@@ -30,6 +30,37 @@ from core.value_detector import kelly_criterion
 log = logging.getLogger("track_record.publisher")
 
 
+def _json_default(obj: Any) -> Any:
+    """Last-resort encoder for the pipeline snapshot.
+
+    The snapshot embeds `bet` verbatim, so any numpy scalar the value
+    detector happens to produce reaches `json.dumps` untouched. That is not
+    hypothetical: `kelly_floor_applied` (`core/value_detector.py`) is
+    `kelly > kelly_pre_floor`, whose left side is a numpy float in the live
+    path, so the flag is a `np.bool_` — and under numpy 2.x its class is
+    literally named `bool`, which is why the crash read
+    "Object of type bool is not JSON serializable" and looked impossible.
+    It killed the 07:00 and 13:00 cron runs of 2026-07-24 and the 07:00 of
+    2026-07-25 AFTER the pipeline had already done all its work, publishing
+    zero picks on those days (`logs/daily_picks.log`).
+
+    Same class of failure as the `*_samples` ndarray strip below, which was
+    handled by dropping the offending keys. Dropping is not right here — the
+    flag is small and worth keeping — so it is converted instead: this
+    catches every numpy scalar and array by duck-typing, without adding a
+    numpy import to this module.
+    """
+    if hasattr(obj, "dtype"):
+        # 0-d first: an ndarray also has .item(), but it raises for size > 1.
+        if getattr(obj, "ndim", 0) == 0 and hasattr(obj, "item"):
+            return obj.item()      # numpy scalar → python scalar
+        if hasattr(obj, "tolist"):
+            return obj.tolist()    # numpy array → list
+    if isinstance(obj, (datetime,)):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
 @functools.lru_cache(maxsize=1)
 def _get_engine_commit() -> Optional[str]:
     """The prediction engine's git HEAD, stamped onto every published pick
@@ -382,7 +413,7 @@ def publish_mlb_picks(
                     confidence_tier=tier or None,
                     odds_decimal=odds_dec,
                     stake_units=stake,
-                    pipeline_json=json.dumps(pipeline_snap),
+                    pipeline_json=json.dumps(pipeline_snap, default=_json_default),
                     total_line=total_line,
                     commence_time=commence_raw or None,
                     publish_mode="quarantine" if config.QUARANTINE_MODE else "public",
