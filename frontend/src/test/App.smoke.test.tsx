@@ -58,8 +58,14 @@ describe("Matchup dashboard — real data shape (game_pk 823519, no moneyline ma
     // never a fabricated batting order.
     expect(await screen.findAllByText(/UNCONFIRMED/i)).not.toHaveLength(0);
 
-    // Bullpen roster (real MLB Stats API roster fetch) rendered with names.
-    expect(await screen.findByText("Paul Skenes")).toBeInTheDocument();
+    // This capture predates `bullpen_usage`, so the bullpen card must say so
+    // instead of rendering the old "roster activo" list. That list is exactly
+    // what VAL-7.2 flagged: it used to assert "Paul Skenes" — the Pirates' ACE
+    // STARTER — as proof the bullpen rendered, which is the defect (rotation
+    // starters, and later a catcher with one mop-up inning, listed as the
+    // bullpen the engine used). Asserting the honest fallback instead.
+    expect(await screen.findAllByText(/bullpen_usage/i)).toHaveLength(2); // una nota por equipo
+    expect(screen.queryByText("Paul Skenes")).not.toBeInTheDocument();
   });
 });
 

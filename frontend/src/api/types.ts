@@ -308,16 +308,47 @@ export interface Prediction {
   metadata: PredictionMetadata;
 }
 
-export interface RosterPitcher {
+/**
+ * One reliever the bullpen engine actually weighted into `total_mult`.
+ * `savant_pa` and `siera_ip` ARE the weights (PA-weighted xwOBA/barrel
+ * aggregate, IP-weighted SIERA aggregate); null means that source had no data
+ * for him, so he only entered through the other one.
+ */
+export interface BullpenReliever {
   id: number;
   name: string;
+  /** MLB roster position abbreviation — "P" for pitchers; anything else is a
+   * position player the engine's classifier admitted (a mop-up inning). */
+  position: string | null;
+  savant_pa: number | null;
+  siera_ip: number | null;
+}
+
+/**
+ * The engine's contributor set, not "the bullpen roster" (VAL-7.2). `n_used`
+ * is THE count: how many relievers carried weight. `n_savant`/`n_siera` are
+ * its two sub-counts and must equal the engine's own `n_pitchers` /
+ * `n_siera_pitchers`; they are shown as a breakdown of n_used, never as
+ * competing totals. `degraded` = role classification failed, so no faithful
+ * list can be shown at all.
+ */
+export interface BullpenUsage {
+  pitchers: BullpenReliever[];
+  n_used: number;
+  /** Relievers the engine classified, including those it then weighted at zero. */
+  n_classified: number;
+  n_savant: number;
+  n_siera: number;
+  degraded: boolean;
 }
 
 export interface MatchupPayload {
   game_pk: number;
   schedule: ScheduleDetail;
   prediction: Prediction;
-  bullpen_roster: { home: RosterPitcher[]; away: RosterPitcher[] };
+  /** Absent on payloads captured before the VAL-7.2 usage work (the old
+   * `bullpen_roster` shape) — the UI says so rather than guessing. */
+  bullpen_usage?: { home: BullpenUsage; away: BullpenUsage };
   pitcher_bio: { home?: { throws?: string }; away?: { throws?: string } };
   /** Absent when talking to an API older than the VAL-6 contribution work. */
   engine_weights?: EngineWeights;

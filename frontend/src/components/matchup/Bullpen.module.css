@@ -63,6 +63,31 @@
   font-family: var(--fbq-font-sans);
   font-size: 13px;
   color: var(--fbq-text-primary);
+  flex: 1;
+  min-width: 0;
+}
+
+/* A position player the engine's reliever classifier admitted (any pitching
+   appearance, zero starts) — labeled instead of silently listed as a pitcher. */
+.positionFlag {
+  font-family: var(--fbq-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--fbq-accent-amber, var(--fbq-text-muted));
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* The engine's actual weights for this reliever: PA into the Savant aggregate,
+   IP into the SIERA one. */
+.weights {
+  font-size: 11px;
+  color: var(--fbq-text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .excludedNote {

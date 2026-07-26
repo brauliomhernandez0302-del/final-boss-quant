@@ -20,9 +20,12 @@ import requests
 
 from data_fetchers import MLBStatsAPI, _current_mlb_season
 from modules.baseball_module.context_engine.bullpen_engine import (
+    CACHE_DIR as _BULLPEN_CACHE_DIR,
     _fetch_reliever_ids,
+    _fetch_savant_pitcher_expected,
     _fetch_team_roster,
 )
+from modules.baseball_module.data_enrichment.fangraphs_fetcher import FanGraphsFetcher
 
 _BASE_URL = "https://statsapi.mlb.com/api/v1"
 _mlb_api = MLBStatsAPI()
@@ -87,73 +90,150 @@ def find_scheduled_game(game_pk: int) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _fetch_active_pitchers_fallback(
-    team_id: int, exclude_pitcher_id: Optional[int]
-) -> List[Dict[str, Any]]:
-    """Old behavior: every active-roster player listed at position P, minus
-    today's starter. Used ONLY when _fetch_reliever_ids can't classify roles
-    (fetch failure) — same fallback bullpen_engine.py itself falls back to,
-    so a degraded call degrades to the same thing the model degrades to,
-    not to something worse. Known to include non-today's-starter rotation
-    pitchers (starters between outings) — that's exactly the gap this
-    function exists to avoid on the happy path.
-    """
+_SOURCES_TTL_SECONDS = 3600
+_sources_cache: Dict[int, tuple] = {}
+
+
+def _season_pitcher_sources(season: int) -> tuple:
+    """The two season-wide maps `bullpen_engine.py` aggregates over, read from
+    the engine's own fetchers (and therefore its own 24h disk caches, already
+    warm on any day the pipeline ran). Held in-process for an hour so a page
+    refresh doesn't re-parse a full season of Savant/FanGraphs rows."""
+    cached = _sources_cache.get(season)
+    now = datetime.now(timezone.utc).timestamp()
+    if cached and now - cached[0] < _SOURCES_TTL_SECONDS:
+        return cached[1], cached[2]
+
+    savant_exp = _fetch_savant_pitcher_expected(season)
+    fg_pitchers = FanGraphsFetcher(cache_dir=_BULLPEN_CACHE_DIR).get_all_pitcher_stats(season)
+    _sources_cache[season] = (now, savant_exp, fg_pitchers)
+    return savant_exp, fg_pitchers
+
+
+def _fetch_roster_positions(team_id: int, season: int) -> Dict[int, str]:
+    """Position abbreviation per player on the gameday roster.
+
+    Same endpoint `_fetch_team_roster` uses; it keeps only {id: name}, and the
+    position is what lets the UI say out loud that a listed "reliever" is
+    actually a catcher who threw a mop-up inning (see `fetch_bullpen_usage`).
+    Best-effort: an empty map just means no position labels."""
     try:
         r = requests.get(
             f"{_BASE_URL}/teams/{team_id}/roster",
-            params={"rosterType": "active"},
+            params={"rosterType": "gameday", "season": season},
             timeout=(5, 20),
         )
         r.raise_for_status()
-        roster = r.json().get("roster", [])
+        entries = r.json().get("roster", [])
     except Exception:
-        return []
-
-    out = []
-    for entry in roster:
-        position = (entry.get("position") or {}).get("abbreviation")
-        if position != "P":
-            continue
-        person = entry.get("person") or {}
-        pid = person.get("id")
-        if not pid or pid == exclude_pitcher_id:
-            continue
-        out.append({"id": pid, "name": person.get("fullName")})
+        return {}
+    out: Dict[int, str] = {}
+    for entry in entries:
+        pid = (entry.get("person") or {}).get("id")
+        abbr = (entry.get("position") or {}).get("abbreviation")
+        if pid and abbr:
+            out[int(pid)] = abbr
     return out
 
 
-def fetch_bullpen_roster(
-    team_id: int, exclude_pitcher_id: Optional[int] = None
-) -> List[Dict[str, Any]]:
-    """The same relievers bullpen_engine.py actually aggregated into
-    `total_mult` — not an independent approximation of "who's in the
-    bullpen". Reuses bullpen_engine.py's own `_fetch_team_roster` (gameday
-    roster) + `_fetch_reliever_ids` (classifies a player as a reliever iff
-    zero games started this season, one MLB Stats API call per roster
-    pitcher, 24h-cached — same cache the engine itself reads, so this pays
-    no extra cost on a day the pipeline already ran) instead of a cruder
-    "position == P, minus today's starter" filter, which silently included
-    rotation starters not pitching today (confirmed live: Buehler, King,
-    Márquez, Sears all appeared in a bullpen list this way).
+def fetch_bullpen_usage(team_id: int) -> Dict[str, Any]:
+    """The relievers `bullpen_engine.py` ACTUALLY aggregated, with one count.
 
-    Falls back to the old active-roster/position-P behavior when role
-    classification fails entirely (network/API issue) — never worse than
-    before, but no longer the default path.
+    Before this, the dashboard showed three numbers that are different by
+    construction and were displayed as if they measured the same thing
+    (audit_20260714/val_audit/reporte.md VAL-7.2): the roster list length, the
+    engine's `n_pitchers` (Savant coverage) and its `n_siera_pitchers`
+    (FanGraphs coverage) — e.g. 11 listed / 4 / 4 for one real bullpen.
+
+    The list now IS the engine's contributor set, rebuilt from the engine's own
+    inputs so it can't drift from what the model did:
+
+      1. `_fetch_team_roster` + `_fetch_reliever_ids` — the same classification
+         the engine restricts both aggregates to (a reliever is a roster player
+         with zero starts and at least one pitching appearance this season).
+      2. Each classified reliever is kept only if the engine had data to weight
+         them with: Savant plate appearances (the xwOBA/barrel aggregate,
+         PA-weighted) and/or FanGraphs SIERA-or-xFIP with innings (the SIERA
+         aggregate, IP-weighted). A reliever with neither contributed exactly
+         nothing to `total_mult` and is not listed.
+
+    `n_used` — the single defined count — is the length of that list, and the
+    per-pitcher `savant_pa`/`siera_ip` are the actual weights, so a name with a
+    tiny number is visibly a tiny contributor rather than an equal-looking row.
+    `n_savant`/`n_siera` are still returned because they must reproduce the
+    engine's `n_pitchers`/`n_siera_pitchers` exactly — that equality is the
+    check that this mirror is faithful, not three more numbers for the UI to
+    show side by side.
+
+    Note on position players: the engine's own classifier admits anyone with a
+    pitching appearance and no starts, so a catcher who threw a blowout inning
+    (real case: Carson Kelly, 1.0 IP, ERA 18.00) IS in the engine's SIERA
+    aggregate, weighted by that single inning. Hiding him would make the UI
+    disagree with the model; he is listed with his position and his 1.0 IP.
+
+    Today's probable starter is NOT filtered out here: the engine doesn't
+    filter him either, and he can only appear if it classified him as a pure
+    reliever (an opener), in which case the engine did use him.
     """
     season = _current_mlb_season()
+    empty: Dict[str, Any] = {
+        "pitchers": [], "n_used": 0, "n_classified": 0,
+        "n_savant": 0, "n_siera": 0, "degraded": True,
+    }
+
     roster = _fetch_team_roster(team_id, season)
     if not roster:
-        return _fetch_active_pitchers_fallback(team_id, exclude_pitcher_id)
+        return empty
 
     reliever_ids = _fetch_reliever_ids(team_id, season, roster)
     if reliever_ids is None:
-        return _fetch_active_pitchers_fallback(team_id, exclude_pitcher_id)
+        # Role classification failed outright — same degraded state the engine
+        # itself falls back to (whole-roster aggregate). Say so instead of
+        # printing a list that would mean something different from the model's.
+        return empty
 
-    return [
-        {"id": pid, "name": name}
-        for pid, name in roster.items()
-        if pid in reliever_ids and pid != exclude_pitcher_id
-    ]
+    savant_exp, fg_pitchers = _season_pitcher_sources(season)
+    positions = _fetch_roster_positions(team_id, season)
+
+    pitchers: List[Dict[str, Any]] = []
+    for pid, name in roster.items():
+        if pid not in reliever_ids:
+            continue
+
+        exp = savant_exp.get(pid)
+        savant_pa = float(exp["pa"]) if exp else None
+
+        fg = fg_pitchers.get(pid) or fg_pitchers.get(str(pid))
+        siera_ip = None
+        if fg:
+            primary = fg.get("siera")
+            if primary is None:
+                primary = fg.get("xfip")
+            ip = fg.get("ip")
+            if primary is not None and ip:
+                siera_ip = float(ip)
+
+        if savant_pa is None and siera_ip is None:
+            continue  # classified as a reliever, but weighted zero by the engine
+
+        pitchers.append({
+            "id": pid,
+            "name": name,
+            "position": positions.get(pid),
+            "savant_pa": savant_pa,
+            "siera_ip": siera_ip,
+        })
+
+    pitchers.sort(key=lambda p: (p["savant_pa"] or 0.0, p["siera_ip"] or 0.0), reverse=True)
+
+    return {
+        "pitchers": pitchers,
+        "n_used": len(pitchers),
+        "n_classified": len(reliever_ids & roster.keys()),
+        "n_savant": sum(1 for p in pitchers if p["savant_pa"] is not None),
+        "n_siera": sum(1 for p in pitchers if p["siera_ip"] is not None),
+        "degraded": False,
+    }
 
 
 def fetch_pitcher_bio(player_id: int) -> Dict[str, Any]:

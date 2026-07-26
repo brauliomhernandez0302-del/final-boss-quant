@@ -32,7 +32,7 @@ if str(ROOT) not in sys.path:
 from flask import Flask, jsonify, request
 
 from api.mlb_presentation import (
-    fetch_bullpen_roster,
+    fetch_bullpen_usage,
     fetch_pitcher_bio,
     find_scheduled_game,
     list_scheduled_games,
@@ -113,9 +113,12 @@ def matchup(game_pk: int):
         "game_pk": game_pk,
         "schedule": schedule,
         "prediction": prediction,
-        "bullpen_roster": {
-            "home": fetch_bullpen_roster(schedule.get("home_team_id"), exclude_pitcher_id=home_pitcher_id),
-            "away": fetch_bullpen_roster(schedule.get("away_team_id"), exclude_pitcher_id=away_pitcher_id),
+        # Not "the bullpen roster" — the relievers the bullpen engine actually
+        # weighted into total_mult, with one defined count. See
+        # api/mlb_presentation.py::fetch_bullpen_usage (VAL-7.2).
+        "bullpen_usage": {
+            "home": fetch_bullpen_usage(schedule.get("home_team_id")),
+            "away": fetch_bullpen_usage(schedule.get("away_team_id")),
         },
         "pitcher_bio": {
             "home": fetch_pitcher_bio(home_pitcher_id) if home_pitcher_id else {},
