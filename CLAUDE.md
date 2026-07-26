@@ -345,3 +345,52 @@ magnitud) y para qué sí correspondería hacer.
 **Protocolo CLV**: `engine_commit` de `docs/PROTOCOLO_CLV_V1.md` re-apuntado a este rebaseline.
 D0 sigue **pendiente**, así que la ventana no había arrancado y este cambio de motor no reinicia
 ninguna muestra primaria — pero fijar D0 debe ocurrir *después* de este motor, nunca antes.
+
+### Actualización 2026-07-26 — evaluador distribucional de runline/total (`derived_eval`)
+
+**Baseline sin cambios** (Brier 0.24675 / accuracy 55.05%, reporte canónico
+`audit_20260714/val_audit/rebaseline/backtest_report_20260725_0644.json`). Este trabajo no toca
+ningún engine ni ninguna λ: es el instrumento que faltaba para medir el fix del simulador sobre
+los mercados que sí corrige.
+
+**`audit_20260714/val_audit/derived_eval/evaluate_derived_markets.py`** (repetible, solo lectura)
+re-simula las `game_outcomes.backtest_lambda_*` guardadas de la corrida canónica —4,825 juegos,
+2024/2025— con el simulador **pre-fix** (`b3325a5^`, vendorizado y verificado contra git en cada
+corrida) y con el **actual**, mismo seed por `game_pk`, y compara ambas distribuciones contra
+`actual_home_runs`/`actual_away_runs`. Las λ son entrada del simulador, así que esto aísla los
+tres cambios de b3325a5 de forma exacta. Reporte: `audit_20260714/val_audit/derived_eval/reporte.md`.
+
+**CALIBRACIÓN, NO ROI** — no existen líneas históricas de runline/total en esta DB (`game_outcomes`
+solo guarda moneyline), así que la rentabilidad de estos mercados sigue sin medirse y ningún
+número de ese reporte debe citarse como tal.
+
+Resultados (los tres primeros, evidencia positiva del fix; el cuarto, el residual que queda):
+1. **VAL-1.3 replicado a escala completa**: P(margen local ≥2 | ganó el local) pasa de +11.58pp a
+   +3.05pp de sobre-predicción. **+3.05pp es el número canónico** — el ~0.9pp que cita el reporte
+   del fix mide otro estimando (la ventana de λ del hallazgo, `5.0≤λ_h≤7.5`/`2.5≤λ_a≤4.5`, con NB
+   puro y 300-500 sims). El evaluador reproduce ese par en esa misma ventana (+8.90pp → +1.23pp,
+   N=813); la brecha poblacional es mayor porque la ventana selecciona juegos donde el local es
+   muy favorito, justo donde el truncamiento más muerde. Ver §2.1 del reporte.
+2. **Totales**: sesgo de la línea 7.5 +5.72pp → +3.22pp, 8.5 +2.80pp → **+0.44pp**, 9.5 +3.27pp →
+   **+0.57pp**; total medio 9.112 → 8.850 contra 8.837 real. Brier pareado significativo en las
+   cuatro líneas centrales; ECE mejora en 4 de 6.
+3. **Moneyline (control)**: −0.00037 de Brier, minúsculo — reproduce la neutralidad que ya
+   reportaba el rebaseline, confirmando que el instrumento mide lo que dice medir.
+4. **El residual dominante ya no es el walk-off: es sub-dispersión.** El margen simulado tiene
+   desviación típica 3.87 vs 4.50 real (−14%); el total, 4.04 vs 4.46 (−9%), con PIT en U. Se
+   origina en `NB_DISPERSION=6.0`, elegido en su momento *a propósito* por métricas de moneyline
+   pese a un peor ajuste de cola (está documentado en el docstring del simulador).
+
+**Dos constantes DECIDIDAS el 2026-07-26 (§7 del reporte) — no son pendientes**:
+- **`WALKOFF_9TH_SHARE` se queda en `1/9`**, decidida con la evidencia del barrido
+  (`--walkoff-sweep`): ningún valor único satisface los cuatro criterios —RL_HOME pide ≈0.033,
+  margen medio ≈0.093, total medio ≈0.118 (donde ya está), VAL-1.3 ≈0.165—, y 1/9 centra el total
+  medio, el objetivo con más datos y sin condicionar. Residuales aceptados: RL_HOME −2.65pp,
+  VAL-1.3 +3.05pp. **Disparador de re-visita: cuando se toque la dispersión** (esos residuales se
+  estiman sobre una forma que está −9%/−14% angosta; re-correr el barrido es obligatorio después).
+- **`NB_DISPERSION` se queda en `6.0` durante la ventana de CLV de moneyline** — está en el camino
+  congelado y su valor se eligió justo por las métricas que la ventana está midiendo.
+  **Disparador de re-visita: el arranque del motor de derivados**, donde la balanza cambia de lado
+  y este evaluador es la balanza (el costo distribucional de r=6.0 ya está medido).
+
+Memoria de la sesión: `project_derived_eval_20260726.md`.

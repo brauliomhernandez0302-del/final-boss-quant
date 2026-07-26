@@ -1,0 +1,13 @@
+Evaluador distribucional runline/total — CALIBRACIÓN, NO ROI
+(no hay líneas históricas de estos mercados en la DB; ningún número de acá es rentabilidad)
+
+Barrido de WALKOFF_9TH_SHARE sobre 4825 juegos (30,000 sims/juego) — reporte, no cambio
+
+  share=0.0000  RL_HOME sesgo +1.41pp  VAL-1.3 gap +11.67pp  total 9.112 (+0.275)  margen +0.250 (+0.222)  [79.7s]
+  share=0.0400  RL_HOME sesgo -0.29pp  VAL-1.3 gap +8.06pp  total 9.011 (+0.174)  margen +0.150 (+0.122)  [91.1s]
+  share=0.0600  RL_HOME sesgo -1.04pp  VAL-1.3 gap +6.48pp  total 8.963 (+0.126)  margen +0.102 (+0.074)  [87.7s]
+  share=0.0800  RL_HOME sesgo -1.72pp  VAL-1.3 gap +5.04pp  total 8.918 (+0.081)  margen +0.056 (+0.029)  [83.9s]
+  share=0.1111  RL_HOME sesgo -2.65pp  VAL-1.3 gap +3.05pp  total 8.850 (+0.013)  margen -0.011 (-0.039)  [80.2s]
+  share=0.1300  RL_HOME sesgo -3.16pp  VAL-1.3 gap +1.98pp  total 8.812 (-0.025)  margen -0.049 (-0.077)  [79.8s]
+
+Barrido: audit_20260714/val_audit/derived_eval/results/walkoff_sweep_20260726_1317.json
