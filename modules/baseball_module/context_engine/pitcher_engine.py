@@ -201,7 +201,15 @@ class PitcherEngine:
 
         # Bayesian regression: regress primary toward league avg based on IP sample.
         # At IP=0 → 100% league avg. At IP=k_tbf → 50/50. At IP=∞ → raw value.
-        ip_cur   = float(pitcher.get("innings_pitched") or 0)
+        # `ip_mlb_equivalent`, no `innings_pitched`: esta n decide cuánto se le
+        # cree al ERA propio frente a la media de liga, y un inning de Doble-A
+        # no compra la misma credibilidad que uno de mayores. Con el crudo, un
+        # abridor de AA con 150 innings quedaba prácticamente sin regresar.
+        # Fallback al crudo cuando el campo no está (camino del backtest, que
+        # arma sus dicts desde las cachés PIT y no pasa por la jerarquía de
+        # respaldo de data_fetchers): ahí el comportamiento queda idéntico.
+        _ip_eq   = pitcher.get("ip_mlb_equivalent")
+        ip_cur   = float((_ip_eq if _ip_eq is not None else pitcher.get("innings_pitched")) or 0)
         tbf_est  = max(0.0, ip_cur * 4.3)   # ~4.3 TBF per IP for starters
         shrink_w = k_tbf / (k_tbf + tbf_est)
         primary_reg = primary * (1.0 - shrink_w) + _LG_ERA * shrink_w

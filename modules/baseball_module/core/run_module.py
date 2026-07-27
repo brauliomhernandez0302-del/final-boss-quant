@@ -335,6 +335,12 @@ def run_module(
             # AAA-stat fallback pitchers), it silently stayed absent and
             # collapsed quality_mult to exactly 1.0 regardless of real ERA.
             'innings_pitched':       home_ps.get('innings_pitched', 0),
+            # Los mismos innings, pero descontados por procedencia — ver
+            # data_fetchers.get_pitcher_stats_full_fallback. Es la n que usan la
+            # regresión del Pitcher Engine y la confianza de calidad de datos;
+            # `innings_pitched` queda intacto porque responde otra pregunta.
+            'ip_mlb_equivalent':     home_ps.get('ip_mlb_equivalent',
+                                                 home_ps.get('innings_pitched', 0)),
             # Platoon splits + opposing lineup handedness
             'platoon_splits':        home_ps.get('platoon_splits'),
         }
@@ -358,6 +364,8 @@ def run_module(
             # See home_pitcher comment: fallback so quality_mult's Bayesian
             # shrinkage isn't silently starved when enrichment misses this pitcher.
             'innings_pitched':       away_ps.get('innings_pitched', 0),
+            'ip_mlb_equivalent':     away_ps.get('ip_mlb_equivalent',
+                                                 away_ps.get('innings_pitched', 0)),
             # Platoon splits + opposing lineup handedness
             'platoon_splits':        away_ps.get('platoon_splits'),
         }
@@ -411,6 +419,13 @@ def run_module(
                     # Only overwrite existing values when we have real data — never
                     # replace valid MLB Stats API values with None.
                     game_data[_role].update({k: v for k, v in _enriched.items() if v is not None})
+                    # FanGraphs sólo tiene MLB de la temporada en curso, así que
+                    # si acá vino un IP real, ES el dato sin descuento — y hay
+                    # que reemplazar el equivalente calculado aguas arriba, que
+                    # podía venir castigado por un tier de respaldo (AAA, año
+                    # anterior) que este dato acaba de dejar obsoleto.
+                    if _fg_d.get("ip") is not None:
+                        game_data[_role]["ip_mlb_equivalent"] = float(_fg_d["ip"])
                     logger.debug(
                         f"   [enrichment] {_role}: "
                         f"xFIP={game_data[_role].get('xfip')}, "
@@ -1027,8 +1042,13 @@ def run_module(
             game_meta = {
                 "home_prior_weight": _tte_home_meta.get("prior_weight", 1.0),
                 "away_prior_weight": _tte_away_meta.get("prior_weight", 1.0),
-                "home_sp_ip": game_data.get("pitcher_home", {}).get("innings_pitched", 0) or 0,
-                "away_sp_ip": game_data.get("pitcher_away", {}).get("innings_pitched", 0) or 0,
+                # El equivalente MLB, no el crudo: compute_data_quality_confidence
+                # dice "innings pitched THIS SEASON" y pesa esto al 40%, su factor
+                # más grande. Con el crudo, AAA con 100 IP y MLB actual con 30 IP
+                # daban la misma confianza exacta (0.65) — medía el tamaño de la
+                # muestra, nunca su procedencia.
+                "home_sp_ip": game_data.get("pitcher_home", {}).get("ip_mlb_equivalent", 0) or 0,
+                "away_sp_ip": game_data.get("pitcher_away", {}).get("ip_mlb_equivalent", 0) or 0,
                 "home_kalman_n_obs": _learning.get_kalman_n_obs(home_team, "offense_home", _season),
                 "away_kalman_n_obs": _learning.get_kalman_n_obs(away_team, "offense_away", _season),
             }

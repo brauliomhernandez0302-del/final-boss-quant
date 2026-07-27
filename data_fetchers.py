@@ -29,6 +29,25 @@ def _current_mlb_season() -> int:
     return now.year if now.month >= 3 else now.year - 1
 
 
+# Cuántos innings de MLB de la temporada en curso "vale" un inning de cada
+# fuente de respaldo, para efectos de cuánto creerle. Ver el docstring de
+# get_pitcher_stats_full_fallback para el problema que resuelven y la medición
+# que los motivó.
+#
+# ASUMIDOS, no ajustados contra datos. El criterio con que se eligieron:
+#   - Temporada anterior de MLB (0.50): es MLB de verdad, contra los mismos
+#     bateadores, pero con un invierno en el medio — lesiones, cambios de
+#     repertorio, envejecimiento. Media credibilidad.
+#   - AAA (0.25): temporada en curso pero otro nivel de competencia; la brecha
+#     de traducción AAA→MLB es grande y bien conocida.
+#   - AA (0.15): la misma brecha, más ancha.
+# Ninguno es 0: un abridor con 180 innings de la temporada pasada sí dice algo,
+# y tirar esa información sería tan deshonesto como creerle entera.
+_IP_EQ_MLB_PREV_SEASON = 0.50
+_IP_EQ_AAA = 0.25
+_IP_EQ_AA = 0.15
+
+
 def _official_day(game: Dict[str, Any]) -> str:
     """El día de calendario al que MLB asigna este juego (YYYY-MM-DD).
 
@@ -731,6 +750,29 @@ class MLBStatsAPI:
 
         Returns (stats_dict, source_label).  stats_dict always has 'era', 'whip',
         'fip', and is_fallback=True on tiers 3-5.
+
+        Cada tier fija además `ip_mlb_equivalent`: cuántos innings de MLB de ESTA
+        temporada valdría la muestra. Existe porque `innings_pitched` responde
+        "¿cuántos innings lanzó?" y sus dos consumidores preguntan otra cosa —
+        "¿cuánto le creo?":
+
+          - `pitcher_engine` lo usa como n de una regresión bayesiana hacia la
+            media de liga. Con el crudo, un abridor de Doble-A con 150 innings
+            casi no se regresa: su ERA de AA se trata como ERA de mayores, y eso
+            mueve λ.
+          - `compute_data_quality_confidence` lo pesa al 40%, su factor más
+            grande, y su propio docstring dice "this season".
+
+        Medido antes del cambio: AAA con 100 IP, AA con 150 IP, MLB de la
+        temporada ANTERIOR con 180 IP y MLB actual con 30 IP daban los cuatro
+        exactamente 0.65 de confianza. El score medía el TAMAÑO de la muestra,
+        nunca su procedencia.
+
+        Los factores de equivalencia de abajo son ASUMIDOS, no ajustados contra
+        datos — igual que `WALKOFF_9TH_SHARE` en el simulador, y nombrados así a
+        propósito para que una calibración futura tenga dónde enchufarse.
+        Disparador de re-visita: cualquier trabajo que mida traducción de
+        minors a MLB, o el arranque de un motor de proyección de abridores.
         """
         from config import LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP
 
@@ -739,6 +781,8 @@ class MLBStatsAPI:
             pitcher_id, season, is_playoff=is_playoff, is_home=is_home
         )
         if mlb_stats and mlb_stats.get("innings_pitched", 0) >= 5.0:
+            # Es exactamente lo que el consumidor quiere medir: sin descuento.
+            mlb_stats["ip_mlb_equivalent"] = float(mlb_stats["innings_pitched"])
             return mlb_stats, source or "mlb_current"
 
         # partial current-season stats (< 5 IP) — keep as candidate, but look further
@@ -749,6 +793,9 @@ class MLBStatsAPI:
         if prev_stats and prev_stats.get("innings_pitched", 0) >= 20.0:
             prev_stats["is_fallback"] = True
             prev_stats["fallback_tier"] = "mlb_prev_season"
+            prev_stats["ip_mlb_equivalent"] = (
+                float(prev_stats["innings_pitched"]) * _IP_EQ_MLB_PREV_SEASON
+            )
             logger.info(f"  ⚾ Pitcher {pitcher_id}: no current-season data → using {season-1} MLB season")
             return prev_stats, "mlb_prev_season"
 
@@ -757,6 +804,7 @@ class MLBStatsAPI:
         if aaa and aaa.get("innings_pitched", 0) >= 10.0:
             aaa["is_fallback"] = True
             aaa["fallback_tier"] = "aaa_current"
+            aaa["ip_mlb_equivalent"] = float(aaa["innings_pitched"]) * _IP_EQ_AAA
             logger.info(f"  ⚾ Pitcher {pitcher_id}: no MLB data → using AAA {season}")
             return aaa, "aaa_current"
 
@@ -765,6 +813,7 @@ class MLBStatsAPI:
         if aa and aa.get("innings_pitched", 0) >= 10.0:
             aa["is_fallback"] = True
             aa["fallback_tier"] = "aa_current"
+            aa["ip_mlb_equivalent"] = float(aa["innings_pitched"]) * _IP_EQ_AA
             logger.info(f"  ⚾ Pitcher {pitcher_id}: no MLB/AAA data → using AA {season}")
             return aa, "aa_current"
 
@@ -772,6 +821,9 @@ class MLBStatsAPI:
         if partial and partial.get("innings_pitched", 0) > 0:
             partial["is_fallback"] = True
             partial["fallback_tier"] = "mlb_current_partial"
+            # Sí es MLB de esta temporada: sin descuento. Que la muestra sea
+            # chica ya lo castiga el propio n, que es para lo que sirve.
+            partial["ip_mlb_equivalent"] = float(partial["innings_pitched"])
             return partial, "mlb_current_partial"
 
         # ── tier 5: team staff ERA/WHIP ────────────────────────────────────────
@@ -786,6 +838,11 @@ class MLBStatsAPI:
             "whip": staff_whip,
             "fip": staff_era,          # best proxy without pitch-mix data
             "innings_pitched": 0.0,
+            # Cero, y no por casualidad: esto no es una muestra de ESTE abridor,
+            # es el promedio de su cuerpo de lanzadores. Aporta cero información
+            # sobre quién abre, así que la regresión debe llevarlo entero a la
+            # media de liga y la confianza debe cobrárselo.
+            "ip_mlb_equivalent": 0.0,
             "is_fallback": True,
             "fallback_tier": "team_staff_era",
         }
