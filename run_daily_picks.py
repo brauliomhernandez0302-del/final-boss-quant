@@ -30,7 +30,14 @@ sys.path.insert(0, str(ROOT))
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-7s %(message)s",
-    datefmt="%H:%M:%S",
+    # Fecha incluida (2026-07-26): sin ella el log es INATRIBUIBLE — una línea
+    # "07:00:03" no dice de qué día es, y una corrida del día D analiza juegos
+    # de D y D+1, así que ni las fechas de juego que aparecen en el texto
+    # permiten segmentarlo sin ambigüedad. Eso es parte de por qué tres crashes
+    # seguidos (24 y 25 de julio) y tres corridas que nunca arrancaron pasaron
+    # inadvertidos: no había forma de preguntarle al log "¿qué pasó el martes?".
+    # scripts/cron_health_check.py usa este prefijo cuando está presente.
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("daily_picks")
 
