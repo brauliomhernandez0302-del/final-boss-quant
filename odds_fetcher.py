@@ -541,13 +541,32 @@ _ODDS_MATCH_WINDOW = timedelta(hours=6)
 # equipos en la ventana (un doubleheader), bastaba con estar un minuto más cerca
 # para quedarse con el precio del otro partido.
 #
-# 90 minutos separa con holgura los casos reales de los dudosos: un doubleheader
-# tradicional tiene sus dos juegos a ~3.5h y uno partido a ~5-7h, así que el
-# candidato correcto siempre gana por horas; un margen menor a 90 min significa
-# que los dos eventos son igual de plausibles y no hay con qué decidir.
-# Verificado el 2026-07-26 sobre los 27 juegos de la ventana: 0 o 1 candidato por
-# juego, nunca más — este umbral es inerte en operación normal y sólo actúa el
-# día que hay doubleheader, que es para lo que existe.
+# El valor sale de medir la separación REAL entre los dos juegos de un
+# doubleheader — `gameDate` del schedule de MLB, las 431 fechas con datos en
+# game_outcomes (2024-2026, medido el 2026-07-27). La distribución es bimodal y
+# el hueco entre los dos modos está completamente vacío:
+#
+#   partido      (doubleHeader='S', n=43): 275 a 405 min  (mediana 330)
+#   tradicional  (doubleHeader='Y', n=24): 5 min los 24, sin excepción
+#
+# Los dos regímenes exigen respuestas OPUESTAS, y 90 min es el único umbral que
+# da las dos: queda a 3x del modo de arriba y a 18x del de abajo.
+#   - Partido: los eventos están a horas de distancia, el correcto gana por
+#     mucho más de 90 min y se empareja bien.
+#   - Tradicional: el segundo juego arranca "a continuación del primero", así que
+#     el schedule le pone un marcador 5 min después del primero. Con 5 min de
+#     separación NO existe forma de distinguir un juego del otro por hora de
+#     inicio — ni la nuestra ni la de nadie. Ahí el sistema se abstiene, y es lo
+#     correcto: los dos juegos quedan sin precio en vez de que uno se lleve el
+#     precio del otro sin que nadie se entere.
+#
+# Residual conocido, del proveedor y no de esta regla: si el feed lista UN solo
+# evento para un doubleheader tradicional, no hay ambigüedad que detectar y ese
+# precio se usa para los dos juegos. Distinguirlos requeriría que el feed exponga
+# el número de juego, cosa que no hace.
+#
+# En un día normal esto es inerte: verificado el 2026-07-26 sobre los 27 juegos
+# de la ventana, hay 0 o 1 candidato por juego, nunca más.
 _ODDS_MATCH_MIN_MARGIN = timedelta(minutes=90)
 
 
@@ -584,9 +603,15 @@ def get_best_odds_for_teams(
     audit_20260714/verificacion_operativa/reporte.md (V2).
 
     Searches the cached raw events — no extra API call. Returns {} (never a
-    guess) if no matching event falls within ±6h of `commence_time`, if two
-    candidates are exactly tied in distance (ambiguous), or if
-    `commence_time` itself doesn't parse.
+    guess) in three cases: no matching event within ±6h of `commence_time`,
+    `commence_time` itself unparseable, or the two closest candidates within
+    `_ODDS_MATCH_MIN_MARGIN` of each other (see that constant — the real case
+    is a traditional doubleheader, whose two games the MLB schedule places 5
+    minutes apart, making them indistinguishable by start time).
+
+    An empty dict therefore means "no usable price", NOT "no market" — the
+    caller can't tell the three apart, by design, since none of them yields a
+    price. `scripts/cron_health_check.py` separates them from the log.
     """
     target = _parse_commence(commence_time)
     if target is None:

@@ -91,6 +91,16 @@ def _lineas_del_dia(fecha: str) -> tuple[list[str], bool]:
     return texto[inicio:fin], False
 
 
+def _matchups(bloque: list[str], patron: str) -> set[str]:
+    """Matchups DISTINTOS ("AWAY @ HOME") que aparecen en las líneas que casan.
+
+    El emparejador de odds se llama varias veces por juego y por día, así que
+    la unidad honesta para reportarle a un operador es el juego, no la línea.
+    """
+    rx = re.compile(patron)
+    return {m.group(1).strip() for l in bloque for m in [rx.search(l)] if m}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -165,17 +175,26 @@ def main() -> int:
     # —normal a las 07:00 para los juegos de mañana— como cuando no supo cuál de
     # dos eventos es el correcto. Los dos casos son indistinguibles para quien
     # llama, así que se cuentan acá desde el log, que sí los separa.
-    ambiguos = sum(1 for l in bloque if "ambiguous match" in l)
-    sin_mercado = sum(1 for l in bloque if "no odds event for" in l)
-    lineas.append(f"juegos sin mercado (normal a esta hora para los de mañana): {sin_mercado}")
+    #
+    # Se cuentan MATCHUPS DISTINTOS, no líneas: el emparejador se invoca dos
+    # veces por juego y por corrida (run_module.py cuando el selector no le pasó
+    # odds, y publisher.py para las columnas de mercado), y el día tiene dos
+    # corridas — así que contar líneas infla el número ~4x y le haría buscar al
+    # operador cuatro juegos donde hay uno. Verificado sobre logs/daily_picks.log.
+    ambiguos = _matchups(bloque, r"ambiguous match for (.+?) —")
+    sin_mercado = _matchups(bloque, r"no odds event for (.+?) within")
+    lineas.append(
+        f"juegos sin mercado (normal a esta hora para los de mañana): {len(sin_mercado)}"
+    )
     if ambiguos:
         avisos.append(
-            f"IDENTIDAD AMBIGUA: {ambiguos} juego(s) tenían 2 eventos de odds casi "
-            "igual de cerca y el sistema se abstuvo de elegir (típicamente un "
-            "doubleheader). Esos juegos quedaron sin precio y sin pick — correcto, "
-            "pero conviene mirarlos: son picks que no se hicieron."
+            f"IDENTIDAD AMBIGUA: {len(ambiguos)} juego(s) tenían 2 eventos de odds "
+            "casi igual de cerca y el sistema se abstuvo de elegir — casi siempre un "
+            "doubleheader tradicional, cuyos dos juegos el schedule pone a 5 min uno "
+            "del otro. Quedaron sin precio y sin pick, que es lo correcto, pero son "
+            f"picks que NO se hicieron: {', '.join(sorted(ambiguos))}"
         )
-    lineas.append(f"emparejamientos ambiguos (abstenciones): {ambiguos}")
+    lineas.append(f"emparejamientos ambiguos (abstenciones): {len(ambiguos)}")
 
     # ── 3. ¿Produjo? ───────────────────────────────────────────────────────
     conn = sqlite3.connect(f"file:{TR_DB}?mode=ro", uri=True)
