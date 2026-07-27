@@ -29,6 +29,30 @@ def _current_mlb_season() -> int:
     return now.year if now.month >= 3 else now.year - 1
 
 
+def _official_day(game: Dict[str, Any]) -> str:
+    """El día de calendario al que MLB asigna este juego (YYYY-MM-DD).
+
+    `game_date` es el timestamp UTC de PRIMER PITCHEO, no un día: para un
+    nocturno que cruce medianoche UTC —lo normal en la costa oeste— truncarlo
+    da el día siguiente. `officialDate` es el campo que MLB expone justo para
+    esto, y es por el que se consulta el endpoint de schedule.
+
+    Fallback explícito y ruidoso: si `official_date` falta, se vuelve al
+    truncado con un warning. Es el comportamiento viejo (sesgado), así que
+    tiene que verse en el log y no pasar por normal.
+    """
+    official = game.get("official_date")
+    if official:
+        return str(official)[:10]
+    crudo = (game.get("game_date") or "")[:10]
+    logger.warning(
+        "official_date ausente para game_pk=%s (%s @ %s) — usando la fecha UTC %r, "
+        "que para un juego nocturno del oeste es el día siguiente y sesga days_rest",
+        game.get("game_pk"), game.get("away_team"), game.get("home_team"), crudo,
+    )
+    return crudo
+
+
 def _safe_float(value, default: float = 0.0) -> float:
     """Convert value to float, returning default on any failure."""
     try:
@@ -252,6 +276,16 @@ class MLBStatsAPI:
                 "away_pitcher": away_pitcher,
                 "away_pitcher_id": away_pitcher_id,
                 "venue": (game.get("venue") or {}).get("name"),
+                # Doubleheader: 'N' ninguno, 'Y' tradicional (los dos juegos
+                # seguidos, el schedule le pone al segundo un marcador 5 min
+                # después del primero), 'S' partido (275-405 min de separación
+                # real, medido). Se capturan porque son la ÚNICA forma de saber
+                # que dos juegos del mismo par de equipos en el mismo día son
+                # dos juegos distintos: sin esto, la abstención del emparejador
+                # de odds (`odds_fetcher._ODDS_MATCH_MIN_MARGIN`) es correcta
+                # pero no puede explicarse a sí misma en ningún log ni reporte.
+                "doubleheader": game.get("doubleHeader", "N"),
+                "game_number": game.get("gameNumber", 1),
                 "game_type": game_type,
                 "game_context": game_context,
                 "is_playoff": is_playoff,
@@ -1036,7 +1070,13 @@ class MLBStatsAPI:
         except Exception:
             return None
 
-        start_search = game_dt - timedelta(days=3)
+        # 4 y no 3: `game_dt` es UTC, así que para un nocturno del oeste su
+        # `.strftime("%Y-%m-%d")` cae un día después del día oficial y toda la
+        # ventana se corre con él — un equipo cuyo último juego fue 3 días antes
+        # quedaba fuera y se reportaba "sin viaje". Ampliar es seguro por
+        # construcción: abajo se toma el juego previo MÁS RECIENTE, así que un
+        # día extra de margen sólo puede rescatar un caso que se perdía.
+        start_search = game_dt - timedelta(days=4)
         url = f"{self.BASE_URL}/schedule"
         params = {
             "sportId": 1,
@@ -1057,8 +1097,15 @@ class MLBStatsAPI:
                 for game in date_item.get("games", []):
                     gd = game.get("gameDate")
                     if gd and gd < game_date and game.get("status", {}).get("abstractGameState") == "Final":
-                        previous_venue = (game.get("venue") or {}).get("name")
-                        previous_game_date = gd
+                        # Comparación explícita en vez de "gana el último que
+                        # itera": eso dependía de que la API devolviera las
+                        # fechas en orden ascendente, supuesto no documentado
+                        # que además hay que sostener ahora que la ventana es
+                        # más ancha. Con el máximo el resultado no depende del
+                        # orden de llegada.
+                        if previous_game_date is None or gd > previous_game_date:
+                            previous_venue = (game.get("venue") or {}).get("name")
+                            previous_game_date = gd
 
             if not previous_venue or not previous_game_date:
                 # Genuinely known, not fabricated: no completed prior game
@@ -2048,8 +2095,13 @@ class MLBDataIntegrator:
                         if away_bullpen.get("is_tired"):
                             logger.warning(f"  ⚠️ {game['away_team']} bullpen CANSADO ({away_bullpen['innings_last_n_days']} IP)")
 
-                # 3) Batting handedness % (for wind asymmetry in park_weather_engine)
-                game_date_str = (game.get("game_date") or "")[:10]
+                # El DÍA del juego según MLB, no la fecha UTC de arranque. Para
+                # cualquier nocturno que cruce medianoche UTC (la norma en la
+                # costa oeste) `game_date[:10]` es el día SIGUIENTE — misma clase
+                # de bug que el leak V4 que la Fase 2B arregló del lado del
+                # backtest, y que del lado vivo nadie había mirado. Medido sobre
+                # la ventana real: 8 de 27 juegos (30%) difieren.
+                game_date_str = _official_day(game)
                 if game.get("home_team_id") and game_date_str:
                     lhb = self.mlb_api.get_team_batting_handedness_pct(
                         game["home_team_id"], game_date_str
@@ -2093,7 +2145,14 @@ class MLBDataIntegrator:
                         enriched["roof_closed"] = not roof_open
 
                 # 7) Days rest (home and away)
-                game_date_str = (game.get("game_date") or "")[:10]
+                # Éste es el consumidor que el día equivocado SÍ rompía:
+                # get_team_days_rest resta la fecha del último juego —que la API
+                # devuelve como día oficial— de la fecha que se le pasa acá. Con
+                # `game_date[:10]` eso mezclaba unidades y devolvía exactamente
+                # +1 día de descanso: medido, 16 de 16 equipos en los juegos que
+                # difieren. Sesgo direccional, siempre a favor de quien juega de
+                # noche en el oeste.
+                game_date_str = _official_day(game)
                 if game.get("home_team_id") and game_date_str:
                     enriched["home_days_rest"] = self.mlb_api.get_team_days_rest(game["home_team_id"], game_date_str)
                 if game.get("away_team_id") and game_date_str:
@@ -2174,7 +2233,17 @@ class MLBDataIntegrator:
 
             except Exception as e:
                 logger.error(f"❌ Error enriqueciendo {game.get('home_team', 'juego')}: {e}")
-                enriched_games.append(game)
+                # Se conserva el crudo (descartar el enriquecimiento parcial es
+                # lo conservador: nadie sabe hasta dónde llegó), pero MARCADO.
+                # Antes salía indistinguible de un juego normal y aguas abajo
+                # bullpen/defensa/descanso caían a promedio de liga en silencio,
+                # con el pick haciéndose igual. `pitchers_valid=False` es la
+                # respuesta honesta: no se sabe si son válidos.
+                fallido = dict(game)
+                fallido["enrichment_failed"] = True
+                fallido["enrichment_error"] = f"{type(e).__name__}: {e}"[:200]
+                fallido["pitchers_valid"] = False
+                enriched_games.append(fallido)
 
         valid_count = sum(1 for g in enriched_games if g.get("pitchers_valid"))
         logger.warning(f"\n🎉 {len(enriched_games)} juegos totales | ✅ {valid_count} VÁLIDOS | ⚠️ {len(enriched_games) - valid_count} SKIP")

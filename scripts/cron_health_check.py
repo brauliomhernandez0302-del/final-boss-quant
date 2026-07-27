@@ -101,6 +101,51 @@ def _matchups(bloque: list[str], patron: str) -> set[str]:
     return {m.group(1).strip() for l in bloque for m in [rx.search(l)] if m}
 
 
+def _juegos_incompletos_con_pick(bloque, conn, fecha: str):
+    """(matchups marcados NO APOSTAR, picks publicados tras esa marca).
+
+    La atribución es por CORRIDA, no por día: un juego puede estar incompleto a
+    las 07:00 (abridor sin anunciar) y completo a las 13:00, y publicar entonces
+    es correcto. Sólo cuenta el estado más reciente ANTERIOR a cada pick.
+
+    Requiere que las líneas del log tengan fecha (formato desde 2026-07-26); con
+    el formato viejo no se puede fechar un estado y se devuelve vacío en vez de
+    inventar una atribución.
+    """
+    rx = re.compile(
+        r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*?[⚠✅]️?\s+"
+        r"(.+?) @ (.+?): Data (incompleta|completa)"
+    )
+    eventos = []
+    for linea in bloque:
+        m = rx.match(linea)
+        if m:
+            eventos.append((
+                datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"),
+                (m.group(2).strip(), m.group(3).strip()),
+                m.group(4),
+            ))
+    incompletos = {e[1] for e in eventos if e[2] == "incompleta"}
+    if not eventos:
+        return incompletos, set()
+
+    con_pick = set()
+    filas = conn.execute(
+        "SELECT pick_uid, home_team, away_team, published_at FROM picks "
+        "WHERE date(published_at) = ?", (fecha,)
+    ).fetchall()
+    for fila in filas:
+        try:
+            t = datetime.fromisoformat(fila["published_at"].replace("Z", "")).replace(tzinfo=None)
+        except Exception:
+            continue
+        clave = (fila["away_team"], fila["home_team"])
+        previos = [e for e in eventos if e[1] == clave and e[0] <= t]
+        if previos and max(previos, key=lambda e: e[0])[2] == "incompleta":
+            con_pick.add(fila["pick_uid"])
+    return incompletos, con_pick
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -196,9 +241,27 @@ def main() -> int:
         )
     lineas.append(f"emparejamientos ambiguos (abstenciones): {len(ambiguos)}")
 
-    # ── 3. ¿Produjo? ───────────────────────────────────────────────────────
     conn = sqlite3.connect(f"file:{TR_DB}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+
+    # ── 2c. ¿Se apostó sobre un juego que el propio pipeline marcó NO APOSTAR? ──
+    # `get_complete_game_data` calcula `pitchers_valid` y, cuando es falso, loguea
+    # "Data incompleta - NO APOSTAR" — pero NADIE lee ese flag: no existe ningún
+    # gate que lo consuma (auditado el 2026-07-27, paso 4). El caso dominante es
+    # benigno (abridor todavía sin anunciar, y la corrida de las 13:00 ya lo tiene),
+    # así que en vez de suprimir el 20% de los juegos se mide lo que de verdad
+    # importa: si algún pick salió de una corrida que había marcado ESE juego.
+    incompletos, con_pick = _juegos_incompletos_con_pick(bloque, conn, fecha)
+    lineas.append(f"juegos marcados 'NO APOSTAR' (abridor sin anunciar o sin stats): {len(incompletos)}")
+    if con_pick:
+        problemas.append(
+            f"APUESTA SOBRE DATO INCOMPLETO: {len(con_pick)} pick(s) se publicaron sobre "
+            "juegos que la MISMA corrida marcó 'Data incompleta - NO APOSTAR'. El flag "
+            "`pitchers_valid` existe y nadie lo consume, así que el pipeline apostó con "
+            "el abridor caído a fallback. Picks: " + ", ".join(sorted(con_pick))
+        )
+
+    # ── 3. ¿Produjo? ───────────────────────────────────────────────────────
     n_picks = conn.execute(
         "SELECT COUNT(*) FROM picks WHERE date(published_at) = ?", (fecha,)
     ).fetchone()[0]

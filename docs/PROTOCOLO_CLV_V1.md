@@ -45,6 +45,27 @@ El veredicto aplica a ESTE modelo, en moneyline MLB, contra ESTOS libros. F5/der
 Desde D0, los umbrales y definiciones de este documento son inmutables. Solo se permiten clarificaciones que no cambien números ni definiciones, cada una logueada en "Registro" con fecha. Cualquier cosa mayor requiere un PROTOCOLO_CLV_V2 nuevo, commiteado ANTES de aplicarse, con changelog explícito — y reinicia el reloj.
 
 ## Registro
+- **Estado del congelamiento: LEVANTADO** (desde 2026-07-27, decisión del dueño)
+
+  Alcance y motivo: la auditoría paso-a-paso del pipeline (pasos 0..39, en curso) empezó a
+  encontrar defectos que sí mueven λ en vivo, y que por tanto no se podían arreglar con el motor
+  congelado. El primero fue el del paso 4 (`days_rest` calculado con la fecha UTC en vez de la
+  oficial: +1 día de descanso para el 30% de los juegos, medido). El dueño levantó el
+  congelamiento **hasta que la auditoría termine**, no indefinidamente.
+
+  Consecuencias, explícitas para que nadie las descubra después:
+  - **Ninguna corrida de esta ventana es muestra primaria.** Ya no lo era —D0 quedó SUPERSEDED
+    el 2026-07-26— pero ahora además el motor se mueve, así que los picks de este período no son
+    comparables entre sí ni con nada anterior. Son shakedown.
+  - `tests/test_engine_freeze.py` **lee este campo** y no exige el diff vacío mientras diga
+    LEVANTADO. No está desactivado: sigue reportando qué paths del motor cambiaron.
+  - **Para re-armar** hay que hacer las dos cosas: volver este campo a `VIGENTE` **y** re-apuntar
+    el `engine_commit` de abajo al HEAD de ese momento. Cambiar solo una de las dos deja el test
+    fallando contra cambios ya aprobados, que es exactamente el ruido que lo haría ignorable.
+  - El `engine_commit` de abajo se conserva sin tocar: es el commit del último baseline medido
+    (`0.24675 / 55.05%`), y sigue siendo la referencia de contra qué se comparan los deltas de
+    esta auditoría.
+
 - Protocolo commiteado: 2026-07-20, commit siguiente a `80d0fae` en `feature/point-in-time-rebuild`
 - engine_commit congelado: `b3325a52680e44ea75e1b1dcc26f9d9af6369393` (2026-07-25 — rebaseline
   del simulador post-auditoría VAL: truncamiento de walk-off, `rho_game` efectivo sobre las
