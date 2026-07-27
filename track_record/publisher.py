@@ -117,6 +117,23 @@ def _tier_rank(tier: str) -> int:
     return 0
 
 
+def _parse_commence_utc(raw: str) -> Optional[datetime]:
+    """El horario de inicio como datetime con tz UTC, o None si no se puede leer.
+
+    Devolver None en vez de lanzar es deliberado: el llamador trata "no sé cuándo
+    empieza" como motivo para NO publicar, que es lo único honesto cuando la
+    garantía del módulo es justamente que el pick es anterior al primer pitcheo.
+    """
+    if not raw:
+        return None
+    try:
+        txt = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        dt = datetime.fromisoformat(txt)
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    except Exception:
+        return None
+
+
 def _american_to_decimal(american: float) -> float:
     if american >= 100:
         return round(american / 100 + 1, 4)
@@ -206,7 +223,6 @@ def publish_mlb_picks(
             return []
 
     published: List[Dict[str, Any]] = []
-    now_utc = datetime.now(timezone.utc)
 
     for game in games:
         game_pk = game.get("game_pk")
@@ -264,21 +280,33 @@ def publish_mlb_picks(
         commence_raw = game.get("commence_time") or game.get("game_datetime") or game.get("game_date") or ""
 
         # --- enforce pre-game lead ---
-        if commence_raw:
-            try:
-                if commence_raw.endswith("Z"):
-                    commence_raw = commence_raw[:-1] + "+00:00"
-                commence_dt = datetime.fromisoformat(commence_raw)
-                if commence_dt.tzinfo is None:
-                    commence_dt = commence_dt.replace(tzinfo=timezone.utc)
-                lead = (commence_dt - now_utc).total_seconds() / 60
-                if lead < MIN_LEAD_MINUTES:
-                    log.info(
-                        f"Skipping {away_team}@{home_team} — only {lead:.0f}m before game"
-                    )
-                    continue
-            except Exception:
-                pass  # can't parse time → proceed
+        # La garantía central de este módulo ("todo pick lleva un published_at
+        # anterior al primer pitcheo") vale lo que valga este bloque. Hasta el
+        # 2026-07-19 leía claves que _parse_game nunca puebla para MLB, así que
+        # commence_raw era siempre "" y el gate NUNCA disparó — meses con la
+        # garantía vacía y ningún test que lo notara.
+        #
+        # Desde 2026-07-26 falla CERRADO: sin horario, o con un horario que no se
+        # puede parsear, NO se publica. Antes ambos casos seguían de largo
+        # ("except Exception: pass — proceed"), que es exactamente al revés de lo
+        # que una garantía necesita: ante la duda hay que abstenerse, y dejar
+        # rastro para que el dato faltante se note en vez de desaparecer.
+        commence_dt = _parse_commence_utc(commence_raw)
+        if commence_dt is None:
+            log.warning(
+                "Skipping %s @ %s: sin horario de inicio utilizable (%r) — no se "
+                "puede demostrar que el pick es pre-juego, así que no se publica",
+                away_team, home_team, commence_raw,
+            )
+            continue
+
+        # Reloj fresco, no el del inicio del bucle: cada juego corre el pipeline
+        # completo (~20s), así que con 27 juegos el `now` inicial queda hasta 9
+        # minutos atrasado y la anticipación verificada no sería la registrada.
+        lead = (commence_dt - datetime.now(timezone.utc)).total_seconds() / 60
+        if lead < MIN_LEAD_MINUTES:
+            log.info(f"Skipping {away_team}@{home_team} — only {lead:.0f}m before game")
+            continue
 
         log.info(f"Analyzing {away_team} @ {home_team} (pk={game_pk})")
 
@@ -347,6 +375,21 @@ def publish_mlb_picks(
                         "confidence_tier": "SLIGHT",
                         "odds": ml_home_odds,
                     }]
+
+        # Segunda verificación, contra el reloj de AHORA: entre el filtro de más
+        # arriba y este punto corrió el pipeline entero (~20s por juego), y lo que
+        # la garantía promete es sobre `published_at`, que se estampa unas líneas
+        # más abajo — no sobre el momento en que se decidió analizar. Un análisis
+        # terminado que ya no puede demostrarse pre-juego se descarta: cuesta 20
+        # segundos de cómputo y evita un pick que el protocolo no podría usar.
+        lead_ahora = (commence_dt - datetime.now(timezone.utc)).total_seconds() / 60
+        if lead_ahora < MIN_LEAD_MINUTES:
+            log.info(
+                "Descartando %s @ %s tras el análisis — quedaban %.0fm al publicar "
+                "(el pipeline tardó lo suficiente como para cruzar el umbral)",
+                away_team, home_team, lead_ahora,
+            )
+            continue
 
         for bet in best_bets:
             market = _market_label(bet)
