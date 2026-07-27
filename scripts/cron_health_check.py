@@ -159,6 +159,24 @@ def main() -> int:
         )
     lineas.append(f"tracebacks: {crashes}")
 
+    # ── 2b. ¿Se abstuvo de emparejar algún juego con su mercado? ───────────
+    # `get_best_odds_for_teams` resuelve identidad con una heurística de parecido
+    # (nombres + ventana de ±6h) y devuelve {} tanto cuando no hay mercado todavía
+    # —normal a las 07:00 para los juegos de mañana— como cuando no supo cuál de
+    # dos eventos es el correcto. Los dos casos son indistinguibles para quien
+    # llama, así que se cuentan acá desde el log, que sí los separa.
+    ambiguos = sum(1 for l in bloque if "ambiguous match" in l)
+    sin_mercado = sum(1 for l in bloque if "no odds event for" in l)
+    lineas.append(f"juegos sin mercado (normal a esta hora para los de mañana): {sin_mercado}")
+    if ambiguos:
+        avisos.append(
+            f"IDENTIDAD AMBIGUA: {ambiguos} juego(s) tenían 2 eventos de odds casi "
+            "igual de cerca y el sistema se abstuvo de elegir (típicamente un "
+            "doubleheader). Esos juegos quedaron sin precio y sin pick — correcto, "
+            "pero conviene mirarlos: son picks que no se hicieron."
+        )
+    lineas.append(f"emparejamientos ambiguos (abstenciones): {ambiguos}")
+
     # ── 3. ¿Produjo? ───────────────────────────────────────────────────────
     conn = sqlite3.connect(f"file:{TR_DB}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row

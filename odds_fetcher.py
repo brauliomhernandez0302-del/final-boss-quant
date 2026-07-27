@@ -535,6 +535,21 @@ def get_odds_data() -> List[Dict]:
 
 _ODDS_MATCH_WINDOW = timedelta(hours=6)
 
+# Margen por el que el mejor candidato tiene que ganarle al segundo para
+# considerarse identificado. La regla anterior sólo se abstenía ante un empate
+# EXACTO, que en la práctica no ocurre nunca: con dos juegos del mismo par de
+# equipos en la ventana (un doubleheader), bastaba con estar un minuto más cerca
+# para quedarse con el precio del otro partido.
+#
+# 90 minutos separa con holgura los casos reales de los dudosos: un doubleheader
+# tradicional tiene sus dos juegos a ~3.5h y uno partido a ~5-7h, así que el
+# candidato correcto siempre gana por horas; un margen menor a 90 min significa
+# que los dos eventos son igual de plausibles y no hay con qué decidir.
+# Verificado el 2026-07-26 sobre los 27 juegos de la ventana: 0 o 1 candidato por
+# juego, nunca más — este umbral es inerte en operación normal y sólo actúa el
+# día que hay doubleheader, que es para lo que existe.
+_ODDS_MATCH_MIN_MARGIN = timedelta(minutes=90)
+
 
 def _parse_commence(value: str) -> Optional[datetime]:
     """Parse an ISO-8601 commence_time (The Odds API or MLB schedule format,
@@ -609,11 +624,13 @@ def get_best_odds_for_teams(
         return {}
 
     candidates.sort(key=lambda c: c[0])
-    if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+    if len(candidates) > 1 and (candidates[1][0] - candidates[0][0]) < _ODDS_MATCH_MIN_MARGIN:
         logger.warning(
-            "get_best_odds_for_teams: ambiguous match for %s @ %s — 2+ odds events "
-            "equally close (%s) to commence_time=%s, refusing to guess",
-            away_team, home_team, candidates[0][0], commence_time,
+            "get_best_odds_for_teams: ambiguous match for %s @ %s — 2 odds events "
+            "casi igual de cerca de commence_time=%s (%s y %s, margen < %s), "
+            "refusing to guess",
+            away_team, home_team, commence_time,
+            candidates[0][0], candidates[1][0], _ODDS_MATCH_MIN_MARGIN,
         )
         return {}
 
