@@ -71,6 +71,67 @@ def test_los_dos_consumidores_del_dia_usan_el_campo_oficial():
     assert 'game_date_str = (game.get("game_date") or "")[:10]' not in cuerpo
 
 
+# ── 1b. la ventana de viaje ───────────────────────────────────────────────────
+
+def _params_de_la_consulta(monkeypatch, **kwargs):
+    """Captura los params con que get_travel_fatigue consulta el schedule."""
+    capturado = {}
+
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"dates": []}
+
+    api = df.MLBStatsAPI()
+    monkeypatch.setattr(api.session, "get",
+                        lambda url, **kw: (capturado.update(kw.get("params", {})), _Resp())[1])
+    # Sin caché: el fixture escribe en CACHE_DIR y contaminaría la siguiente corrida.
+    monkeypatch.setattr(df.Path, "exists", lambda self: False)
+    api.get_travel_fatigue(**kwargs)
+    return capturado
+
+
+def test_la_ventana_de_viaje_se_ancla_en_el_dia_oficial(monkeypatch):
+    """Nocturno del oeste: el UTC es 07-28, el día del juego es 07-27.
+
+    La ventana pretendida son 3 días hacia atrás desde el DÍA del juego. Con el
+    UTC quedaba [07-26, 07-29] — perdía el 07-24 y llegaba a un día futuro.
+    """
+    p = _params_de_la_consulta(
+        monkeypatch, team_id=1, game_date="2026-07-28T02:10:00Z",
+        current_venue="Angel Stadium", official_date="2026-07-27",
+    )
+    assert p["startDate"] == "2026-07-24"
+    assert p["endDate"] == "2026-07-27"
+
+
+def test_sin_dia_oficial_cae_al_comportamiento_viejo(monkeypatch):
+    """Fallback explícito: sin el dato no se puede anclar, y no se inventa."""
+    p = _params_de_la_consulta(
+        monkeypatch, team_id=1, game_date="2026-07-28T02:10:00Z",
+        current_venue="Angel Stadium",
+    )
+    assert p["startDate"] == "2026-07-25"
+    assert p["endDate"] == "2026-07-28"
+
+
+def test_la_ventana_sigue_siendo_de_tres_dias(monkeypatch):
+    """NO se ensanchó, y no debe ensancharse.
+
+    `hfa_engine._travel_penalty` castiga por millas y husos sin mirar recencia
+    (nunca lee `hours_since_last_game`), así que un día extra de ventana le
+    daría penalización de viaje a un equipo que lleva 3-4 días en la ciudad.
+    Anclar corrige el sesgo; ensanchar lo empeoraría.
+    """
+    from datetime import date, datetime as _dt
+    p = _params_de_la_consulta(
+        monkeypatch, team_id=1, game_date="2026-07-27T23:05:00Z",
+        current_venue="X", official_date="2026-07-27",
+    )
+    ini = _dt.strptime(p["startDate"], "%Y-%m-%d").date()
+    fin = _dt.strptime(p["endDate"], "%Y-%m-%d").date()
+    assert (fin - ini).days == 3
+
+
 # ── 2. doubleheader ───────────────────────────────────────────────────────────
 
 def _payload(**extra):

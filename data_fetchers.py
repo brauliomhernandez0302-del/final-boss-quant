@@ -1054,8 +1054,18 @@ class MLBStatsAPI:
     # ==========================================================
     # FEATURE 7 - TRAVEL FATIGUE (coordinate-based)
     # ==========================================================
-    def get_travel_fatigue(self, team_id: int, game_date: str, current_venue: str = "") -> Optional[Dict[str, Any]]:
-        """Returns travel metrics: miles_traveled, time_zones_crossed, back_to_back, has_travel_fatigue."""
+    def get_travel_fatigue(self, team_id: int, game_date: str, current_venue: str = "",
+                           official_date: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Returns travel metrics: miles_traveled, time_zones_crossed, back_to_back, has_travel_fatigue.
+
+        `game_date` es el timestamp UTC completo y se necesita así: la selección
+        del juego anterior compara timestamp contra timestamp, que es correcto.
+        `official_date` ancla la VENTANA de búsqueda, que es un rango de días y
+        no puede derivarse del UTC sin correrse: para un nocturno del oeste
+        `game_dt.date()` es el día siguiente, así que la ventana quedaba
+        [oficial-2, oficial+1] en vez de [oficial-3, oficial] y un equipo cuyo
+        último juego fue 3 días antes se reportaba como "sin viaje".
+        """
         cache_key = f"travel_{team_id}_{game_date}"
         cache_file = CACHE_DIR / f"{cache_key}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 7200:
@@ -1070,19 +1080,29 @@ class MLBStatsAPI:
         except Exception:
             return None
 
-        # 4 y no 3: `game_dt` es UTC, así que para un nocturno del oeste su
-        # `.strftime("%Y-%m-%d")` cae un día después del día oficial y toda la
-        # ventana se corre con él — un equipo cuyo último juego fue 3 días antes
-        # quedaba fuera y se reportaba "sin viaje". Ampliar es seguro por
-        # construcción: abajo se toma el juego previo MÁS RECIENTE, así que un
-        # día extra de margen sólo puede rescatar un caso que se perdía.
-        start_search = game_dt - timedelta(days=4)
+        # Se ancla la ventana en el día OFICIAL, no se ensancha. Ensancharla
+        # habría sido peor que el bug: `hfa_engine._travel_penalty` castiga por
+        # millas y husos SIN mirar la recencia (nunca lee hours_since_last_game),
+        # así que sumar un día de margen le habría dado penalización de viaje a
+        # equipos que llevan 3-4 días en la ciudad y ya se recuperaron. Anclar
+        # restituye exactamente la ventana pretendida de 3 días.
+        if official_date:
+            try:
+                ancla = datetime.strptime(str(official_date)[:10], "%Y-%m-%d").date()
+            except ValueError:
+                ancla = game_dt.date()
+        else:
+            ancla = game_dt.date()
+        start_search = ancla - timedelta(days=3)
         url = f"{self.BASE_URL}/schedule"
         params = {
             "sportId": 1,
             "teamId": team_id,
             "startDate": start_search.strftime("%Y-%m-%d"),
-            "endDate": game_dt.strftime("%Y-%m-%d"),
+            # El día del juego, no el UTC: el filtro `gd < game_date` de abajo
+            # ya excluye este juego y cualquier otro posterior del mismo día,
+            # así que incluir el día completo es correcto y no cuela nada.
+            "endDate": ancla.strftime("%Y-%m-%d"),
             "gameType": "R,F,D,L,W",
             "hydrate": "venue"
         }
@@ -2120,7 +2140,8 @@ class MLBDataIntegrator:
                     travel = self.mlb_api.get_travel_fatigue(
                         game["away_team_id"],
                         game["game_date"],
-                        current_venue=game.get("venue", "")
+                        current_venue=game.get("venue", ""),
+                        official_date=_official_day(game),
                     )
                     if travel:
                         enriched["away_travel_fatigue"] = travel
