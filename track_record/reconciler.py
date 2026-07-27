@@ -74,6 +74,42 @@ def _fetch_mlb_final_v2(game_pk: int) -> Optional[Tuple[int, int]]:
         return None
 
 
+def _fetch_official_date(game_pk: int) -> Optional[str]:
+    """La fecha de calendario del juego FINAL que hoy vive bajo este `game_pk`.
+
+    MLB **reutiliza el mismo gamePk** cuando un juego se suspende y se repone:
+    el endpoint devuelve dos entradas para el mismo pk, la original con estado
+    `Postponed` y la reposición con `Final`. El reconciliador buscaba por pk y
+    verificaba `status == Final` sin mirar nunca la fecha, así que graduaba el
+    pick contra el partido del día siguiente.
+
+    Caso real (2026-07-21, `gamePk=823519`, PIT@NYY): el pick `OVER 9.0` se
+    publicó el 20/07 contra Will Warren; el juego se suspendió y se repuso el
+    22/07 con **Max Fried** en la loma. Terminó 2-0 y el pick se graduó LOSS.
+    El modelo nunca analizó ese partido — otro abridor, otro día, otro clima —
+    pero el resultado entró al ledger con PnL y todo, indistinguible de uno
+    legítimo. Esa es la peor forma del error: silenciosa y con cara de válida.
+
+    Devuelve la `officialDate` de la entrada Final, o None si no hay ninguna.
+    """
+    try:
+        import requests
+        resp = requests.get(
+            "https://statsapi.mlb.com/api/v1/schedule",
+            params={"sportId": 1, "gamePk": game_pk}, timeout=10,
+        )
+        resp.raise_for_status()
+        for d in resp.json().get("dates", []):
+            for g in d.get("games", []):
+                estado = (g.get("status") or {}).get("abstractGameState", "")
+                if estado == "Final":
+                    return g.get("officialDate") or d.get("date")
+        return None
+    except Exception as e:
+        log.debug(f"officialDate lookup error for pk={game_pk}: {e}")
+        return None
+
+
 def _fetch_f5_score(game_pk: int) -> Optional[Tuple[int, int]]:
     """Return (home_f5_runs, away_f5_runs) from innings 1-5, or None if incomplete."""
     try:
@@ -228,6 +264,9 @@ def reconcile_pending(
 
     pending = db.get_pending(sport=sport)
     stats = {"resolved": 0, "skipped": 0, "voided": 0, "errors": 0}
+    # Varios picks comparten game_pk (hoy: 54 pendientes sobre 23 juegos), así que
+    # la fecha oficial se consulta una vez por juego y no una por pick.
+    fechas_por_juego: Dict[int, Optional[str]] = {}
 
     for pick in pending:
         gdate = pick["game_date"]
@@ -252,6 +291,34 @@ def reconcile_pending(
             continue
 
         home_score, away_score = score
+
+        # ¿Es el MISMO partido que se predijo? MLB reutiliza el gamePk cuando un
+        # juego se suspende y se repone en otra fecha (ver _fetch_official_date),
+        # y ese partido de reposición suele tener otro abridor. Graduar el pick
+        # contra él lo convierte en un resultado sobre un juego que el modelo
+        # nunca analizó — con PnL y todo, indistinguible de uno legítimo. Se
+        # marca VOID, que es lo que este módulo ya hace ante cualquier cosa que
+        # no puede graduar honestamente (mismo criterio que el runline sin signo).
+        pk_int = int(game_pk)
+        if pk_int not in fechas_por_juego:
+            fechas_por_juego[pk_int] = _fetch_official_date(pk_int)
+        fecha_final = fechas_por_juego[pk_int]
+        if fecha_final and fecha_final != gdate:
+            ok = db.resolve_pick(
+                pick_uid=pick["pick_uid"],
+                actual_home_score=None, actual_away_score=None,
+                result="VOID", profit_loss_units=0.0,
+            )
+            log.warning(
+                "VOID %s: el juego se jugó el %s, no el %s (suspendido y repuesto "
+                "bajo el mismo gamePk=%s). El pick se hizo para otro partido.",
+                pick["pick_uid"], fecha_final, gdate, game_pk,
+            )
+            if ok:
+                db.upsert_daily_snapshot(gdate)   # igual que el camino normal
+            stats["voided" if ok else "errors"] += 1
+            continue
+
         market = pick["market"]
         total_line = pick["total_line"] if "total_line" in pick.keys() else None
         runline_point = pick["runline_point"] if "runline_point" in pick.keys() else None

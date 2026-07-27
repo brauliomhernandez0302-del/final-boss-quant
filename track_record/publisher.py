@@ -77,6 +77,19 @@ def _get_engine_commit() -> Optional[str]:
         log.warning("Could not resolve engine_commit (git rev-parse HEAD failed)")
         return None
 
+# Estados de MLB en los que un juego todavía no arrancó y se espera que se
+# juegue. Lista de permitidos a propósito (ver el comentario en el bucle):
+# ante un estado desconocido el sistema se abstiene en vez de publicar.
+# Los que quedan afuera y por qué: Final/Game Over (ya se decidió, no hay
+# mercado), Postponed (marcador de un juego que no se jugará en esa fecha),
+# In Progress (ya arrancó), Suspended/Cancelled (no se completará).
+PUBLISHABLE_STATUSES = frozenset({"Scheduled", "Pre-Game", "Warmup"})
+
+# R = temporada regular · F/D/L/W = playoffs. Fuera quedan spring training (S),
+# exhibición (E) y all-star (A): el modelo está calibrado sobre temporada
+# regular y no tiene por qué opinar de un partido de otra naturaleza.
+PUBLISHABLE_GAME_TYPES = frozenset({"R", "F", "D", "L", "W"})
+
 # Minimum minutes before first pitch that we must publish
 MIN_LEAD_MINUTES = 30
 
@@ -215,6 +228,39 @@ def publish_mlb_picks(
         # published_at timestamp", per its module docstring). game_date is
         # kept last in the fallback chain so a future/other-sport caller
         # that DOES populate commence_time/game_datetime is unaffected.
+        # ── ¿es un juego sobre el que se puede opinar? ──────────────────────
+        # `_parse_game` ya trae `status` (detailedState de MLB) y `game_type`, y
+        # hasta hoy nadie los miraba: el único filtro entre "el calendario lo
+        # lista" y "publico un pick" era MIN_LEAD_MINUTES. Un juego ya suspendido
+        # conserva su horario original (verificado sobre las 25 suspensiones de
+        # 2026: cada una mantiene su gameDate y agrega rescheduleDate aparte), así
+        # que pasaba el filtro de anticipación sin objeción.
+        #
+        # Lista de PERMITIDOS, no de excluidos: un estado desconocido o nuevo debe
+        # hacer que el sistema se abstenga, no que publique. Se registra en el log
+        # para que un estado legítimo que falte acá se note en vez de desaparecer.
+        #
+        # api/mlb_presentation.py ya filtraba esto para el dashboard —
+        # _PICKER_EXCLUDED_STATUSES— pero esa es la ruta que sólo dibuja pantallas;
+        # la que publica picks reales al ledger no tenía nada.
+        estado = game.get("status")
+        if estado is not None and estado not in PUBLISHABLE_STATUSES:
+            log.info(
+                "Skipping %s @ %s: estado=%r no es publicable "
+                "(se opina sólo sobre juegos que aún no arrancaron y se van a jugar)",
+                away_team, home_team, estado,
+            )
+            continue
+
+        tipo = game.get("game_type")
+        if tipo is not None and tipo not in PUBLISHABLE_GAME_TYPES:
+            log.info(
+                "Skipping %s @ %s: game_type=%r fuera de alcance del modelo "
+                "(entrenado en temporada regular y playoffs)",
+                away_team, home_team, tipo,
+            )
+            continue
+
         commence_raw = game.get("commence_time") or game.get("game_datetime") or game.get("game_date") or ""
 
         # --- enforce pre-game lead ---
