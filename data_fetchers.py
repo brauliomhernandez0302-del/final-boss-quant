@@ -399,7 +399,7 @@ class MLBStatsAPI:
 
             era = float(stat.get("era", -1))
             whip = float(stat.get("whip", -1))
-            innings = float(stat.get("inningsPitched", 0.0))
+            innings = self._ip_to_float(stat.get("inningsPitched", 0.0))
             so = int(stat.get("strikeOuts", 0))
             bb = int(stat.get("baseOnBalls", 0))
 
@@ -533,7 +533,7 @@ class MLBStatsAPI:
         try:
             era = float(stat.get("era", -1))
             whip = float(stat.get("whip", -1))
-            innings = float(stat.get("inningsPitched", 0.0))
+            innings = self._ip_to_float(stat.get("inningsPitched", 0.0))
             if era < 0 or era > 99.0:
                 return None
             if whip < 0 or whip > 10.0:
@@ -642,7 +642,7 @@ class MLBStatsAPI:
             if not recent:
                 return None
             total_er = sum(int(s.get("stat", {}).get("earnedRuns", 0)) for s in recent)
-            total_ip = sum(float(s.get("stat", {}).get("inningsPitched", 0)) for s in recent)
+            total_ip = sum(self._ip_to_float(s.get("stat", {}).get("inningsPitched", 0)) for s in recent)
             era_last_n = round((total_er / total_ip * 9), 2) if total_ip > 0 else 4.50
             avg_ips_recent = round(total_ip / len(recent), 2) if recent else None
             last_start = recent[0]
@@ -672,7 +672,7 @@ class MLBStatsAPI:
             _metrics = []
             for _s in chrono:
                 _st = _s.get("stat", {})
-                _ip = float(_st.get("inningsPitched", 0))
+                _ip = self._ip_to_float(_st.get("inningsPitched", 0))
                 _er = int(_st.get("earnedRuns", 0))
                 _so = int(_st.get("strikeOuts", 0))
                 _bb = int(_st.get("baseOnBalls", 0))
@@ -740,7 +740,7 @@ class MLBStatsAPI:
                 if 1 <= inning <= 5:
                     stat = split.get("stat", {})
                     f5_er += int(stat.get("earnedRuns", 0))
-                    f5_ip += float(stat.get("inningsPitched", 0.0))
+                    f5_ip += self._ip_to_float(stat.get("inningsPitched", 0.0))
 
             if f5_ip < 5.0:
                 cache_file.write_text(json.dumps({"_failed": True}))
@@ -969,7 +969,26 @@ class MLBStatsAPI:
     # ==========================================================
     @staticmethod
     def _ip_to_float(ip_str) -> float:
-        """Convert baseball IP notation '4.2' (4⅔) to decimal 4.667."""
+        """Convert baseball IP notation '4.2' (4⅔) to decimal 4.667.
+
+        Existía desde antes y la usaba UN solo sitio; los otros ocho hacían
+        `float(...)` crudo sobre el mismo campo (auditado el 2026-07-28, paso 7).
+        Todos eran denominadores de tasas, así que el efecto es sistemático y de
+        un solo signo: `float("X.1")=X.1 < X+1/3` y `float("X.2")=X.2 < X+2/3`,
+        nunca al revés, o sea denominador chico y tasa inflada.
+
+        Lo peor no era el sesgo en sí sino su asimetría: el WHIP y el ERA
+        GENERALES vienen del campo ya calculado por la API (innings reales),
+        mientras que los splits, el FIP, K/9, BB/9 y los IP por inicio se
+        recalculaban acá con el denominador mal. Cualquier RAZÓN entre un número
+        propio y uno de la API quedaba sesgada de un solo lado — que es
+        exactamente lo que hace `_adjust_pitcher_platoon`.
+
+        Medido sobre los 51 abridores de la cartelera: FIP +0.0072 carreras/9 de
+        media (máx 0.0985), K/9 +0.46% (máx +6.48%), y en los 105 splits de
+        platoon el WHIP salía inflado en el 100% de los casos (media +0.66%,
+        máx +5.69%) sobre un rango útil de sólo ±7%.
+        """
         try:
             s = str(ip_str or "0")
             if "." in s:
@@ -1121,7 +1140,7 @@ class MLBStatsAPI:
                 stat = splits[0].get("stat", {})
                 ip_raw = stat.get("inningsPitched", "0")
                 try:
-                    ip = float(ip_raw)
+                    ip = self._ip_to_float(ip_raw)
                 except (ValueError, TypeError):
                     ip = 0.0
                 if ip < 3.0:
@@ -1438,7 +1457,7 @@ class MLBStatsAPI:
             tbf = int(stat.get("battersFaced",  0))
             ip_str = stat.get("inningsPitched", "0")
             try:
-                ip = float(ip_str)
+                ip = self._ip_to_float(ip_str)
             except (TypeError, ValueError):
                 ip = 0.0
 
@@ -1608,7 +1627,7 @@ class MLBStatsAPI:
             stat = s.get("stat", {})
             ip_raw = stat.get("inningsPitched", "0") or "0"
             try:
-                ip = float(ip_raw)
+                ip = self._ip_to_float(ip_raw)
             except (ValueError, TypeError):
                 ip = 0.0
             if ip < 5.0:
@@ -2517,6 +2536,11 @@ class MLBDataIntegrator:
                 _mano_vs_visita = self.mlb_api.get_pitcher_throws(game.get("home_pitcher_id"))
                 enriched["home_faces_hand"] = _mano_vs_local
                 enriched["away_faces_hand"] = _mano_vs_visita
+                # La mano de cada abridor, por su propio nombre: el prior
+                # poblacional del ajuste platoon es opuesto para derechos y
+                # zurdos, así que el motor necesita saber cuál es cuál.
+                enriched["home_pitcher_throws"] = _mano_vs_visita
+                enriched["away_pitcher_throws"] = _mano_vs_local
                 for _side, _lineup_key, _lhb_key, _mano in [
                     ("home", "home_lineup", "home_lineup_lhb_pct", _mano_vs_local),
                     ("away", "away_lineup", "away_lineup_lhb_pct", _mano_vs_visita),

@@ -56,6 +56,49 @@ _LG_K_BB           = _LG_K_PCT - _LG_BB_PCT   # 0.140
 _LG_XWOBA_ALLOWED  = LEAGUE_AVG_XWOBA   # single source of truth: config.py (aligned with Bullpen/TTE)
 _LG_BRL_PCT        = 8.0               # barrel% allowed, starter avg
 
+# ── Platoon: constantes MEDIDAS, no asumidas (auditoría paso 7, 2026-07-28) ───
+#
+# Razón poblacional WHIP(vs zurdos) / WHIP(vs derechos), sobre abridores con al
+# menos 30 IP en CADA split (temporada 2026, 174 abridores de dos semanas de
+# cartelera). Es la mediana, no la media, porque la distribución tiene cola:
+#
+#     RHP  n=88  mediana 1.1440   (sufre ~14% más contra zurdos)
+#     LHP  n=11  mediana 0.8515   (sufre ~15% más contra derechos)
+#
+# Existen porque el efecto platoon es POBLACIONAL: regresar hacia "sin split"
+# (razón 1.0) sesgaría a todo abridor con poca muestra en la misma dirección,
+# subestimando su platoon siempre. Este prior lo evita.
+#
+# ⚠️ El de LHP se apoya en n=11. Es evidencia fina y el signo importa más que el
+# valor exacto — re-medir cuando haya una temporada completa.
+_PLATOON_RATIO_POBLACIONAL = {"R": 1.1440, "L": 0.8515}
+
+# Varianza de TALENTO platoon individual, o sea cuánta de la dispersión que se
+# observa entre abridores es real y cuánta es error muestral. Descomposición
+# analítica sobre 119 RHP: (H+BB) ~ Poisson(WHIP·IP), así que la varianza
+# relativa del WHIP de un split es 1/(WHIP·IP) y la de la razón se compone.
+#
+#     varianza observada de la razón   0.10691
+#     varianza esperada sólo por ruido 0.07530
+#     → sólo el 30% de lo que se ve es talento; el 70% es tamaño de muestra.
+#
+# Se usa como Var_talento en w = Var_talento/(Var_talento + Var_muestral_i), que
+# da un peso POR ABRIDOR según su propia muestra en vez de un k global.
+#
+# Por qué no se barrió empíricamente como NB_DISPERSION: `backtest_and_retrain.py`
+# no ejercita el camino de platoon en absoluto (cero referencias), así que no hay
+# instrumento de Brier que llegue hasta acá. Ésta es la medición autocontenida
+# que sí se puede hacer.
+_PLATOON_VAR_TALENTO = 0.0316
+
+# Nota sobre la métrica: se evaluó cambiar WHIP por (K-BB)/9 u OPS, que serían
+# más independientes de la defensa. Medido con el mismo método, la fracción de
+# talento individual es 30% para WHIP, 0% para (K-BB)/9 como diferencia
+# (obs/ruido 0.93) y 0% para K/9 (0.92). En esta muestra WHIP es la única con
+# señal individual detectable; el efecto de (K-BB) existe pero es puramente
+# poblacional (media -0.911 vs zurdos), y eso ya lo captura el prior de arriba.
+# n=119 y una temporada parcial: re-visitar con más datos.
+
 # Bayesian stabilisation constants for ERA estimators (TBF at 50% reliability),
 # branched by which estimator actually won the fallback chain below. A single
 # uniform k=350 previously applied to all of them regardless of which one was
@@ -366,6 +409,47 @@ class PitcherEngine:
         vs_rhb = platoon.get("vs_rhb") or {}
         if not vs_lhb or not vs_rhb:
             return 1.0
+
+        whip_l_obs = float(vs_lhb.get("whip") or 0)
+        whip_r_obs = float(vs_rhb.get("whip") or 0)
+        ip_l = float(vs_lhb.get("ip") or 0)
+        ip_r = float(vs_rhb.get("ip") or 0)
+        whip_gen = float(pitcher.get("whip") or 0)
+        if min(whip_l_obs, whip_r_obs, ip_l, ip_r, whip_gen) <= 0:
+            return 1.0
+
+        # ── Regresión del split (auditoría paso 7) ────────────────────────────
+        # Antes esto entraba crudo, con un piso de 5 IP por split y nada más. El
+        # resultado medido sobre 50 abridores: los de muestra chica se iban al
+        # tope del recorte (8.2 IP → 0.930; 11.0 IP → 1.070) y los de muestra
+        # grande daban ~1.00 (52-57 IP → 0.979-1.005). O sea que la magnitud del
+        # factor la mandaba el error muestral, no la habilidad — y el recorte no
+        # protegía del dato malo, era DONDE ATERRIZABA el dato malo.
+        #
+        # El prior NO es "este pitcher no tiene split": el efecto platoon es
+        # poblacional y grande, así que regresar hacia diferencial cero sesgaría
+        # a todos en la misma dirección. Se regresa hacia el split TÍPICO DE SU
+        # MANO, anclado en su propio WHIP general.
+        mano = pitcher.get("throws")
+        ratio_pop = _PLATOON_RATIO_POBLACIONAL.get(mano)
+        if ratio_pop is None:
+            # Sin saber con qué mano lanza no hay prior poblacional que aplicar;
+            # el neutro honesto es "no tiene split", no inventarle uno.
+            ratio_pop = 1.0
+        expo_l = ip_l / (ip_l + ip_r)          # cuánto de su exposición fue vs zurdos
+        whip_r_prior = whip_gen / (expo_l * ratio_pop + (1.0 - expo_l))
+        whip_l_prior = ratio_pop * whip_r_prior
+
+        # Peso del dato propio = Var_talento / (Var_talento + Var_muestral_suya).
+        # Ambos términos medidos, ninguno asumido: ver _PLATOON_VAR_TALENTO.
+        ratio_obs = whip_l_obs / whip_r_obs
+        var_muestral = ratio_obs ** 2 * (
+            1.0 / (whip_l_obs * ip_l) + 1.0 / (whip_r_obs * ip_r)
+        )
+        w = _PLATOON_VAR_TALENTO / (_PLATOON_VAR_TALENTO + var_muestral)
+
+        vs_lhb = {"whip": w * whip_l_obs + (1.0 - w) * whip_l_prior}
+        vs_rhb = {"whip": w * whip_r_obs + (1.0 - w) * whip_r_prior}
 
         # Misma cadena que park_weather_engine: lineup confirmado → mejor
         # estimación disponible (mezcla de alineación previa y roster) → media de

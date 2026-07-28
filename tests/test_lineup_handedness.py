@@ -122,8 +122,11 @@ def test_el_pitcher_engine_usa_la_cadena_y_no_solo_el_lineup():
     from config import LEAGUE_AVG_LHB_PCT
 
     e = PitcherEngine()
-    pitcher = {"whip": 1.20, "platoon_splits": {
-        "vs_lhb": {"whip": 1.60}, "vs_rhb": {"whip": 1.00}}}
+    # `ip` en cada split: sin muestra el motor devuelve neutro por diseño (paso
+    # 7), así que un fixture sin ella no puede distinguir nada. El fetcher real
+    # siempre la trae.
+    pitcher = {"whip": 1.20, "throws": "R", "platoon_splits": {
+        "vs_lhb": {"whip": 1.60, "ip": 60.0}, "vs_rhb": {"whip": 1.00, "ip": 60.0}}}
 
     solo_equipo = e._adjust_pitcher_platoon(pitcher, {"away_lhb_pct": 0.70}, is_home=True)
     con_lineup = e._adjust_pitcher_platoon(

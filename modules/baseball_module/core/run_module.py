@@ -341,6 +341,9 @@ def run_module(
             # `innings_pitched` queda intacto porque responde otra pregunta.
             'ip_mlb_equivalent':     home_ps.get('ip_mlb_equivalent',
                                                  home_ps.get('innings_pitched', 0)),
+            # Mano con la que lanza — la necesita el prior poblacional del
+            # ajuste platoon, que es opuesto para derechos y zurdos.
+            'throws':                game_data.get('home_pitcher_throws'),
             # Platoon splits + opposing lineup handedness
             'platoon_splits':        home_ps.get('platoon_splits'),
         }
@@ -366,6 +369,7 @@ def run_module(
             'innings_pitched':       away_ps.get('innings_pitched', 0),
             'ip_mlb_equivalent':     away_ps.get('ip_mlb_equivalent',
                                                  away_ps.get('innings_pitched', 0)),
+            'throws':                game_data.get('away_pitcher_throws'),
             # Platoon splits + opposing lineup handedness
             'platoon_splits':        away_ps.get('platoon_splits'),
         }
