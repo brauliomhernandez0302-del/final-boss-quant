@@ -43,6 +43,16 @@ def _current_mlb_season() -> int:
 #   - AA (0.15): la misma brecha, más ancha.
 # Ninguno es 0: un abridor con 180 innings de la temporada pasada sí dice algo,
 # y tirar esa información sería tan deshonesto como creerle entera.
+# Innings mínimos para tratar una muestra de MLB de esta temporada como usable
+# por sí sola. Un solo número para dos decisiones que tienen que coincidir:
+# si un split de lado alcanza para desplazar a la línea consolidada
+# (`_select_best_stats`) y si el tier 1 alcanza para no bajar a los tiers de
+# respaldo (`get_pitcher_stats_full_fallback`). Estaban como literales
+# separados y por eso podían discrepar: un split de 2 IP ganaba la primera
+# decisión y perdía la segunda, mandando a un pitcher con datos reales de MLB
+# a las menores.
+_MIN_USABLE_MLB_IP = 5.0
+
 _IP_EQ_MLB_PREV_SEASON = 0.50
 _IP_EQ_AAA = 0.25
 _IP_EQ_AA = 0.15
@@ -530,12 +540,27 @@ class MLBStatsAPI:
             else:
                 logger.warning("  ⚠️ Playoff con IP bajas, buscando fallback...")
 
-        if is_home and "home" in all_stats:
-            logger.info("  ✅ Usando HOME split")
-            return all_stats["home"], "home_split"
-        if (not is_home) and "away" in all_stats:
-            logger.info("  ✅ Usando AWAY split")
-            return all_stats["away"], "away_split"
+        # El split del lado sólo gana si es una muestra usable POR SÍ SOLA. Antes
+        # se devolvía sin mirar los innings, y un split de 2 IP desplazaba a la
+        # línea consolidada del mismo pitcher — que además, aguas arriba, hacía
+        # que `get_pitcher_stats_full_fallback` lo diera por insuficiente y se
+        # fuera a la temporada anterior o a las menores, saltándose datos reales
+        # de MLB de esta temporada que estaban ahí mismo.
+        #
+        # Caso real que lo destapó (Eddy Yean, 2026): home 5.2 IP ERA 3.18,
+        # away 2.0 IP ERA 0.00, OVERALL 7.2 IP ERA 2.35. Como visitante se
+        # evaluaba con 43 innings de Doble-A en vez de con sus 7.2 de MLB.
+        lado = "home" if is_home else "away"
+        etiqueta = f"{lado}_split"
+        split = all_stats.get(lado)
+        if split is not None:
+            if split.get("innings_pitched", 0) >= _MIN_USABLE_MLB_IP:
+                logger.info(f"  ✅ Usando {lado.upper()} split")
+                return split, etiqueta
+            logger.info(
+                "  ↪ split %s con sólo %s IP (< %s): se prefiere la línea consolidada",
+                lado.upper(), split.get("innings_pitched", 0), _MIN_USABLE_MLB_IP,
+            )
 
         if "regular_overall" in all_stats:
             logger.info("  ✅ Usando OVERALL (regular season)")
@@ -780,7 +805,7 @@ class MLBStatsAPI:
         mlb_stats, source = self.get_pitcher_stats_with_fallback(
             pitcher_id, season, is_playoff=is_playoff, is_home=is_home
         )
-        if mlb_stats and mlb_stats.get("innings_pitched", 0) >= 5.0:
+        if mlb_stats and mlb_stats.get("innings_pitched", 0) >= _MIN_USABLE_MLB_IP:
             # Es exactamente lo que el consumidor quiere medir: sin descuento.
             mlb_stats["ip_mlb_equivalent"] = float(mlb_stats["innings_pitched"])
             return mlb_stats, source or "mlb_current"

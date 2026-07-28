@@ -84,6 +84,49 @@ def test_el_era_del_staff_vale_cero(monkeypatch):
     assert out["ip_mlb_equivalent"] == 0.0
 
 
+# ── el split del lado no debe desplazar a la línea consolidada ────────────────
+
+def _api_con_splits(monkeypatch, home_ip, away_ip, overall_ip):
+    api = df.MLBStatsAPI()
+    def _stat(ip, era):
+        return {"era": era, "whip": 1.2, "fip": era, "innings_pitched": ip}
+    monkeypatch.setattr(api, "_fetch_home_away_splits",
+                        lambda pid, s: {"home": _stat(home_ip, 3.18), "away": _stat(away_ip, 0.00)})
+    monkeypatch.setattr(api, "_fetch_single_stat_type",
+                        lambda *a, **k: _stat(overall_ip, 2.35))
+    return api
+
+
+def test_un_split_fino_cede_ante_el_consolidado(monkeypatch):
+    """Caso real que lo destapó (Eddy Yean, 2026): home 5.2 IP ERA 3.18,
+    away 2.0 IP ERA 0.00, overall 7.2 IP ERA 2.35. Como visitante se evaluaba
+    con el split de 2 innings — y peor, aguas arriba eso lo daba por
+    insuficiente y lo mandaba a Doble-A, con 43 innings de otra liga
+    desplazando a datos reales de MLB que estaban ahí mismo.
+    """
+    api = _api_con_splits(monkeypatch, home_ip=5.2, away_ip=2.0, overall_ip=7.2)
+    stats, src = api.get_pitcher_stats_with_fallback(1, 2026, is_playoff=False, is_home=False)
+    assert src == "regular_overall"
+    assert stats["innings_pitched"] == 7.2
+
+
+def test_un_split_suficiente_sigue_ganando(monkeypatch):
+    """El split es MÁS específico: cuando es usable por sí solo, se prefiere."""
+    api = _api_con_splits(monkeypatch, home_ip=5.2, away_ip=2.0, overall_ip=7.2)
+    stats, src = api.get_pitcher_stats_with_fallback(1, 2026, is_playoff=False, is_home=True)
+    assert src == "home_split"
+    assert stats["innings_pitched"] == 5.2
+
+
+def test_el_umbral_es_uno_solo_para_las_dos_decisiones():
+    """Estaban como literales separados y por eso podían discrepar: un split de
+    2 IP ganaba la decisión de `_select_best_stats` y perdía la de
+    `get_pitcher_stats_full_fallback`, y el pitcher terminaba en las menores."""
+    fuente = open(df.__file__.replace(".pyc", ".py"), encoding="utf-8").read()
+    assert fuente.count("_MIN_USABLE_MLB_IP") >= 3
+    assert ">= 5.0" not in fuente.split("def get_pitcher_stats_full_fallback")[1][:2000]
+
+
 # ── consumidor 1: la regresión del motor ──────────────────────────────────────
 
 def _quality(ip_crudo, ip_eq=None):
