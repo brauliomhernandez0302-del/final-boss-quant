@@ -135,6 +135,31 @@ def test_la_confianza_ya_distingue_procedencia():
     assert mlb > aaa > aa > staff, f"orden roto: {mlb} {aaa} {aa} {staff}"
 
 
+def test_el_mejor_prior_weight_no_puntua_como_el_peor():
+    """`gm.get(...) or 1.0` convertía un prior_weight de 0.0 —señal 100% de la
+    temporada en curso, el MEJOR caso— en 1.0, el PEOR, porque en Python 0.0 es
+    falsy. Medido antes del fix: 0.0 → 0.65, igual que 1.0, mientras 0.001 daba
+    0.9996. Un salto de 0.35 justo en el input más favorable.
+
+    Latente hoy (prior_w = 1000/(1000+PA) no llega a 0.000 con PA reales), pero
+    el modo de falla es silencioso y en la dirección equivocada.
+    """
+    base = dict(home_sp_ip=200, away_sp_ip=200, home_kalman_n_obs=99, away_kalman_n_obs=99)
+    def c(pw):
+        return confianza(dict(base, home_prior_weight=pw, away_prior_weight=pw))
+
+    assert c(0.0) > c(0.5) > c(1.0), "más señal actual ⇒ más confianza, monótono"
+    assert c(0.0) == pytest.approx(c(0.001), abs=0.001), "sin saltos en el borde"
+
+
+def test_un_prior_weight_ausente_sigue_siendo_el_peor_caso():
+    """La ausencia de información nunca debe producir confianza alta — ese
+    contrato del docstring no se toca al arreglar el 0.0."""
+    base = dict(home_sp_ip=200, away_sp_ip=200, home_kalman_n_obs=99, away_kalman_n_obs=99)
+    assert confianza(base) == confianza(dict(base, home_prior_weight=1.0, away_prior_weight=1.0))
+    assert confianza(dict(base, home_prior_weight=None, away_prior_weight=None)) == confianza(base)
+
+
 def test_la_saturacion_a_30_ip_sigue_ahi_y_es_deliberada():
     """Límite conocido, documentado a propósito: q_sp satura en ip/30, así que
     una muestra grande del año anterior (180 IP → 90 equivalentes) sigue dando

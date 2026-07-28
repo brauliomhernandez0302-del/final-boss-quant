@@ -477,9 +477,21 @@ def compute_data_quality_confidence(game_meta: Optional[Dict[str, Any]]) -> floa
     actual 51.7%). Do not treat this as having fixed that; it hasn't.
     """
     gm = game_meta or {}
+    # `x if x is not None else 1.0`, NO `x or 1.0`: en Python 0.0 es falsy, así
+    # que el `or` convertía un prior_weight legítimo de 0.0 —que es el MEJOR
+    # caso, señal 100% de la temporada en curso— en 1.0, el PEOR. Medido: 0.0
+    # daba 0.65 igual que 1.0, mientras 0.001 daba 0.9996. Un salto de 0.35
+    # justo en el input más favorable.
+    #
+    # Hoy no dispara: prior_w = 1000/(1000+PA) redondeado a 3 decimales sólo
+    # llega a 0.000 con PA > 2,000,000, y una temporada de equipo son ~6,200.
+    # Se arregla igual porque la distancia a que dispare es un cambio de
+    # constante o de redondeo, y el modo de falla es silencioso y al revés.
+    _hpw = gm.get("home_prior_weight")
+    _apw = gm.get("away_prior_weight")
     prior_weight = max(
-        float(gm.get("home_prior_weight", 1.0) or 1.0),
-        float(gm.get("away_prior_weight", 1.0) or 1.0),
+        float(_hpw if _hpw is not None else 1.0),
+        float(_apw if _apw is not None else 1.0),
     )
     sp_ip = min(
         float(gm.get("home_sp_ip", 0) or 0),
