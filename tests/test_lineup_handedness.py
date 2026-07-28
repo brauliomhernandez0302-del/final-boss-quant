@@ -137,6 +137,42 @@ def test_el_pitcher_engine_usa_la_cadena_y_no_solo_el_lineup():
         pitcher, {"away_lhb_pct": LEAGUE_AVG_LHB_PCT}, is_home=True)
 
 
+def test_nadie_vuelve_a_rellenar_la_clave_aguas_abajo():
+    """El test que faltaba, y que dejó el arreglo muerto en producción.
+
+    `data_fetchers` dejaba de rellenar `*_lineup_lhb_pct`... y dos pasos más
+    abajo `run_module` hacía `setdefault(..., 0.45)`, así que la cadena seguía
+    sin llegar nunca al roster. Los tests de arriba pasaban porque prueban
+    `get_complete_game_data` AISLADO — el defecto vivía en la costura.
+
+    Esto verifica el pipeline, no el componente: ningún archivo del camino de
+    predicción puede volver a inyectar un valor por defecto en esa clave.
+    """
+    import pathlib
+    import re
+    sospechosos = []
+    for ruta in [
+        "modules/baseball_module/core/run_module.py",
+        "data_fetchers.py",
+        "modules/baseball_module/context_engine/pitcher_engine.py",
+        "modules/baseball_module/hfa/park_weather_engine.py",
+    ]:
+        for n, linea in enumerate(pathlib.Path(ruta).read_text(encoding="utf-8").splitlines(), 1):
+            if linea.lstrip().startswith("#"):
+                continue
+            if "lineup_lhb_pct" not in linea:
+                continue
+            # Asignar o defaultear un número a la clave la vuelve a tapar.
+            if re.search(r"lineup_lhb_pct[\"']?\s*(\]\s*)?=\s*[\d.]", linea) or \
+               re.search(r"setdefault\([\"']\w+_lineup_lhb_pct", linea) or \
+               re.search(r"get\([\"']\w+_lineup_lhb_pct[\"']\s*,\s*[\d.]", linea):
+                sospechosos.append(f"{ruta}:{n}: {linea.strip()}")
+    assert not sospechosos, (
+        "alguien volvió a rellenar *_lineup_lhb_pct con un valor por defecto; "
+        "eso neutraliza la cadena lineup → equipo → liga:\n" + "\n".join(sospechosos)
+    )
+
+
 def test_la_constante_de_liga_tiene_una_sola_fuente():
     """Estaba duplicada como 0.45 en park_weather_engine y como literal suelto
     en pitcher_engine — mismo patrón que motivó centralizar LEAGUE_AVG_XWOBA."""

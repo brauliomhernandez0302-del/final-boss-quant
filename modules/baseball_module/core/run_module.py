@@ -369,9 +369,15 @@ def run_module(
             # Platoon splits + opposing lineup handedness
             'platoon_splits':        away_ps.get('platoon_splits'),
         }
-        # Propagate lineup LHB% to top-level game_data for pitcher engine
-        game_data.setdefault('home_lineup_lhb_pct', game_data.get('home_lineup_lhb_pct', 0.45))
-        game_data.setdefault('away_lineup_lhb_pct', game_data.get('away_lineup_lhb_pct', 0.45))
+        # `*_lineup_lhb_pct` se deja como venga: presente sólo si hay alineación
+        # confirmada. Acá había un `setdefault(..., 0.45)` que garantizaba la
+        # clave para engines que la indexaban directo; hoy los dos consumidores
+        # (pitcher_engine, park_weather_engine) usan la cadena
+        # lineup → `*_lhb_pct` del equipo → media de liga, así que rellenarla
+        # NEUTRALIZABA esa cadena: el primer escalón nunca quedaba vacío y el
+        # dato real del equipo no se alcanzaba jamás. Es el mismo relleno que se
+        # quitó de data_fetchers en el paso 6 — sobrevivía acá, dos pasos más
+        # abajo, y dejaba el arreglo sin efecto en el pipeline real.
 
         # Resolve MLB season once — used for enrichment, Kalman, Platt, and record_prediction
         _season = _current_mlb_season()
