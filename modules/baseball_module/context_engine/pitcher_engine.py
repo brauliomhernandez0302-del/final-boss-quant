@@ -9,7 +9,8 @@ Responsibilities:
   Starter quality    — SIERA → xFIP → xERA → FIP → ERA composite
                        + Statcast xwOBA allowed, barrel%, and K%-BB% overlays
                        + Bayesian regression to mean based on innings pitched
-  Recent form        — era_last_5 level vs season, ERA slope trend, QS%
+  Recent form        — NEUTRALIZADO (paso 8): ninguna señal de forma sobrevive
+                       al control por nivel; ver _adjust_pitcher_form
   Matchup history    — era_vs_opp shrunk toward season ERA at < 15 IP
   Platoon splits     — L/R WHIP split × opposing lineup handedness composition
   Fatigue            — smooth gradient over days-rest and last-start pitch count
@@ -335,30 +336,65 @@ class PitcherEngine:
     # ── Form ──────────────────────────────────────────────────────────────────
 
     def _adjust_pitcher_form(self, pitcher: Dict) -> float:
+        """NEUTRALIZADO — la "forma reciente" no predice nada, y como estaba
+        codificada predecía al revés. Auditoría paso 8, 2026-07-28.
+
+        Qué hacía: multiplicaba tres señales —nivel de ERA de los últimos 5
+        arranques contra la de temporada, pendiente de la ERA, y % de quality
+        starts— recortado a [0.85, 1.15]. Pesaba 0.256 —el segundo factor del motor,
+        que en esta auditoría veníamos redondeando mal a "26%"—.
+
+        Las tres salían de la MISMA lista de ~5 arranques (ver
+        `data_fetchers.get_pitcher_game_log`), así que multiplicarlas contaba un
+        solo dato tres veces — la clase de doble conteo que el gate
+        `encodes_k_bb` evita cien líneas más arriba.
+
+        LA EVIDENCIA. 1709 pares (arranque previo → siguiente) de 148 abridores
+        reales, temporada 2026. Regresión con la ERA acumulada como CONTROL y
+        errores estándar agrupados por pitcher, sobre la ERA cruda del siguiente
+        arranque:
+
+            ERA acumulada (control)   +0.4080   t = +2.25   ← lo único con señal
+            ERA últimos 5             -0.0062   t = -0.04
+            tendencia                 +0.0042   t = +0.06
+            quality start %           +0.4601   t = +0.74
+
+        Ninguna señal de forma sobrevive al control por nivel. Y sin ese control
+        el factor completo daba r = -0.0226 contra el residual: no es que midiera
+        poco, medía AL REVÉS. Lo que las señales captan es regresión a la media, y
+        el motor las leía como persistencia.
+
+        DOS ESPECIFICACIONES INTERMEDIAS DIERON FALSOS POSITIVOS, y quedan
+        anotadas porque el error es reutilizable:
+        - Con objetivo = residual (siguiente menos ERA acumulada), QS% daba
+          t=+4.79. Artefacto: un QS% alto BAJA la ERA acumulada, que es el
+          sustraendo, así que el residual sube por construcción.
+        - Con errores iid en vez de agrupados, los t se inflan ~5x. Los arranques
+          de un mismo pitcher no son observaciones independientes.
+
+        POR QUÉ NEUTRALIZAR Y NO CORREGIR EL SIGNO: no hay nada que corregir. Con
+        la especificación correcta ningún componente es distinto de cero. Invertir
+        signos sería ajustar ruido.
+
+        POR QUÉ NO SE REDISTRIBUYE ESE 0.256: la combinación es aditiva sobre deltas
+        (`total = 1 + Σ wᵢ·(fᵢ-1)`), así que un factor neutro aporta exactamente
+        cero sin importar su peso. No queda ningún hueco que rellenar; mover ese
+        peso a los otros factores los AMPLIFICARÍA, y no hay evidencia de que
+        estén sub-pesados. Sería un cambio distinto, con su propia carga de prueba.
+
+        ALCANCE REAL DEL CAMBIO: el backtest no puede medir esto. En modo PIT
+        llegan `era`, `era_last_5`, `era_trend` y `quality_start_pct` todas en
+        None, así que el factor ya valía 1.0 en los 4.825 juegos — verificado. Es
+        decir que esta corrección es SOLO-VIVO y su validación es la medición de
+        arriba, no el Brier. La corrida de backtest sirve para confirmar que no
+        movió nada, no para justificarlo.
+
+        Se conserva la función (en vez de sacar el término de la suma) para que
+        esta evidencia quede en el sitio donde alguien iría a buscarla antes de
+        reinstaurar un ajuste de forma. Si se reinstaura, que sea con una señal
+        que sobreviva a control por nivel y a errores agrupados.
         """
-        Three recent-form signals combined multiplicatively:
-          1. ERA level  — era_last_5 vs season ERA
-          2. ERA trend  — signed slope of per-start ERA (improving vs worsening)
-          3. QS%        — fraction of recent starts that were quality starts
-
-        Clamped to [0.85, 1.15].
-        """
-        _era_last  = pitcher.get("era_last_5")
-        _era_seas  = pitcher.get("era")
-        season_era = float(_era_seas  if _era_seas  is not None else _LG_ERA)
-        recent_era = float(_era_last  if _era_last  is not None else season_era)
-
-        level_diff = recent_era - season_era
-        level_adj  = 1.0 + level_diff * 0.06
-
-        era_trend = pitcher.get("era_trend", 0.0)
-        trend_adj = 1.0 + float(era_trend or 0.0) * 0.03
-
-        qs_pct  = pitcher.get("quality_start_pct", 0.50)
-        qs_adj  = 1.0 - (float(qs_pct or 0.50) - 0.50) * 0.06
-
-        form_adj = level_adj * trend_adj * qs_adj
-        return max(0.85, min(1.15, form_adj))
+        return 1.0
 
     # ── Matchup ───────────────────────────────────────────────────────────────
 
