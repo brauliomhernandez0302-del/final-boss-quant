@@ -120,6 +120,48 @@ def test_la_varianza_de_talento_es_la_medida():
     assert _PLATOON_VAR_TALENTO == pytest.approx(0.0316)
 
 
+def test_si_la_mezcla_del_lineup_iguala_su_exposicion_el_factor_es_neutro():
+    """La invariante que hace correcto a este factor: sólo REDISTRIBUYE.
+
+    El nivel del abridor ya lo cobra `quality_mult` (32% del motor). Si el ajuste
+    platoon moviera además el nivel, sería cobrarlo dos veces. Reconstruyendo los
+    splits desde la razón encogida y anclándolos en su WHIP general, el promedio
+    ponderado por exposición vuelve a dar exactamente ese WHIP — así que cuando
+    la alineación que enfrenta tiene la misma mezcla de manos que su exposición
+    de temporada, no hay desajuste que cobrar y el factor es 1.0 exacto.
+
+    Encogiendo cada WHIP por separado —la primera versión de este fix— esto NO
+    se cumplía: el nivel se filtraba.
+    """
+    import sys
+    sys.path.insert(0, "modules/baseball_module")
+    from context_engine.pitcher_engine import PitcherEngine
+    e = PitcherEngine()
+    for ip_l, ip_r in [(30.0, 70.0), (50.0, 50.0), (20.0, 90.0)]:
+        expo_l = ip_l / (ip_l + ip_r)
+        f = e._adjust_pitcher_platoon(
+            {"whip": 1.20, "throws": "R", "platoon_splits": {
+                "vs_lhb": {"whip": 1.55, "ip": ip_l},
+                "vs_rhb": {"whip": 1.05, "ip": ip_r}}},
+            {"away_lhb_pct": expo_l}, is_home=True,
+        )
+        assert f == pytest.approx(1.0, abs=1e-9), (
+            f"exposición {expo_l:.2f} ⇒ el factor debe ser neutro, dio {f}")
+
+
+def test_una_alineacion_mas_zurda_castiga_a_un_derecho():
+    """Y el signo tiene que ser el correcto, no sólo la magnitud."""
+    import sys
+    sys.path.insert(0, "modules/baseball_module")
+    from context_engine.pitcher_engine import PitcherEngine
+    e = PitcherEngine()
+    p = {"whip": 1.20, "throws": "R", "platoon_splits": {
+        "vs_lhb": {"whip": 1.55, "ip": 50.0}, "vs_rhb": {"whip": 1.05, "ip": 50.0}}}
+    poco = e._adjust_pitcher_platoon(p, {"away_lhb_pct": 0.20}, is_home=True)
+    mucho = e._adjust_pitcher_platoon(p, {"away_lhb_pct": 0.80}, is_home=True)
+    assert mucho > 1.0 > poco, f"más zurdos ⇒ peor para el derecho ({poco}, {mucho})"
+
+
 def test_datos_incompletos_devuelven_neutro():
     for kwargs in ({"whip_l": 0}, {"whip_r": 0}, {"whip_gen": 0}):
         base = dict(ip=40, whip_l=1.30, whip_r=1.10)

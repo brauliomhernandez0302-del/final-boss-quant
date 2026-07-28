@@ -436,10 +436,11 @@ class PitcherEngine:
             # Sin saber con qué mano lanza no hay prior poblacional que aplicar;
             # el neutro honesto es "no tiene split", no inventarle uno.
             ratio_pop = 1.0
-        expo_l = ip_l / (ip_l + ip_r)          # cuánto de su exposición fue vs zurdos
-        whip_r_prior = whip_gen / (expo_l * ratio_pop + (1.0 - expo_l))
-        whip_l_prior = ratio_pop * whip_r_prior
-
+        # Se encoge LA RAZÓN, no cada WHIP por separado. Es la razón la que tiene
+        # la descomposición de varianza que da el peso, así que encoger los
+        # componentes aplicaría un peso derivado para otra cantidad (difieren
+        # hasta 0.032 en la razón resultante — chico, pero injustificado).
+        #
         # Peso del dato propio = Var_talento / (Var_talento + Var_muestral_suya).
         # Ambos términos medidos, ninguno asumido: ver _PLATOON_VAR_TALENTO.
         ratio_obs = whip_l_obs / whip_r_obs
@@ -447,9 +448,20 @@ class PitcherEngine:
             1.0 / (whip_l_obs * ip_l) + 1.0 / (whip_r_obs * ip_r)
         )
         w = _PLATOON_VAR_TALENTO / (_PLATOON_VAR_TALENTO + var_muestral)
+        ratio = w * ratio_obs + (1.0 - w) * ratio_pop
 
-        vs_lhb = {"whip": w * whip_l_obs + (1.0 - w) * whip_l_prior}
-        vs_rhb = {"whip": w * whip_r_obs + (1.0 - w) * whip_r_prior}
+        # Se reconstruyen los dos splits desde la razón encogida, anclados en su
+        # WHIP GENERAL y en su exposición real a cada mano. Esto garantiza por
+        # construcción que el promedio ponderado por exposición vuelva a dar su
+        # WHIP general — o sea que el factor REDISTRIBUYE y no mueve el nivel.
+        # El nivel ya lo cobra quality_mult (32%); que se filtrara acá sería
+        # cobrarlo dos veces. Consecuencia comprobable: si la alineación que
+        # enfrenta tiene la misma mezcla de manos que su exposición de
+        # temporada, el factor da exactamente 1.0.
+        expo_l = ip_l / (ip_l + ip_r)
+        whip_r_aj = whip_gen / (expo_l * ratio + (1.0 - expo_l))
+        vs_lhb = {"whip": ratio * whip_r_aj}
+        vs_rhb = {"whip": whip_r_aj}
 
         # Misma cadena que park_weather_engine: lineup confirmado → mejor
         # estimación disponible (mezcla de alineación previa y roster) → media de
