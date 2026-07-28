@@ -21,17 +21,20 @@ and does NOT change either path's current behavior — this is a pure
 refactor, verified byte-identical against both callers' pre-refactor output
 before landing.
 
-One known, NOT-yet-unified divergence, left as a follow-up (Fable audit
-finding #5, low priority): the live engine regresses barrel% toward its
-league mean using `attempts` (batted-ball-events) as the Bayesian sample
-size `n`, since barrel% is fundamentally a per-BBE rate; the PIT adapter
-currently uses `pa` (plate appearances, ~1.47x attempts) for the same
-regression, which under-shrinks it. Fixing this requires first resolving
-the known foul-ball inflation of the PIT cache's own `batted_ball_count`
-field (see savant_offense_daily_aggregator.py) so that fix doesn't
-introduce a corrupted count into a now-load-bearing computation — do not
-"fix" this by just switching PIT's n to `bip`/`batted_ball_count` without
-addressing that first.
+RESUELTO (verificado 2026-07-28, auditoría paso 9) — este párrafo describía
+una divergencia pendiente que YA SE ARREGLÓ y su texto anterior era
+activamente engañoso: avisaba de un bug inexistente y advertía cómo NO
+arreglarlo, cuando el arreglo correcto ya estaba hecho.
+
+Lo que decía: el motor en vivo regresaba barrel% con `attempts` (eventos de
+batazo) como n bayesiana, y el adaptador PIT usaba `pa` (~1.47x attempts),
+sub-encogiendo. El arreglo estaba bloqueado esperando la corrección de la
+inflación por fouls de `batted_ball_count`.
+
+Ese bloqueo se levantó en MATH-002 (2026-07-18) y el arreglo se aplicó en el
+mismo paso. Verificado línea por línea: `true_talent_engine.py:669` usa
+`attempts_cur`, `tte_pit_adapter.py:206` usa `bip_cur`, y ambos con
+`K_BARREL = 120`. Los dos caminos miden lo mismo sobre la misma base.
 """
 
 from __future__ import annotations
@@ -65,6 +68,34 @@ from __future__ import annotations
 # seasons) is what ~30 effective units per fold can actually support.
 # Gated on a full backtest before shipping: Brier 0.24486 (unchanged
 # baseline) -> confirm no regression before trusting this number long-term.
+#
+# RE-MEDIDO 2026-07-28 (auditoría paso 9), y el resultado cambia la lectura de
+# arriba en dos puntos:
+#
+# 1. EL COMPUESTO YA LE GANA A xwOBA SOLA. La comparación citada arriba se hizo
+#    con los pesos VIEJOS (0.50/0.30/0.20). Con los actuales, sobre 236
+#    observaciones (equipo × 4 cortes, 2024+2025) prediciendo carreras/juego del
+#    RESTO de temporada: compuesto r=+0.5303, xwOBA sola r=+0.5043. El
+#    re-centrado hizo exactamente lo que se proponía. Dejar el párrafo de arriba
+#    sin esta nota le decía a quien lo leyera que el compuesto seguía siendo peor
+#    que su propio componente principal, que ya no es cierto.
+#
+# 2. NO MOVER MÁS ESTE PESO SIN DATOS NUEVOS. Barrido de w_xwoba con el resto
+#    repartido 50/50, misma muestra:
+#
+#        w      2024      2025     juntas
+#        0.4  +0.5441   +0.4970   +0.5303
+#        0.5  +0.5494   +0.4943   +0.5310
+#        0.6  +0.5542   +0.4908   +0.5303   <- actual
+#        0.7  +0.5584   +0.4863   +0.5278
+#        1.0  +0.5636   +0.4657   +0.5043
+#
+#    Las dos temporadas apuntan en direcciones OPUESTAS y de forma monótona:
+#    2024 quiere subirlo hasta 1.0, 2025 quiere bajarlo. La curva conjunta es
+#    plana entre 0.4 y 0.7 (rango 0.003 de r). El óptimo NO es identificable con
+#    dos temporadas — es la misma inestabilidad que hizo rechazar el ajuste
+#    completo, y confirma que el nudge acotado fue la decisión correcta. Mover
+#    0.60 a 0.50 "ganaría" 0.0007 de r: ruido de una temporada.
 XWOBA_WEIGHT = 0.60
 BARREL_WEIGHT = 0.20
 PLATE_WEIGHT = 0.20

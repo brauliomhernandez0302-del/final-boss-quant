@@ -64,6 +64,12 @@ SAVANT_BASE = "https://baseballsavant.mlb.com"
 LG_RPG       = LEAGUE_AVG_RUNS   # single source of truth: config.py
 LG_XWOBA     = LEAGUE_AVG_XWOBA  # single source of truth: config.py
 LG_WOBA      = LEAGUE_AVG_WOBA   # single source of truth: config.py
+# SÓLO PARA MOSTRAR. Alimenta `wrc_plus_approx`, que a su vez sólo aparece en una
+# línea de log de run_module — nunca toca λ. Se anota porque en la auditoría del
+# paso 9 se comparó esta escala contra el overlay de `pitcher_engine` ("0.010 de
+# wOBA ≈ +3% de carreras") como si fueran la misma magnitud, y NO lo son: aquélla
+# es un multiplicador de λ y ésta convierte wOBA en un índice tipo wRC+ para
+# lectura humana. Comparar sus pendientes no significa nada.
 LG_WOBA_SCALE = 1.157            # FanGraphs wOBAscale 2024
 LG_BB_PCT    = 0.086
 LG_K_PCT     = 0.224
