@@ -59,8 +59,9 @@ _TEMP_RATE = 0.005
 _HANDEDNESS_WIND_SCALE = 0.040
 # Minimum wind speed for handedness correction to activate (mph)
 _HANDEDNESS_WIND_MIN_MPH = 10.0
-# Average MLB LHB fraction (switch hitters count 0.5)
-_AVG_LHB_PCT = 0.45
+# Fracción zurda media — fuente única en config.py, ya no un 0.45 duplicado acá
+# y en pitcher_engine. Ver config.LEAGUE_AVG_LHB_PCT para la medición.
+from config import LEAGUE_AVG_LHB_PCT as _AVG_LHB_PCT
 
 
 def _first_present(*values: Optional[float]) -> float:

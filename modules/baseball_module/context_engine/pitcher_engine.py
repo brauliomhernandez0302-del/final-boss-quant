@@ -25,7 +25,25 @@ Does NOT handle:
 
 from typing import Dict, Any, Tuple
 import logging
-from config import PITCHER_ENGINE_WEIGHTS, LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP, LEAGUE_AVG_XWOBA
+from config import (
+    PITCHER_ENGINE_WEIGHTS, LEAGUE_AVG_ERA, LEAGUE_AVG_WHIP, LEAGUE_AVG_XWOBA,
+    LEAGUE_AVG_LHB_PCT as _LG_LHB_PCT,
+)
+
+
+def _first_present(*values):
+    """Primer valor no-None. `0.0` es un valor válido y se conserva.
+
+    Duplicado a propósito de park_weather_engine en vez de importarlo: los dos
+    engines son hermanos y no hay módulo compartido entre ellos, así que
+    importar uno desde el otro crearía una dependencia lateral por cuatro
+    líneas. Lo que NO puede duplicarse es la constante de liga — ésa vive en
+    config.py, que es de donde venía el bug de las dos copias de 0.45.
+    """
+    for v in values:
+        if v is not None:
+            return float(v)
+    return 0.0
 
 logger = logging.getLogger(__name__)
 
@@ -349,9 +367,18 @@ class PitcherEngine:
         if not vs_lhb or not vs_rhb:
             return 1.0
 
-        _lhb_key    = "away_lineup_lhb_pct" if is_home else "home_lineup_lhb_pct"
-        _lhb_raw    = game_data.get(_lhb_key)
-        opp_lhb_pct = float(_lhb_raw if _lhb_raw is not None else 0.45)
+        # Misma cadena que park_weather_engine: lineup confirmado → mejor
+        # estimación disponible (mezcla de alineación previa y roster) → media de
+        # liga. Antes leía SÓLO la clave del lineup, así que en las corridas sin
+        # lineup —el 83% de ellas, medido— usaba una constante teniendo el dato
+        # del equipo a mano. Error medio de esa constante contra el roster real:
+        # 0.076, casi la desviación completa entre equipos (0.085).
+        _pre = "away" if is_home else "home"
+        opp_lhb_pct = float(_first_present(
+            game_data.get(f"{_pre}_lineup_lhb_pct"),
+            game_data.get(f"{_pre}_lhb_pct"),
+            _LG_LHB_PCT,
+        ))
         opp_rhb_pct = 1.0 - opp_lhb_pct
 
         lhb_whip    = float(vs_lhb.get("whip", _LG_WHIP))

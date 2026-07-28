@@ -64,6 +64,17 @@ LEAGUE_AVG_WOBA = 0.310  # FanGraphs Guts! 2024
 # truth so it can't drift out of sync across files again.
 LEAGUE_AVG_XWOBA = 0.316
 
+# Fracción zurda de una alineación típica. Último recurso de la cadena
+# lineup confirmado → estimación del equipo → esto; sólo se llega acá cuando
+# ninguna de las dos primeras resuelve.
+#
+# Era 0.45 en dos archivos distintos (`park_weather_engine._AVG_LHB_PCT` y un
+# literal suelto en `pitcher_engine`) — mismo patrón de constante duplicada que
+# LEAGUE_AVG_XWOBA. Medido el 2026-07-27 sobre las 24 alineaciones reales de la
+# cartelera: media 0.406, mediana 0.417, rango 0.267-0.538. El 0.45 estaba
+# sesgado ~4pp hacia la izquierda contra el dato real.
+LEAGUE_AVG_LHB_PCT = 0.406
+
 # ── Odds API / caching ─────────────────────────────────────────────────────
 ODDS_CACHE_TTL       = 300   # seconds — Streamlit function-cache TTL
 ODDS_FILE_CACHE_TTL  = 600   # seconds — on-disk JSON cache TTL (odds_fetcher)

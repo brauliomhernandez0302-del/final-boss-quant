@@ -58,6 +58,38 @@ _IP_EQ_AAA = 0.25
 _IP_EQ_AA = 0.15
 
 
+# Peso de un bateador ambidiestro dentro del LHB% de una alineación, según la
+# mano del abridor que enfrenta. No es una convención: es el hecho. Un ambidiestro
+# batea zurdo contra un derecho y derecho contra un zurdo, así que el número
+# correcto es 1.0 o 0.0, nunca un promedio.
+#
+# El 0.5 sobrevive SÓLO para cuando no se sabe la mano del rival, y ahí es lo
+# honesto: reparte el error en vez de apostar a un lado. Medido: los ambidiestros
+# son el 11.2% de los turnos de una alineación real, y elegir mal la convención
+# mueve el LHB% del MISMO lineup en 0.056 — más del doble de lo que se gana
+# eligiendo bien la fuente del lineup (0.022).
+_PESO_AMBIDIESTRO = {"R": 1.0, "L": 0.0}
+
+
+def lhb_pct_efectivo(
+    manos: Dict[int, str], bateadores: List[int], mano_rival: Optional[str],
+) -> Optional[float]:
+    """Fracción zurda EFECTIVA de una alineación frente a un abridor dado.
+
+    `mano_rival` None ⇒ el ambidiestro pesa 0.5 (no se sabe contra quién batea).
+    Devuelve None con la lista vacía: sin bateadores no hay fracción que informar,
+    y fabricar una media de liga acá es justo lo que tapaba el dato real.
+    """
+    if not bateadores:
+        return None
+    peso_s = _PESO_AMBIDIESTRO.get(mano_rival or "", 0.5)
+    total = 0.0
+    for pid in bateadores:
+        mano = manos.get(pid, "R")
+        total += 1.0 if mano == "L" else (peso_s if mano == "S" else 0.0)
+    return round(total / len(bateadores), 3)
+
+
 def _official_day(game: Dict[str, Any]) -> str:
     """El día de calendario al que MLB asigna este juego (YYYY-MM-DD).
 
@@ -1481,14 +1513,21 @@ class MLBStatsAPI:
     # FEATURE: BATTING HANDEDNESS % PER TEAM (for wind asymmetry)
     # ==========================================================
     def get_team_batting_handedness_pct(
-        self, team_id: int, game_date: str
+        self, team_id: int, game_date: str, vs_hand: Optional[str] = None
     ) -> Optional[float]:
         """
         Fraction of non-pitcher players on the gameday roster who bat left.
         Cached per team per date (changes only on roster moves).
         Returns LHB% (0.0–1.0) or None if unavailable.
+
+        `vs_hand` es la mano del abridor rival, y resuelve a los ambidiestros al
+        lado que realmente batean. Sin ella pesan 0.5, que era el comportamiento
+        único hasta el 2026-07-27 — y que discrepaba con la ruta del lineup
+        confirmado, donde el ambidiestro pesaba 1.0. Las dos rutas alimentan la
+        MISMA cadena de respaldo, así que caer de una a la otra movía el número
+        0.056 sin que nada lo señalara.
         """
-        cache_file = CACHE_DIR / f"lhb_pct_{team_id}_{game_date}.json"
+        cache_file = CACHE_DIR / f"lhb_pct_{team_id}_{game_date}_{vs_hand or 'na'}.json"
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 86_400:
             try:
                 return json.load(open(cache_file)).get("lhb_pct")
@@ -1514,8 +1553,10 @@ class MLBStatsAPI:
             total = counts["L"] + counts["R"] + counts["S"]
             if total < 5:
                 return None
-            # Switch hitters counted as 0.5 LHB, 0.5 RHB
-            lhb_pct = round((counts["L"] + counts["S"] * 0.5) / total, 3)
+            # El ambidiestro pesa según la mano del abridor rival — 1.0 contra
+            # derecho, 0.0 contra zurdo, 0.5 sólo si no se sabe.
+            peso_s = _PESO_AMBIDIESTRO.get(vs_hand or "", 0.5)
+            lhb_pct = round((counts["L"] + counts["S"] * peso_s) / total, 3)
             with open(cache_file, "w") as f:
                 json.dump({"lhb_pct": lhb_pct, "counts": counts}, f)
             return lhb_pct
@@ -1641,7 +1682,15 @@ class MLBStatsAPI:
                         cache_file = CACHE_DIR / f"hand_{pid}.json"
                         try:
                             with open(cache_file, "w") as f:
-                                json.dump({"s": side}, f)
+                                # `p` = mano con la que LANZA, guardada acá porque
+                                # sale de la misma respuesta que ya pedimos y hace
+                                # falta para resolver a los ambidiestros (ver
+                                # get_pitcher_throws). Pedirla aparte sería una
+                                # llamada extra por el mismo dato.
+                                json.dump({
+                                    "s": side,
+                                    "p": (person.get("pitchHand") or {}).get("code"),
+                                }, f)
                         except Exception:
                             pass
             except Exception as e:
@@ -1650,6 +1699,146 @@ class MLBStatsAPI:
                     result.setdefault(pid, "R")
 
         return result
+
+    def get_prev_lineup_lhb_pct(
+        self, team_id: int, official_date: str, vs_hand: Optional[str] = None
+    ) -> Optional[float]:
+        """LHB% de la última alineación REAL que puso este equipo.
+
+        Personal de ayer, matchup de hoy: la composición sale del juego anterior,
+        pero los ambidiestros se resuelven contra el abridor de HOY, que es
+        contra quien van a batear.
+
+        Existe porque a la hora en que se publica no hay lineup (medido: 0 de 27
+        juegos en la corrida de las 07:00) y había que elegir con qué estimarlo.
+        Comparado sobre 250 casos reales de equipo-día, error absoluto medio al
+        predecir el LHB% del lineup de hoy:
+
+            lineup de ayer solo   0.0936
+            roster solo           0.0986
+            mitad y mitad         0.0835   ← se usa esto
+            constante 0.45        0.1059
+
+        El de ayer gana en promedio y pierde en la cola (cuando el lineup sí
+        cambia, se equivoca con confianza); el roster al revés. La mezcla gana en
+        las dos, y la curva es plana entre 0.4 y 0.6, así que el 0.5 no es un
+        filo ajustado a la muestra.
+        """
+        try:
+            fin = datetime.strptime(official_date[:10], "%Y-%m-%d").date()
+        except Exception:
+            return None
+        cache_file = CACHE_DIR / f"prev_lineup_lhb_{team_id}_{official_date}_{vs_hand or 'na'}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 43_200:
+            try:
+                return json.load(open(cache_file)).get("lhb_pct")
+            except Exception:
+                pass
+        try:
+            r = self.session.get(
+                f"{self.BASE_URL}/schedule",
+                params={"sportId": 1, "teamId": team_id,
+                        "startDate": (fin - timedelta(days=5)).strftime("%Y-%m-%d"),
+                        "endDate": (fin - timedelta(days=1)).strftime("%Y-%m-%d"),
+                        "gameType": "R,F,D,L,W"},
+                timeout=(5, 20),
+            )
+            r.raise_for_status()
+            candidatos = []
+            for item in r.json().get("dates", []):
+                for g in item.get("games", []):
+                    if g.get("status", {}).get("abstractGameState") == "Final":
+                        candidatos.append((item.get("date", ""), g))
+            candidatos.sort(reverse=True)          # del más reciente al más viejo
+            if not candidatos:
+                return None
+
+            titulares: List[int] = []
+            ultima_fecha = None
+            # Se prueba más de un juego hacia atrás: el boxscore del más reciente
+            # a veces viene sin `battingOrder` (visto en vivo: 1 de 5 juegos
+            # Final de un equipo). Quedarse con el primero y rendirse dejaba sin
+            # estimación a ~25% de los equipos.
+            for fecha, g in candidatos[:3]:
+                lado = "home" if g["teams"]["home"]["team"]["id"] == team_id else "away"
+                try:
+                    box = self.session.get(
+                        f"{self.BASE_URL}/game/{g['gamePk']}/boxscore", timeout=(5, 25)
+                    )
+                    box.raise_for_status()
+                    jugadores = box.json().get("teams", {}).get(lado, {}).get("players", {})
+                except Exception:
+                    continue
+                # Titulares = múltiplos de 100. El boxscore acumula sustitutos a
+                # medida que avanza el juego, y los numera 201, 402, 503...
+                # Cortar por los primeros 9 ordenados NO sirve: con un emergente
+                # en el 2º turno queda [100,200,201,300,...,800] — cuela al
+                # suplente y PIERDE el 9º turno. Verificado en un boxscore real.
+                orden = sorted(
+                    (int(p["battingOrder"]), p["person"]["id"])
+                    for p in jugadores.values()
+                    if p.get("battingOrder") and (p.get("person") or {}).get("id")
+                )
+                titulares = [pid for bo, pid in orden if bo % 100 == 0]
+                if len(titulares) >= 9:
+                    ultima_fecha = fecha
+                    break
+                titulares = []
+            if len(titulares) < 9:
+                return None
+            titulares = titulares[:9]
+            pct = lhb_pct_efectivo(
+                self.get_batter_handedness_batch(titulares), titulares, vs_hand
+            )
+            if pct is not None:
+                try:
+                    with open(cache_file, "w") as f:
+                        json.dump({"lhb_pct": pct, "desde": ultima_fecha}, f)
+                except Exception:
+                    pass
+            return pct
+        except Exception as e:
+            logger.debug("no se pudo leer la alineación previa de %s: %s", team_id, e)
+            return None
+
+    def get_pitcher_throws(self, pitcher_id: Optional[int]) -> Optional[str]:
+        """Mano con la que lanza ('L'/'R'), o None si no se puede resolver.
+
+        None NO es "derecho": es "no sé". Quien la use tiene que decidir
+        explícitamente qué hacer sin el dato, porque asumir diestro sesga hacia
+        el 72% de los casos y esconde el otro 28%.
+
+        Mismo endpoint y misma caché que `get_batter_handedness_batch` — el
+        campo viaja en la misma respuesta, así que esto no agrega llamadas.
+        """
+        if not pitcher_id:
+            return None
+        cache_file = CACHE_DIR / f"hand_{pitcher_id}.json"
+        if cache_file.exists():
+            try:
+                mano = json.load(open(cache_file)).get("p")
+                if mano:
+                    return mano
+            except Exception:
+                pass
+        try:
+            r = self.session.get(f"{self.BASE_URL}/people",
+                                 params={"personIds": str(pitcher_id)}, timeout=(5, 20))
+            r.raise_for_status()
+            for person in r.json().get("people", []):
+                if person.get("id") != pitcher_id:
+                    continue
+                lanza = (person.get("pitchHand") or {}).get("code")
+                batea = (person.get("batSide") or {}).get("code", "R")
+                try:
+                    with open(cache_file, "w") as f:
+                        json.dump({"s": batea, "p": lanza}, f)
+                except Exception:
+                    pass
+                return lanza
+        except Exception as e:
+            logger.warning("⚠️ no se pudo resolver la mano del pitcher %s: %s", pitcher_id, e)
+        return None
 
 
 # ==========================================================
@@ -2204,18 +2393,35 @@ class MLBDataIntegrator:
                 # backtest, y que del lado vivo nadie había mirado. Medido sobre
                 # la ventana real: 8 de 27 juegos (30%) difieren.
                 game_date_str = _official_day(game)
-                if game.get("home_team_id") and game_date_str:
-                    lhb = self.mlb_api.get_team_batting_handedness_pct(
-                        game["home_team_id"], game_date_str
+                # Estimación para cuando NO hay lineup confirmado, que es el caso
+                # normal al publicar (0 de 27 juegos lo tenían en la corrida de
+                # las 07:00). Mezcla mitad y mitad de la última alineación real
+                # con el promedio del roster — ver get_prev_lineup_lhb_pct para
+                # los errores medidos que eligieron ese peso.
+                for _lado, _tid_key, _lhb_key, _mano in [
+                    ("home", "home_team_id", "home_lhb_pct",
+                     self.mlb_api.get_pitcher_throws(game.get("away_pitcher_id"))),
+                    ("away", "away_team_id", "away_lhb_pct",
+                     self.mlb_api.get_pitcher_throws(game.get("home_pitcher_id"))),
+                ]:
+                    _tid = game.get(_tid_key)
+                    if not (_tid and game_date_str):
+                        continue
+                    roster = self.mlb_api.get_team_batting_handedness_pct(
+                        _tid, game_date_str, vs_hand=_mano
                     )
-                    if lhb is not None:
-                        enriched["home_lhb_pct"] = lhb
-                if game.get("away_team_id") and game_date_str:
-                    lhb = self.mlb_api.get_team_batting_handedness_pct(
-                        game["away_team_id"], game_date_str
+                    previo = self.mlb_api.get_prev_lineup_lhb_pct(
+                        _tid, game_date_str, vs_hand=_mano
                     )
-                    if lhb is not None:
-                        enriched["away_lhb_pct"] = lhb
+                    if roster is not None and previo is not None:
+                        enriched[_lhb_key] = round(0.5 * previo + 0.5 * roster, 3)
+                    elif roster is not None:
+                        enriched[_lhb_key] = roster
+                    elif previo is not None:
+                        enriched[_lhb_key] = previo
+                    # Si ninguna resuelve, la clave queda ausente y la cadena de
+                    # los engines cae al promedio de liga — que es el único lugar
+                    # donde una constante corresponde.
 
                 # 6) Travel Fatigue (coordinate-based miles + time zones)
                 if game.get("away_team_id") and game.get("game_date"):
@@ -2304,28 +2510,38 @@ class MLBDataIntegrator:
                         )
 
                 # 9) Lineup handedness (LHB% per side — used for platoon split adjustment)
-                for _side, _lineup_key, _lhb_key in [
-                    ("home", "home_lineup", "home_lineup_lhb_pct"),
-                    ("away", "away_lineup", "away_lineup_lhb_pct"),
+                # El ambidiestro se resuelve con la mano del abridor que ESA
+                # alineación enfrenta: la local batea contra el abridor visitante
+                # y viceversa.
+                _mano_vs_local = self.mlb_api.get_pitcher_throws(game.get("away_pitcher_id"))
+                _mano_vs_visita = self.mlb_api.get_pitcher_throws(game.get("home_pitcher_id"))
+                enriched["home_faces_hand"] = _mano_vs_local
+                enriched["away_faces_hand"] = _mano_vs_visita
+                for _side, _lineup_key, _lhb_key, _mano in [
+                    ("home", "home_lineup", "home_lineup_lhb_pct", _mano_vs_local),
+                    ("away", "away_lineup", "away_lineup_lhb_pct", _mano_vs_visita),
                 ]:
                     lineup = enriched.get(_lineup_key) or []
-                    if lineup:
-                        pids = [p["id"] for p in lineup if p.get("id")]
-                        hand_map = self.mlb_api.get_batter_handedness_batch(pids)
-                        lhb_n = sum(
-                            1 for p in lineup
-                            if hand_map.get(p.get("id"), "R") in ("L", "S")
-                        )
-                        total_n = len(lineup)
-                        enriched[_lhb_key] = round(lhb_n / total_n, 3) if total_n else 0.45
+                    pids = [p["id"] for p in lineup if p.get("id")]
+                    pct = lhb_pct_efectivo(
+                        self.mlb_api.get_batter_handedness_batch(pids), pids, _mano
+                    ) if pids else None
+                    if pct is not None:
+                        enriched[_lhb_key] = pct
                         logger.info(
-                            f"  ✅ {_side.upper()} lineup: "
-                            f"{lhb_n}L/{total_n - lhb_n}R "
-                            f"({enriched[_lhb_key]:.0%} LHB) — "
+                            f"  ✅ {_side.upper()} lineup: {pct:.0%} LHB efectivo "
+                            f"vs {_mano or '?'}HP — "
                             f"{', '.join(p.get('name','?') for p in lineup[:3])}..."
                         )
-                    else:
-                        enriched[_lhb_key] = 0.45  # league average fallback
+                    # Sin lineup confirmado la clave queda AUSENTE, no en 0.45.
+                    # Rellenarla con la media de liga dejaba a `_first_present` de
+                    # park_weather_engine sin poder llegar nunca al segundo
+                    # escalón —`*_lhb_pct`, el roster real que se mide 40 líneas
+                    # más arriba— porque el primero jamás estaba vacío. Medido:
+                    # el error medio de ese 0.45 contra el roster real es 0.076,
+                    # casi la desviación completa entre equipos (0.085). Misma
+                    # clase que FALL-002: un valor fabricado que aguas abajo no se
+                    # distingue de una medición, y que además tapa la medición.
 
                 status_icon = "✅" if enriched["pitchers_valid"] else "⚠️"
                 status_msg = "Data completa" if enriched["pitchers_valid"] else "Data incompleta - NO APOSTAR"
