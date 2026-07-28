@@ -15,6 +15,7 @@ PITCHER_ENGINE_FIELDS = (
     "era",
     "innings_pitched",
     "est_woba",
+    "woba",
     "brl_percent",
     "k_pct",
     "bb_pct",
@@ -32,6 +33,9 @@ PITCHER_ENGINE_FIELDS = (
 
 
 OPTIONAL_ENGINE_FIELDS = (
+    # `woba` es opcional a propósito: los snapshots viejos no la tienen y su
+    # ausencia debe dar None (sin señal de suerte), no romper el adaptado.
+    "woba",
     "era",
     "era_last_5",
     "era_trend",

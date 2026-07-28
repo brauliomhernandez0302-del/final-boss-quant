@@ -607,6 +607,10 @@ def build_game_data(
             "innings_pitched": fg.get("ip") if fg.get("ip") is not None else ps.get("innings_pitched", 0),
             # Baseball Savant contact quality
             "est_woba":        sv.get("est_woba"),
+            # wOBA real junto a la merecida: su diferencia es la señal de
+            # suerte del abridor, que hasta ahora ningún camino le pasaba
+            # al motor pese a estar en la fuente.
+            "woba":            sv.get("woba"),
             "xera":            sv.get("xera") or fg.get("xera"),
             "brl_percent":     sv.get("brl_percent"),
             "avg_hit_speed":   sv.get("avg_hit_speed"),

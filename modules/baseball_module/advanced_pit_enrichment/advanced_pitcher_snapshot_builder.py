@@ -92,6 +92,12 @@ class AdvancedPitcherSnapshotBuilder:
                 snapshot,
                 {
                     "est_woba": savant_record.data.get("est_woba"),
+                    # La wOBA REAL además de la merecida. Su diferencia es la
+                    # señal de suerte del abridor; sin ella el motor sólo puede
+                    # ver lo merecido y no cuánto se apartó de eso. El
+                    # constructor diario ya la traía — ésta era la única de las
+                    # dos rutas que la descartaba.
+                    "woba": savant_record.data.get("woba"),
                     "brl_percent": savant_record.data.get("brl_percent"),
                     "brl_pa": savant_record.data.get("brl_pa"),
                     "avg_hit_speed": savant_record.data.get("avg_hit_speed"),

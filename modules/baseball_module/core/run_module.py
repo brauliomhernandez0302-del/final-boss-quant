@@ -421,6 +421,7 @@ def run_module(
                         "innings_pitched": _fg_d.get("ip"),
                         # Baseball Savant: contact quality
                         "est_woba":        _sv.get("est_woba"),
+                        "woba":            _sv.get("woba"),
                         "xera":            _sv.get("xera") or _fg_d.get("xera"),
                         "brl_percent":     _sv.get("brl_percent"),
                         "avg_hit_speed":   _sv.get("avg_hit_speed"),
