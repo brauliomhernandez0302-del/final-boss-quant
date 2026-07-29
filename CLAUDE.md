@@ -484,3 +484,60 @@ RUNLINE 12 y TOTAL 9 con precio de cierre y par de Pinnacle devig-able, donde an
 
 **Pendiente, del dueño con Fable**: escribir `PROTOCOLO_CLV_V2` y fijar D0 nuevo, después de ~2
 días de captura de derivados corriendo. Hasta entonces no se cita ninguna ventana como abierta.
+
+### Actualización 2026-07-28 — auditoría paso a paso, pasos 0..10
+
+**Baseline vigente: Brier 0.24624 / accuracy 54.84%** (mismo comando
+`--season 2024,2025 --use-full-pit`, 4.825 juegos) — supersede el 0.24675/55.05% del
+rebaseline VAL. **Reporte canónico**: `audit_20260714/paso10/backtest_canonico_kalman0.json`.
+
+⚠️ **Framing obligatorio**: este número NO es "el modelo mejoró 0.0005 de Brier". La ventaja
+del modelo sobre el azar pasó de 1.300% a 1.510% — **+16.2% relativo**, que es la forma honesta
+de dimensionarlo, porque toda la señal vive en esos ~3 milésimos sobre 0.25. Y viene con una
+contrapartida: **la accuracy BAJÓ 0.21pp** (55.05% → 54.84%), consistente en ambas temporadas.
+Se eligió el Brier porque acá no se apuesta a quién gana sino a que `p × cuota > 1`.
+
+**Salvedad que no se borra**: la ganancia de Brier está concentrada en 2024 (−0.00095) con 2025
+casi plano (−0.00008). Una temporada aporta ~92%. Si un tercer año no la reproduce, el cambio
+del paso 10 es el primer candidato a revisarse.
+
+**El congelamiento del motor está LEVANTADO** desde el 2026-07-27 mientras dure esta auditoría
+(ver la sección al inicio de este archivo y el Registro del protocolo). Ninguna corrida de este
+período es muestra primaria.
+
+Cambios de los pasos 0..10, en orden. Los pasos 0-3 son del camino de publicación (no tocan λ);
+del 4 en adelante sí:
+
+- **0-3 (publicación)**: disparador con chequeo de salud propio; lista de estados publicables
+  en vez de deny-list; garantía pre-juego que falla cerrada y se mide contra el reloj real;
+  identidad juego↔evento de odds que se abstiene ante dos candidatos igual de plausibles
+  (umbral derivado de la separación real medida entre juegos de doubleheader: 5 min los
+  tradicionales, 275-405 min los partidos).
+- **4 (datos base)**: el día del juego sale de `official_date` y no del timestamp UTC truncado
+  — 30% de los juegos difieren, y `days_rest` salía +1. Ventana de viaje anclada al día
+  oficial. Doubleheader conservado. Fallo de enriquecimiento marcado en vez de invisible.
+- **5 (abridores)**: `ip_mlb_equivalent` — cuánto se le cree a un abridor depende de la
+  PROCEDENCIA del dato (MLB actual 1.0, temporada anterior 0.50, AAA 0.25, AA 0.15), no sólo
+  del tamaño. Un split de lado con 2 innings ya no desplaza a la línea consolidada de MLB.
+- **6 (lineup)**: sin alineación confirmada (83% de las corridas) se usa la mezcla medida
+  50/50 de última alineación real + roster, en vez de una constante que además tapaba el dato
+  real. Ambidiestros resueltos por la mano del abridor rival.
+- **7 (platoon)**: regresión por tamaño de muestra con prior poblacional por mano (RHP 1.144,
+  LHP 0.852, medidos) — antes los abridores con 8-13 innings de split se iban al tope del
+  recorte. Notación de innings de béisbol convertida en los 9 sitios (era cruda en 8).
+- **8 (forma reciente)**: NEUTRALIZADO. Pesaba 0.256 y era anti-predictivo — sus tres señales
+  salían de la misma lista de 5 arranques y captaban regresión a la media, leída como
+  persistencia. Ninguna sobrevive a control por nivel con errores agrupados.
+- **9 (TTE ofensiva)**: sin cambios de comportamiento. La λ ofensiva está bien; su
+  documentación describía dos estados ya superados.
+- **10 (Kalman)**: `_KALMAN_BLEND` 0.35 → **0.0**. El Kalman observa carreras REALES y tiraba
+  hacia ellas una λ MERECIDA (xwOBA) que por construcción filtra esa suerte; además inyectaba
+  parque en una λ neutra de parque que vuelve a recibir el factor en el PASO 5.
+
+**Advertencia metodológica que costó cara y vale para todo trabajo futuro**: los snapshots PIT
+diarios y los arranques de un mismo pitcher NO son observaciones independientes. Usar errores
+estándar iid sobre ellos infla los t entre 5x y 21x. Todo análisis sobre esas fuentes necesita
+errores agrupados por entidad (pitcher, equipo). Tres falsos positivos de esta auditoría —QS%
+con t=+4.79, "suerte" con t=−21, y la ventaja del compuesto TTE— desaparecieron al agrupar.
+
+Memoria de la sesión: `project_auditoria_pasos_2026_07.md`.

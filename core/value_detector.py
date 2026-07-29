@@ -464,8 +464,17 @@ def compute_data_quality_confidence(game_meta: Optional[Dict[str, Any]]) -> floa
         average below this, i.e. genuinely less differentiated.
       qA_TTE (35%) — 1 − prior_weight. Whether the offensive λ is real
         current-season signal or mostly a prior-season fallback blend.
-      qC_Kalman (25%) — Kalman observations / 10. Whether the learned
-        run-rate correction is actually active for this team/context.
+      qC_Kalman (25%) — Kalman observations / 10. Cuántos juegos de ESTA
+        temporada llevamos observados de este equipo en este contexto.
+
+        Su justificación original decía "si la corrección aprendida de tasa de
+        carreras está activa para este equipo". Eso dejó de aplicar el
+        2026-07-28: `_KALMAN_BLEND` pasó a 0.0 (auditoría paso 10) y el Kalman
+        ya no corrige λ. El componente SE MANTIENE porque el conteo sigue
+        midiendo algo real y pertinente —volumen de datos de temporada en curso,
+        bajo al principio y saturado a los 10 juegos— pero por una razón
+        distinta a la que decía. Si algún día se elimina el Kalman por completo,
+        este 25% necesita otra fuente de conteo, no simplemente desaparecer.
 
     Missing individual fields default to the WORST value for that signal
     (prior_weight=1.0, ip=0, n_obs=0) rather than silently assuming good

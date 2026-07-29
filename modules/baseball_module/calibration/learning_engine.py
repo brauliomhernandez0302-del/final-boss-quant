@@ -197,7 +197,49 @@ _CALIBRATION_HEALTH_PCT_THRESHOLD = 5.0   # percent
 # Kalman blend fraction — must be identical in both get_kalman_lambda_adjustment
 # and compute_team_bias_kalman_adjusted so the bias dampening formula matches
 # the actual blend applied.
-_KALMAN_BLEND = 0.35
+# Fracción de la λ que se toma del Kalman de carreras observadas.
+#
+# 0.35 → 0.0 el 2026-07-28 (auditoría paso 10, decisión del dueño con la
+# evidencia de abajo; reporte completo en `audit_20260714/paso10/reporte.md`).
+#
+# EL PROBLEMA: el Kalman observa CARRERAS REALES ANOTADAS, y el TTE que produce
+# la λ que se está corrigiendo es una estimación MERECIDA (xwOBA/barrel/
+# disciplina) que por construcción filtra la suerte en pelotas en juego. Tirar
+# esa λ hacia el resultado real le devuelve exactamente lo que el filtrado había
+# quitado. Segundo mecanismo, independiente: λ_base es NEUTRA DE PARQUE por
+# diseño, las carreras reales no lo son, y el factor de parque se vuelve a
+# aplicar en el PASO 5 del pipeline.
+#
+# MEDIDO POR DOS CAMINOS. Datos vivos, 236 obs (30 equipos × 4 cortes × 2
+# temporadas), recursión de Kalman real, prediciendo carreras/juego del resto de
+# temporada:  w=0.00 r=+0.5303 | 0.15 +0.5267 | 0.35 +0.4713 | 1.00 +0.3455 —
+# monótona decreciente. Backtest completo, tres corridas de 4.825 juegos:
+#
+#     w=0.35   Brier 0.24675   vs azar 1.300%   accuracy 55.05%
+#     w=0.15   Brier 0.24642   vs azar 1.430%   accuracy 54.86%
+#     w=0.00   Brier 0.24624   vs azar 1.510%   accuracy 54.84%
+#
+# Brier y log-loss mejoran monótonamente (+16.2% de ventaja sobre el azar en
+# términos relativos); la accuracy cae 0.21pp. El criterio elegido son las reglas
+# de puntuación propias y no la accuracy, porque acá no se apuesta a quién gana
+# sino a que `p × cuota > 1` — lo que importa es que la probabilidad esté bien,
+# no acertar por encima del 50%.
+#
+# ⚠️ LA SALVEDAD, que no se borra: la ganancia de Brier está concentrada en 2024
+# (-0.00095) con 2025 casi plano (-0.00008) — una temporada aporta ~92%. La
+# pérdida de accuracy, en cambio, es consistente en las dos. Si una tercera
+# temporada no reproduce la ganancia, este cambio es candidato a revisarse.
+#
+# EFECTOS COLATERALES, verificados:
+#  - El amortiguamiento del sesgo de equipo usa esta misma constante
+#    (`compute_team_bias_kalman_adjusted`): con 0.0 el denominador queda en 1.0 y
+#    devuelve el sesgo crudo intacto, que es lo correcto — sin Kalman no hay
+#    solapamiento que remover. No toca la parte frágil de esa fórmula.
+#  - `update_kalman` SIGUE corriendo y manteniendo el estado. Es barato, deja el
+#    camino abierto para revertir, y su `n_obs` alimenta la confianza (ver
+#    `get_kalman_n_obs`), donde sigue siendo un indicador válido de "cuántos
+#    datos de esta temporada tenemos de este equipo" aunque ya no corrija λ.
+_KALMAN_BLEND = 0.0
 
 # Pipeline gradient-descent weights — one per engine stage. These stage
 # names are combined with a role ("home"/"away") into the actual
