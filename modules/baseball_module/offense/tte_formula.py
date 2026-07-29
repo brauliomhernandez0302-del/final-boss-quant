@@ -72,13 +72,24 @@ from __future__ import annotations
 # RE-MEDIDO 2026-07-28 (auditoría paso 9), y el resultado cambia la lectura de
 # arriba en dos puntos:
 #
-# 1. EL COMPUESTO YA LE GANA A xwOBA SOLA. La comparación citada arriba se hizo
-#    con los pesos VIEJOS (0.50/0.30/0.20). Con los actuales, sobre 236
-#    observaciones (equipo × 4 cortes, 2024+2025) prediciendo carreras/juego del
-#    RESTO de temporada: compuesto r=+0.5303, xwOBA sola r=+0.5043. El
-#    re-centrado hizo exactamente lo que se proponía. Dejar el párrafo de arriba
-#    sin esta nota le decía a quien lo leyera que el compuesto seguía siendo peor
-#    que su propio componente principal, que ya no es cierto.
+# 1. EL COMPUESTO YA NO ES MEDIBLEMENTE PEOR QUE xwOBA SOLA — pero tampoco es
+#    mediblemente mejor. La comparación citada arriba se hizo con los pesos
+#    VIEJOS (0.50/0.30/0.20). Con los actuales, sobre 236 observaciones (equipo ×
+#    4 cortes, 2024+2025) prediciendo carreras/juego del RESTO de temporada:
+#    compuesto r=+0.5303, xwOBA sola r=+0.5043.
+#
+#    Esa ventaja de +0.026 NO sobrevive a un bootstrap agrupado por equipo:
+#    IC95% = [-0.0135, +0.0752], cruza el cero (90.4% de los remuestreos la
+#    favorecen — sugerente, no concluyente). Las 236 observaciones son 30 equipos
+#    con 4 cortes cada uno, y los cortes de un mismo equipo-temporada están
+#    fuertemente correlacionados; tratarlas como independientes infla cualquier
+#    diferencia.
+#
+#    Lo que SÍ se puede afirmar: el re-centrado quitó una desventaja que estaba
+#    medida (el compuesto perdía en AMBAS temporadas con los pesos viejos) y hoy
+#    los dos son estadísticamente indistinguibles. Dejar el párrafo de arriba sin
+#    esta nota le decía a quien lo leyera que el compuesto sigue siendo peor que
+#    su propio componente principal, y eso ya no está sostenido por el dato.
 #
 # 2. NO MOVER MÁS ESTE PESO SIN DATOS NUEVOS. Barrido de w_xwoba con el resto
 #    repartido 50/50, misma muestra:
