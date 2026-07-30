@@ -497,6 +497,16 @@ de dimensionarlo, porque toda la señal vive en esos ~3 milésimos sobre 0.25. Y
 contrapartida: **la accuracy BAJÓ 0.21pp** (55.05% → 54.84%), consistente en ambas temporadas.
 Se eligió el Brier porque acá no se apuesta a quién gana sino a que `p × cuota > 1`.
 
+⚠️ **Ese criterio quedó INCOMPLETO y el paso 11 lo corrigió**: ignoraba el ROI por
+umbral de edge, que es el proxy más directo de para qué existe el sistema. Al medir el
+paso 11 (neutralizar el sesgo de equipo) el Brier mejoraba mucho —ventaja sobre el azar
+de 1.51% a 2.00%— mientras el ROI se derrumbaba en los cinco umbrales (edge≥10%: −6.69%
+a −19.89%) y el conteo de apuestas caía a la mitad. El Brier mide la calidad PROMEDIO;
+el ROI mide la COLA, que es donde se apuesta. El paso 10 no queda invalidado (su ROI
+alternaba de signo, o sea ruido), pero **de acá en adelante el ROI por umbral es un gate
+obligatorio para cualquier cambio de λ**, no una métrica secundaria. Ver
+`audit_20260714/paso11/reporte.md`.
+
 **Salvedad que no se borra**: la ganancia de Brier está concentrada en 2024 (−0.00095) con 2025
 casi plano (−0.00008). Una temporada aporta ~92%. Si un tercer año no la reproduce, el cambio
 del paso 10 es el primer candidato a revisarse.
@@ -530,6 +540,9 @@ del 4 en adelante sí:
   persistencia. Ninguna sobrevive a control por nivel con errores agrupados.
 - **9 (TTE ofensiva)**: sin cambios de comportamiento. La λ ofensiva está bien; su
   documentación describía dos estados ya superados.
+- **11 (sesgo de equipo)**: SIN CAMBIOS, y es el hallazgo. Neutralizarlo mejora el
+  Brier y destruye el ROI (ver la advertencia de arriba). El sesgo se queda; quien
+  quiera tocarlo tiene que pasar el gate de ROI en los umbrales altos.
 - **10 (Kalman)**: `_KALMAN_BLEND` 0.35 → **0.0**. El Kalman observa carreras REALES y tiraba
   hacia ellas una λ MERECIDA (xwOBA) que por construcción filtra esa suerte; además inyectaba
   parque en una λ neutra de parque que vuelve a recibir el factor en el PASO 5.

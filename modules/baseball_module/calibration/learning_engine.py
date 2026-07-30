@@ -28,6 +28,30 @@ logger = logging.getLogger(__name__)
 
 _MLB_API_BASE   = "https://statsapi.mlb.com/api/v1"
 _MIN_SAMPLES    = 10
+# Recorte del sesgo de equipo. NO SUBIR NI BAJAR sin pasar el gate de ROI — ver
+# `audit_20260714/paso11/reporte.md`.
+#
+# Se midió (2026-07-28) qué pasa al neutralizarlo (_BIAS_CLAMP = 0.0). Por Brier
+# parecía excelente: 0.24624 → 0.24501, y la ventaja del modelo sobre el azar de
+# 1.51% a 2.00% (+32% relativo). El ROI dijo lo contrario, en los CINCO umbrales y
+# cada vez peor cuanto más alto el edge:
+#
+#     edge>=0%   -2.05% -> -3.47%      edge>=8%   -5.58% -> -10.59%
+#     edge>=5%   -1.63% -> -6.72%      edge>=10%  -6.69% -> -19.89%
+#
+# Y el conteo de apuestas se derrumbó (edge>=8%: 1034 -> 642). La lectura: el Brier
+# mide la calidad PROMEDIO de las probabilidades; el ROI mide la COLA, los juegos
+# donde el modelo cree apartarse del mercado. Quitar el sesgo volvió al modelo más
+# "promedio" — mejor calibrado en el centro, incapaz de encontrar dónde apostar.
+# Para un sistema que sólo apuesta con edge, es el intercambio exactamente
+# equivocado.
+#
+# Nota sobre su fuerza actual: desde que `_KALMAN_BLEND` pasó a 0.0 (paso 10), el
+# amortiguamiento `raw/((1-B)+B·raw)` es identidad, así que este sesgo se aplica
+# CRUDO — más fuerte que antes (un sesgo de 1.20 se aplicaba como 1.1215, ahora
+# como 1.2000). Es correcto (sin Kalman no hay solapamiento que remover) pero hay
+# que saberlo al leer el baseline: 0.24624 es el neto de quitar un canal de
+# corrección-hacia-el-resultado y reforzar el otro.
 _BIAS_CLAMP     = 0.30
 # A team plays at most one game/day, so a bias cache shorter than 24h buys
 # nothing — there's no new data to pick up until that day's game is scored.
