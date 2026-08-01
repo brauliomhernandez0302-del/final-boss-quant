@@ -87,9 +87,16 @@ class GameOdds:
     total_under: Optional[float] = None
 
     # Run Line (±1.5)
-    runline_line: float = 1.5  # Estándar MLB
-    runline_home: Optional[float] = None  # Home -1.5
-    runline_away: Optional[float] = None  # Away +1.5
+    # `runline_line` es MAGNITUD (el fetcher la construye con abs()). Se conserva
+    # para las etiquetas y por compatibilidad, pero la probabilidad de cobertura
+    # NO debe derivarse de ella: sin signo no se sabe quién es el favorito, que
+    # es la causa raíz de PURP-1. Usar `runline_home_point`.
+    runline_line: float = 1.5  # Estándar MLB (magnitud)
+    runline_home: Optional[float] = None  # precio del lado local
+    runline_away: Optional[float] = None  # precio del lado visitante
+    # Punto FIRMADO del lado local: −1.5 si el local es favorito, +1.5 si es
+    # underdog. Es el que gobierna el umbral de cobertura de AMBOS lados.
+    runline_home_point: Optional[float] = None
 
     # First 5 Innings Moneyline
     f5_ml_home: Optional[float] = None
@@ -592,16 +599,60 @@ def analyze_runline(
     vig_method: str,
     bootstrap_ci: bool,
     confidence: float,
+    runline_home_point: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """
-    Analiza Run Line (±runline_line — 1.5 es el estándar MLB, pero se
-    respeta el valor real recibido: la cobertura se calcula contra
-    runline_line, no contra un umbral 1.5 fijo).
+    """Analiza el run line usando el PUNTO FIRMADO del lado que se precia.
 
-    Home -runline_line = Home gana por más que la línea
-    Away +runline_line = Away cubre si el diferencial no llega a la línea
+    PURP-1 (crítica), arreglada el 2026-07-31. Antes esto recibía sólo la
+    MAGNITUD de la línea (`odds_fetcher` la construye con `abs(...)`) y
+    calculaba:
+
+        p_home_cover = P(diff >  runline_line)
+        p_away_cover = P(diff <  runline_line)
+
+    Eso da el evento correcto SÓLO cuando el local es el favorito. Cuando el
+    favorito es el visitante, `RL_AWAY` no es "+1.5" sino "−1.5" —ganar por 2 o
+    más— pero el código seguía devolviendo P(diff < 1.5), que es el evento del
+    UNDERDOG (~65-70%), y lo multiplicaba por el precio del FAVORITO. De ahí
+    salían EV de tres dígitos.
+
+    Daño medido en el ledger antes del arreglo: de 281 picks resueltos, los 105
+    de runline perdieron 51.55u (ROI −49.09%) contra 9.98u del resto (−5.67%) —
+    el 37% de los picks causando el 84% de la pérdida. El EV declarado tenía
+    mediana 20.6% y máximo 110.2%, con 38 de 105 por encima del 40%.
+
+    La distorsión también CENSURABA: `RL_HOME` con local underdog debía
+    calcularse como P(diff > −1.5) ≈ 65% y se calculaba como P(diff > 1.5)
+    ≈ 35%, así que nunca daba EV y esa categoría no publicó un solo pick.
+
+    LA MATEMÁTICA CORRECTA. Con `h` = punto firmado del local (−1.5 si es
+    favorito, +1.5 si es underdog):
+
+        el local cubre   si  diff > −h
+        el visitante cubre si diff < −h        (son complementarios; con
+                                                medio-enteros no hay empate)
+
+    Un solo umbral `L = −h` gobierna los dos lados, y con h=−1.5 se reduce
+    exactamente al comportamiento anterior — por eso el caso "local favorito",
+    que es el 72% de los juegos, no se mueve.
+
+    `runline_home_point` es opcional: sin él se asume el local favorito
+    (`h = −|línea|`), que reproduce el comportamiento viejo. Se avisa por log
+    porque esa suposición es justamente el bug.
     """
-    logger.info(f"📊 Analizando Run Line ±{runline_line}")
+    # Umbral firmado: el local cubre si diff > L, el visitante si diff < L.
+    if runline_home_point is not None:
+        _L = -float(runline_home_point)
+    else:
+        _L = abs(runline_line)          # comportamiento viejo: local favorito
+        logger.warning(
+            "⚠️ Run line sin punto firmado — se asume local favorito (L=%+.1f). "
+            "Ésa es exactamente la suposición que causaba PURP-1; si el favorito "
+            "es el visitante, el evento calculado es el del underdog.", _L,
+        )
+    _etq_home = f"{-_L:+.1f}"
+    _etq_away = f"{_L:+.1f}"
+    logger.info("📊 Analizando Run Line — local %s / visitante %s", _etq_home, _etq_away)
     
     if home_samples is not None and away_samples is not None:
         # Diferencial de runs
@@ -609,17 +660,17 @@ def analyze_runline(
 
         # Home -runline_line: gana por más que la línea (diff es entero,
         # runline_line es un medio-entero típico de MLB, ej. 1.5 -> diff>=2)
-        p_home_cover = np.mean(diff > runline_line)
+        p_home_cover = np.mean(diff > _L)
 
         # Away +runline_line: cubre si el diferencial no llega a la línea
-        p_away_cover = np.mean(diff < runline_line)
+        p_away_cover = np.mean(diff < _L)
 
         if bootstrap_ci:
             _, p_home_lower, p_home_upper = bootstrap_confidence_interval(
-                (diff > runline_line).astype(int), CONFIG.BOOTSTRAP_SAMPLES, CONFIG.CI_LEVEL
+                (diff > _L).astype(int), CONFIG.BOOTSTRAP_SAMPLES, CONFIG.CI_LEVEL
             )
             _, p_away_lower, p_away_upper = bootstrap_confidence_interval(
-                (diff < runline_line).astype(int), CONFIG.BOOTSTRAP_SAMPLES, CONFIG.CI_LEVEL
+                (diff < _L).astype(int), CONFIG.BOOTSTRAP_SAMPLES, CONFIG.CI_LEVEL
             )
             home_ci = (p_home_lower, p_home_upper)
             away_ci = (p_away_lower, p_away_upper)
@@ -641,7 +692,7 @@ def analyze_runline(
         la = mc_result.get('mean_away', 4.5)
         lh = max(lh, 0.01)
         la = max(la, 0.01)
-        _rl_floor = math.floor(runline_line)
+        _rl_floor = math.floor(_L)
 
         p_home_cover = float(1 - skellam.cdf(_rl_floor, lh, la))
         p_away_cover = float(skellam.cdf(_rl_floor, lh, la))
@@ -661,12 +712,12 @@ def analyze_runline(
     # Análisis
     home_analysis = analyze_market_generic(
         p_home_cover, runline_home, home_ci, overround,
-        true_implied['home'], fractional_kelly, f"RUNLINE HOME -{runline_line}", confidence
+        true_implied['home'], fractional_kelly, f"RUNLINE HOME {_etq_home}", confidence
     )
 
     away_analysis = analyze_market_generic(
         p_away_cover, runline_away, away_ci, overround,
-        true_implied['away'], fractional_kelly, f"RUNLINE AWAY +{runline_line}", confidence
+        true_implied['away'], fractional_kelly, f"RUNLINE AWAY {_etq_away}", confidence
     )
     
     # Mejor pick
@@ -681,10 +732,10 @@ def analyze_runline(
     # other side was itself NEGATIVE-tier (disqualified) — only compare
     # weighted scores between two sides that are both actually bettable.
     if home_valid and (not away_valid or weighted_home > weighted_away):
-        best_side = f"HOME -{runline_line}"
+        best_side = f"HOME {_etq_home}"
         best = home_analysis
     elif away_valid:
-        best_side = f"AWAY +{runline_line}"
+        best_side = f"AWAY {_etq_away}"
         best = away_analysis
     else:
         best_side = "NO BET"
@@ -701,8 +752,14 @@ def analyze_runline(
             'best_score': best['composite_score'] if best else 0,
             'suggested_kelly': best['kelly'] if best else 0,
         },
+        # Etiquetas FIRMADAS de cada lado, para que aguas abajo nadie tenga que
+        # volver a asumir quién es el favorito a partir de la magnitud.
+        'home_point_label': _etq_home,
+        'away_point_label': _etq_away,
         'market_info': {
             'runline': runline_line,
+            'runline_threshold': _L,
+            'runline_home_point': -_L,
             'overround_pct': round(overround, 2),
         }
     }
@@ -1043,16 +1100,16 @@ def evaluate_value_ultra(
         runline_result = analyze_runline(
             mc_result, odds.runline_home, odds.runline_away, odds.runline_line,
             home_samples, away_samples, n_sims, fractional_kelly, vig_method, bootstrap_ci,
-            confidence,
+            confidence, runline_home_point=odds.runline_home_point,
         )
         
         all_markets['runline'] = runline_result
         
         if runline_result['home']['tier_enum'] != ValueTier.NEGATIVE:
-            all_bets.append({**runline_result['home'], 'side': f"HOME -{odds.runline_line}", 
+            all_bets.append({**runline_result['home'], 'side': f"HOME {runline_result['home_point_label']}", 
                            'weighted': runline_result['home']['ev'] * runline_result['home']['confidence'] * runline_result['home']['kelly'] * 100})
         if runline_result['away']['tier_enum'] != ValueTier.NEGATIVE:
-            all_bets.append({**runline_result['away'], 'side': f"AWAY +{odds.runline_line}",
+            all_bets.append({**runline_result['away'], 'side': f"AWAY {runline_result['away_point_label']}",
                            'weighted': runline_result['away']['ev'] * runline_result['away']['confidence'] * runline_result['away']['kelly'] * 100})
     
     # ==========================================================

@@ -1039,6 +1039,11 @@ def run_module(
                 # odds came from a caller-supplied dict predating this
                 # field, or no runline data was found at all).
                 runline_line=_fetched_odds.get('runline_line') or 1.5,
+                # Punto FIRMADO del lado local — el que decide quién es favorito
+                # y por lo tanto cuál es el evento de cobertura de cada lado.
+                # Sin él, `analyze_runline` cae a asumir local favorito, que es
+                # la causa raíz de PURP-1 (ver su docstring).
+                runline_home_point=_fetched_odds.get('runline_home_point'),
                 f5_ml_home=_fetched_odds.get('f5_ml_home'),
                 f5_ml_away=_fetched_odds.get('f5_ml_away'),
                 f5_total_line=_fetched_odds.get('f5_total_line'),

@@ -502,13 +502,17 @@ def _normalize_event(event: Dict) -> Dict:
     result["pin_runline_away"]     = pin_rl_away_price
     result["pin_runline_home_point"] = pin_rl_home_point
     result["pin_runline_away_point"] = pin_rl_away_point
-    # Magnitude only (not signed) — the home/away sign convention
-    # ("home is always -line") is a separate, pre-existing assumption
-    # elsewhere in the pipeline (GameOdds/analyze_runline), not something
-    # this fetcher decides. rl_home_point and rl_away_point aren't
-    # guaranteed to agree in sign if books disagree on which side is
-    # favored (see _consensus_line_and_price's docstring) — magnitude is
-    # what actually matters for the cover-probability math.
+    # El punto FIRMADO del lado local. Es lo que gobierna la probabilidad de
+    # cobertura de ambos lados: −1.5 si el local es favorito, +1.5 si es
+    # underdog. Este comentario decía antes que "la magnitud es lo que
+    # realmente importa para la matemática de cobertura" — era FALSO, y esa
+    # creencia es exactamente la causa raíz de PURP-1: `analyze_runline`
+    # asumía local-favorito y, cuando el favorito era el visitante, calculaba
+    # la probabilidad del evento del underdog y la multiplicaba por el precio
+    # del favorito (EV de tres dígitos, ROI −49% en 105 picks reales).
+    result["runline_home_point"] = rl_home_point
+    result["runline_away_point"] = rl_away_point
+    # La magnitud se conserva SÓLO para etiquetas y compatibilidad.
     result["runline_line"] = (
         abs(rl_home_point) if rl_home_point is not None
         else (abs(rl_away_point) if rl_away_point is not None else None)
