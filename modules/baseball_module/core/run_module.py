@@ -537,6 +537,11 @@ def run_module(
             'travel_source_away':  game_data.get('travel_source_away'),
             'weather_source':      (game_data.get('weather') or {}).get('source'),
             'enrichment_failed':   bool(game_data.get('enrichment_failed')),
+            # Cuánta ofensa de cada equipo está en lista de lesionados. El λ NO
+            # lo descuenta todavía — se registra para poder medir cuánto importa
+            # antes de decidir cómo usarlo.
+            'home_injured_pa_share': game_data.get('home_injured_pa_share'),
+            'away_injured_pa_share': game_data.get('away_injured_pa_share'),
             'official_date':       game_data.get('official_date'),
             'doubleheader':        game_data.get('doubleheader'),
         }

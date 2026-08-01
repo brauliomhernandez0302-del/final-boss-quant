@@ -1531,6 +1531,94 @@ class MLBStatsAPI:
     # ==========================================================
     # FEATURE: BATTING HANDEDNESS % PER TEAM (for wind asymmetry)
     # ==========================================================
+    def get_team_injuries(
+        self, team_id: int, season: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Jugadores del equipo en lista de lesionados, y cuánta ofensa se llevan.
+
+        Hasta el 2026-08-01 este dato NO EXISTÍA en el módulo de béisbol:
+        `app.py` tenía `"home_injuries": []` hardcodeado en vacío. El módulo de
+        básquet sí las modela (peso 0.20 y una función propia de análisis); el de
+        béisbol no las miraba. Consecuencia concreta: la ofensa de cada equipo se
+        calcula del Statcast ACUMULADO de la temporada, que incluye entera la
+        producción de quien hoy está lesionado.
+
+        Caso real al construir esto (Yankees, 2026-08-01): Aaron Judge en lista
+        de 60 días, Bellinger y Stanton en la de 10 — **19.2% de los turnos
+        ofensivos del equipo** pertenecían a jugadores que no iban a jugar, y el
+        modelo los contaba como si jugaran.
+
+        Devuelve el detalle y `pa_share_out`, la fracción de turnos del roster que
+        está fuera. Se excluye a los lanzadores del cálculo: un abridor lesionado
+        ya está cubierto por el probable pitcher, y contarlo acá sería doble.
+
+        Una sola llamada por equipo — el roster hidratado trae el estado Y las
+        estadísticas de cada jugador juntos, sin costo extra.
+        """
+        season = season or _current_mlb_season()
+        cache_file = CACHE_DIR / f"injuries_{team_id}_{season}.json"
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 3600:
+            try:
+                return json.load(open(cache_file))
+            except Exception:
+                pass
+        try:
+            r = self.session.get(
+                f"{self.BASE_URL}/teams/{team_id}/roster",
+                params={
+                    "rosterType": "fullSeason", "season": season,
+                    "hydrate": f"person(stats(type=season,group=hitting,season={season}))",
+                },
+                timeout=(5, 25),
+            )
+            r.raise_for_status()
+            roster = r.json().get("roster", [])
+        except Exception as exc:
+            logger.warning("⚠️ no se pudieron leer lesiones del equipo %s: %s", team_id, exc)
+            return None
+
+        fuera: List[Dict[str, Any]] = []
+        pa_total = 0.0
+        pa_fuera = 0.0
+        for e in roster:
+            pos = (e.get("position") or {}).get("abbreviation", "")
+            if pos == "P":
+                continue                      # ver docstring: lo cubre el probable pitcher
+            persona = e.get("person") or {}
+            pa = 0
+            for bloque in (persona.get("stats") or []):
+                for sp in bloque.get("splits", []):
+                    pa = sp.get("stat", {}).get("plateAppearances") or pa
+            if not pa:
+                continue
+            pa_total += pa
+            estado = (e.get("status") or {}).get("description", "")
+            if "Injured" in estado:
+                pa_fuera += pa
+                fuera.append({
+                    "id": persona.get("id"),
+                    "name": persona.get("fullName"),
+                    "position": pos,
+                    "status": estado,
+                    "pa": pa,
+                })
+
+        if pa_total <= 0:
+            return None
+        fuera.sort(key=lambda x: -x["pa"])
+        resultado = {
+            "n_out": len(fuera),
+            "pa_share_out": round(pa_fuera / pa_total, 4),
+            "pa_total_roster": int(pa_total),
+            "players": fuera[:12],            # los más relevantes por turnos
+        }
+        try:
+            with open(cache_file, "w") as f:
+                json.dump(resultado, f)
+        except Exception:
+            pass
+        return resultado
+
     def get_team_batting_handedness_pct(
         self, team_id: int, game_date: str, vs_hand: Optional[str] = None
     ) -> Optional[float]:
@@ -2485,6 +2573,30 @@ class MLBDataIntegrator:
                     enriched["home_days_rest"] = self.mlb_api.get_team_days_rest(game["home_team_id"], game_date_str)
                 if game.get("away_team_id") and game_date_str:
                     enriched["away_days_rest"] = self.mlb_api.get_team_days_rest(game["away_team_id"], game_date_str)
+
+                # 7b) LESIONES — dato que hasta el 2026-08-01 no entraba al módulo
+                # de béisbol en absoluto (`app.py` lo tenía hardcodeado en vacío).
+                # La ofensa de cada equipo se calcula del Statcast ACUMULADO de la
+                # temporada, así que incluye entera la producción de quien hoy no
+                # juega. Ver `get_team_injuries` para el caso real que lo motivó.
+                for _lado, _tid_key, _clave in (("home", "home_team_id", "home_injuries"),
+                                                ("away", "away_team_id", "away_injuries")):
+                    _tid = game.get(_tid_key)
+                    if not _tid:
+                        continue
+                    _les = self.mlb_api.get_team_injuries(_tid, season)
+                    if not _les:
+                        continue
+                    enriched[_clave] = _les
+                    enriched[f"{_lado}_injured_pa_share"] = _les["pa_share_out"]
+                    if _les["pa_share_out"] >= 0.10:
+                        logger.warning(
+                            "  🏥 %s: %d bateador(es) en lista de lesionados, %.1f%% de sus "
+                            "turnos ofensivos — el λ de ofensa NO lo descuenta todavía (%s)",
+                            game.get(f"{_lado}_team", "?"), _les["n_out"],
+                            _les["pa_share_out"] * 100,
+                            ", ".join(p["name"] for p in _les["players"][:3]),
+                        )
 
                 # 8) Team pitching/defense stats (ERA, WHIP, RA/G)
                 if game.get("home_team_id"):

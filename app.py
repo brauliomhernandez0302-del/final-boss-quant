@@ -91,6 +91,12 @@ class _NBAAnalyzer:
                     "home_b2b":        False, "away_b2b": False,
                     "away_travel_miles": 0,
                     "home_days_rest":  1,     "away_days_rest": 1,
+                    # Las lesiones REALES entran por
+                    # data_fetchers.get_team_injuries y viajan en game_data como
+                    # home_injuries/away_injuries. Estas listas vacías eran un
+                    # placeholder que nunca se llenó y hacía parecer que el dato
+                    # existía: cualquiera que leyera esto asumía que el módulo de
+                    # béisbol contemplaba lesiones, y no las miraba en absoluto.
                     "home_injuries":   [],    "away_injuries": [],
                 },
                 "n_simulations": self.config.simulations,
