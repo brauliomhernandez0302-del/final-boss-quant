@@ -60,7 +60,14 @@ def test_devig_no_longer_exists_in_backtest_and_retrain():
     check alone (a stale, unreferenced definition would still "pass" an
     import-based check)."""
     src = (REPO_ROOT / "backtest_and_retrain.py").read_text()
-    assert "_devig" not in src, "_devig still referenced in backtest_and_retrain.py"
+    # Se busca la DEFINICIÓN y la LLAMADA, no la subcadena pelada: el nombre
+    # `_devig` es prefijo de otros identificadores legítimos de otros módulos
+    # (p.ej. `track_record.db::_clv_devigged`, citado en un comentario acá), y
+    # un grep de subcadena los tomaba como si el helper duplicado hubiera vuelto.
+    # Esto sigue atrapando exactamente lo que el test vigila —que exista o se
+    # invoque un `_devig` local— sin prohibir mencionar el nombre en prosa.
+    assert "def _devig" not in src, "_devig redefinido en backtest_and_retrain.py"
+    assert "_devig(" not in src, "_devig sigue siendo invocado en backtest_and_retrain.py"
 
 
 def test_backtest_and_retrain_imports_remove_vig_multiplicative():

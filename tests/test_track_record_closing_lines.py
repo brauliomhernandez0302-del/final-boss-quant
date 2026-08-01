@@ -39,6 +39,12 @@ class TestClosingLineCapture:
 
     def test_ml_home_beats_close_gives_positive_clv(self, db):
         # Published at 2.00, closed at 1.90 (price shortened) -> we beat the close.
+        # El CLV se mide contra el precio JUSTO devigged, no contra el crudo
+        # (2026-07-31): el crudo lleva el margen adentro y regalaba el vig
+        # entero como si fuera habilidad. Acá el par 1.90/2.05 tiene overround
+        # 1.0146, así que el justo es 1.90*1.0146 y el CLV real es ~1.5pp menor
+        # que el 5.26% que daba la cuenta vieja — pero sigue siendo positivo,
+        # porque este pick SÍ le ganó al cierre.
         _publish(db, odds_decimal=2.00)
         ok = db.capture_closing_line(
             "778000:ML_HOME", closing_odds_decimal=1.90,
@@ -46,8 +52,10 @@ class TestClosingLineCapture:
         )
         assert ok
         row = db.get_picks()[0]
-        assert row["clv_pct"] == pytest.approx((2.00 / 1.90 - 1) * 100, abs=1e-3)
+        justo = 1.90 * (1 / 1.90 + 1 / 2.05)
+        assert row["clv_pct"] == pytest.approx((2.00 / justo - 1) * 100, abs=1e-3)
         assert row["clv_pct"] > 0
+        assert row["clv_pct"] < (2.00 / 1.90 - 1) * 100, "el crudo sobreestimaba" 
 
     def test_ml_home_worse_than_close_gives_negative_clv(self, db):
         # Published at 1.90, closed at 2.00 (price lengthened) -> we did worse than the close.
@@ -66,7 +74,8 @@ class TestClosingLineCapture:
             closing_pin_home=1.80, closing_pin_away=2.00,
         )
         row = db.get_picks()[0]
-        assert row["clv_pct"] == pytest.approx((2.10 / 2.00 - 1) * 100, abs=1e-3)
+        justo = 2.00 * (1 / 1.80 + 1 / 2.00)
+        assert row["clv_pct"] == pytest.approx((2.10 / justo - 1) * 100, abs=1e-3)
 
     def test_non_ml_market_stores_snapshot_but_no_clv(self, db):
         _publish(db, pick_uid="778000:OVER", market="OVER", odds_decimal=1.91)

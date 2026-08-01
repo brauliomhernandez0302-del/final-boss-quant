@@ -18,6 +18,67 @@ from typing import Any, Dict, Generator, List, Optional
 DB_PATH = Path(__file__).parent.parent / "data" / "track_record.db"
 
 
+def _clv_devigged(
+    odds_tomadas: Optional[float],
+    market: str,
+    pin_home: Optional[float] = None,
+    pin_away: Optional[float] = None,
+    pin_side: Optional[float] = None,
+    pin_opposite: Optional[float] = None,
+) -> Optional[float]:
+    """CLV contra el precio JUSTO de cierre, no contra el precio crudo.
+
+    Hasta el 2026-07-31 esto era `odds_tomadas / precio_crudo_de_cierre − 1`. El
+    precio crudo de un lado lleva el margen de la casa adentro, así que esa cuenta
+    **regalaba el vig entero como si fuera habilidad**. Medido sobre los picks de
+    moneyline con ambos lados de Pinnacle al cierre:
+
+        CLV contra precio CRUDO   +0.635%   t=+0.73   54.2% positivos
+        CLV contra precio JUSTO   −1.349%   t=−1.59   33.3% positivos
+        diferencia 1.985pp ≈ el overround de cierre (1.0201)
+
+    O sea que el único indicador de habilidad positivo del proyecto se vuelve
+    negativo al medirlo bien. Se verificó además que el signo se invierte con los
+    cuatro métodos de devig habituales (proporcional, aditivo, power, Shin) y con
+    magnitudes casi idénticas — el método no importa, medir contra crudo sí.
+
+    Se usa el proporcional (multiplicativo) por coherencia con
+    `core.value_detector.remove_vig_multiplicative`, que es el que ya usa el
+    motor. Precio justo = precio_crudo × overround, con overround = 1/p1 + 1/p2.
+
+    Prefiere `pin_side`/`pin_opposite` (el par del PROPIO mercado del pick, que
+    existe desde b629f55 también para total y runline) y cae a home/away sólo
+    para moneyline. Sin AMBOS lados no hay devig posible y devuelve None: es
+    preferible no tener CLV a tener uno inflado.
+    """
+    if not odds_tomadas or odds_tomadas <= 1.0:
+        return None
+    # MONEYLINE ÚNICAMENTE, por la decisión del 2026-07-26 que NO se toca acá:
+    # para un total o un runline la LÍNEA puede moverse (un total tomado a 8.5
+    # que cierra en 9.0), y comparar precios en puntos distintos no significa
+    # nada. Qué es CLV para un derivado lo define el protocolo V2; lo que ya
+    # está resuelto es que el dato no falta —`closing_pin_side`/`_opposite` se
+    # capturan para todos los mercados desde b629f55— así que cuando V2 lo
+    # defina, esta misma función lo calcula quitándole este gate y exigiendo
+    # `closing_point_moved` falso.
+    if market not in ("ML_HOME", "ML_AWAY"):
+        return None
+    lado = opuesto = None
+    if pin_side and pin_opposite:
+        lado, opuesto = pin_side, pin_opposite
+    elif market == "ML_HOME" and pin_home and pin_away:
+        lado, opuesto = pin_home, pin_away
+    elif market == "ML_AWAY" and pin_home and pin_away:
+        lado, opuesto = pin_away, pin_home
+    if not lado or not opuesto or lado <= 1.0 or opuesto <= 1.0:
+        return None
+    overround = 1.0 / lado + 1.0 / opuesto
+    if overround <= 0:
+        return None
+    precio_justo = lado * overround
+    return round((odds_tomadas / precio_justo - 1.0) * 100.0, 4)
+
+
 def _parse_iso(value: str) -> Optional[datetime]:
     """Parse an ISO-8601 timestamp (any 'Z'-suffixed or offset-aware form)
     into a tz-aware datetime. None on any parse failure."""
@@ -498,13 +559,9 @@ class TrackRecordDB:
             clv_pct = None
             odds_decimal = row["odds_decimal"]
             market = row["market"]
-            closing_ref = None
-            if market == "ML_HOME":
-                closing_ref = closing_pin_home
-            elif market == "ML_AWAY":
-                closing_ref = closing_pin_away
-            if odds_decimal and closing_ref and closing_ref > 1.0:
-                clv_pct = round((odds_decimal / closing_ref - 1.0) * 100.0, 4)
+            clv_pct = _clv_devigged(odds_decimal, market,
+                                    closing_pin_home, closing_pin_away,
+                                    closing_pin_side, closing_pin_opposite)
 
             # Which point this pick was taken at, by family. ML has no point,
             # so it can never be flagged as moved.

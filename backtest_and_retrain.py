@@ -2208,10 +2208,22 @@ def generate_report(
             "profit": round(profit, 4),
             "roi_pct": round(profit / staked * 100, 2) if staked > 0 else 0.0,
             "n_extreme_filtered": n_extreme_filtered,
-            # CLV: model probability / Pinnacle fair probability - 1
-            # Positive → model was pricing ahead of closing line (real edge signal)
-            "mean_clv_pct": round(mean_clv * 100, 3) if mean_clv is not None else None,
-            "pos_clv_pct":  round(pos_clv_pct, 1) if pos_clv_pct is not None else None,
+            # ⚠️ ESTO NO ES CLV. Es `p_modelo / p_pinnacle_justa − 1`, o sea el
+            # EDGE del modelo contra el precio, expresado como razón — no tiene
+            # nada que ver con vencer a la línea de cierre. Es POSITIVO POR
+            # CONSTRUCCIÓN en el subconjunto que este ROI simula, porque sólo se
+            # apuesta el lado donde el modelo cree tener ventaja: de ahí que el
+            # reporte canónico diga "+12.99%, 100% positivo" justo al lado de un
+            # ROI de −2.05%.
+            #
+            # Renombrado el 2026-07-31 a `mean_edge_ratio_pct`. El nombre viejo
+            # ya había hecho que se citara como evidencia de habilidad más de una
+            # vez (ver la memoria `feedback_clv_misnomer`). El CLV de verdad —
+            # contra el precio de cierre DEVIGGED — vive en
+            # `track_record.db::_clv_devigged` y sobre los picks reales da
+            # −0.497%, no +12.99%.
+            "mean_edge_ratio_pct": round(mean_clv * 100, 3) if mean_clv is not None else None,
+            "pos_edge_ratio_pct":  round(pos_clv_pct, 1) if pos_clv_pct is not None else None,
         }
 
     # ── season breakdown ────────────────────────────────────────────────────
@@ -2377,12 +2389,12 @@ def generate_report(
     _n_filt = next(iter(report["roi_simulation"].values()), {}).get("n_extreme_filtered", 0)
     print(f"\n  ROI SIMULATION (flat 1-unit, best-edge side @ Pinnacle)")
     print(f"  Extreme-odds games filtered (pin>4.0): {_n_filt}")
-    print(f"  {'Edge threshold':16s}  {'Bets':>6s}  {'Profit':>8s}  {'ROI':>8s}  {'Mean CLV':>9s}  {'CLV>0':>6s}")
+    print(f"  {'Edge threshold':16s}  {'Bets':>6s}  {'Profit':>8s}  {'ROI':>8s}  {'Edge ratio':>10s}  {'>0':>6s}")
     for label, rt in report["roi_simulation"].items():
         if rt["bets"] == 0:
             continue
-        clv_str = f"{rt['mean_clv_pct']:>+8.3f}%" if rt.get("mean_clv_pct") is not None else "      N/A"
-        pos_str = f"{rt['pos_clv_pct']:>5.1f}%" if rt.get("pos_clv_pct") is not None else "   N/A"
+        clv_str = f"{rt['mean_edge_ratio_pct']:>+8.3f}%" if rt.get("mean_edge_ratio_pct") is not None else "      N/A"
+        pos_str = f"{rt['pos_edge_ratio_pct']:>5.1f}%" if rt.get("pos_edge_ratio_pct") is not None else "   N/A"
         print(f"  {label:16s}  {rt['bets']:>6d}  {rt['profit']:>+8.2f}u  "
               f"{rt['roi_pct']:>+7.2f}%  {clv_str}  {pos_str}")
 
@@ -2738,8 +2750,11 @@ def main() -> None:
                 "ml_away_pin":     r["ml_away_pin"],
                 "model_edge":      (r["p_home"] - pin_fh) if pin_fh else None,
                 "model_edge_away": (r["p_away"] - pin_fa) if pin_fa else None,
-                # CLV: how much model probability exceeds Pinnacle fair probability (%).
-                # Positive CLV → model was pricing ahead of where market closed.
+                # NO ES CLV: es cuánto excede la probabilidad del modelo a la
+                # probabilidad justa de Pinnacle (%). Positivo por construcción
+                # en el lado que el modelo elige apostar — ver el comentario
+                # extenso en la tabla de ROI. El CLV real está en
+                # track_record.db::_clv_devigged.
                 "clv_home": (r["p_home"] / pin_fh - 1.0) if (pin_fh and pin_fh > 0) else None,
                 "clv_away": (r["p_away"] / pin_fa - 1.0) if (pin_fa and pin_fa > 0) else None,
             })
