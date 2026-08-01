@@ -506,6 +506,41 @@ def run_module(
             la = _integrator.get_team_lambda(away_team, away_rpg, team_id=away_team_id)
             logger.info(f"   λ_base (legacy): λ_h={lh:.3f}  λ_a={la:.3f}")
 
+        # ── Instantánea de ENTRADAS, para poder auditar el pick después ──────
+        # El snapshot que se guardaba con cada pick (`pipeline_json`) tenía sólo
+        # `lambdas`, `mc_probs` y `bet`: los RESULTADOS, nunca lo que el modelo
+        # había VISTO. Consecuencia concreta y encontrada al intentar medirla
+        # (2026-08-01): con una anticipación mediana de 26.6 horas, el abridor
+        # anunciado cambia a veces entre que se publica el pick y que se juega —
+        # y cuando pasa, todo el análisis del pitcher de ese pick fue sobre la
+        # persona equivocada. NO SE PODÍA MEDIR, porque no registrábamos a quién
+        # habíamos visto y la API sólo devuelve el probable ACTUAL.
+        #
+        # Se guarda lo que permite responder "¿el modelo estaba mirando lo
+        # correcto?", no todo el estado: identidad y procedencia de los
+        # abridores, si el lineup estaba confirmado, descanso, y las banderas de
+        # calidad de dato. Compacto a propósito — esto se escribe por pick.
+        results['inputs_snapshot'] = {
+            'home_pitcher':        game_data.get('home_pitcher'),
+            'home_pitcher_id':     game_data.get('home_pitcher_id'),
+            'home_pitcher_source': game_data.get('home_pitcher_source'),
+            'away_pitcher':        game_data.get('away_pitcher'),
+            'away_pitcher_id':     game_data.get('away_pitcher_id'),
+            'away_pitcher_source': game_data.get('away_pitcher_source'),
+            'pitchers_valid':      game_data.get('pitchers_valid'),
+            'lineup_confirmed':    bool(_tte_home_meta.get('lineup_confirmed')),
+            'home_lhb_source':     ('lineup' if game_data.get('home_lineup_lhb_pct') is not None
+                                    else 'equipo' if game_data.get('home_lhb_pct') is not None
+                                    else 'liga'),
+            'home_days_rest':      game_data.get('home_days_rest'),
+            'away_days_rest':      game_data.get('away_days_rest'),
+            'travel_source_away':  game_data.get('travel_source_away'),
+            'weather_source':      (game_data.get('weather') or {}).get('source'),
+            'enrichment_failed':   bool(game_data.get('enrichment_failed')),
+            'official_date':       game_data.get('official_date'),
+            'doubleheader':        game_data.get('doubleheader'),
+        }
+
         # Stage factors tracker — populated per pipeline step for gradient descent.
         # Stores RAW engine ratios (weight=1.0 equivalent) so _gradient_step can
         # reconstruct the relationship between stage adjustment and prediction error.

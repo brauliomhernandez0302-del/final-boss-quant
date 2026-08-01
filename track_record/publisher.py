@@ -480,6 +480,26 @@ def publish_mlb_picks(
                 "lambdas": result.get("lambdas_history", {}),
                 "mc_probs": mc_probs,
                 "bet": bet,
+                # Lo que el modelo VIO, no sólo lo que concluyó. Sin esto no se
+                # puede auditar un pick después: al intentar medir cuántas veces
+                # el abridor analizado no era el que terminó lanzando —con 26.6h
+                # de anticipación mediana, tiene que pasar— resultó imposible,
+                # porque no quedaba registro de a quién habíamos visto y la API
+                # sólo devuelve el probable actual. Ver `inputs_snapshot` en
+                # run_module.py para qué incluye y por qué es compacto.
+                "inputs": result.get("inputs_snapshot", {}),
+                # El precio y el libro que se vieron al decidir. `odds_book`
+                # falta hoy en el 71% de los picks (sólo se completa cuando el
+                # precio casa exacto con el del fetcher), así que sin esto no se
+                # puede auditar de dónde salió el número que se publicó.
+                "market": {
+                    "ml_home": market_odds.get("ml_home"),
+                    "ml_away": market_odds.get("ml_away"),
+                    "pin_home": market_odds.get("pin_home"),
+                    "pin_away": market_odds.get("pin_away"),
+                    "total_line": market_odds.get("total_line"),
+                    "runline_home_point": market_odds.get("runline_home_point"),
+                },
             }
 
             if dry_run:
