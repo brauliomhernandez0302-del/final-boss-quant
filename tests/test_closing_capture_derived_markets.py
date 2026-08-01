@@ -88,16 +88,24 @@ def test_every_family_captures_a_non_null_closing_price(
     assert row["closing_captured_at"] is not None
 
 
-def test_clv_pct_stays_moneyline_only_for_now(db, monkeypatch):
-    """V2 define qué es CLV para un derivado; hasta entonces se guardan los
-    insumos y clv_pct queda NULL — pero ya NO por falta de datos."""
+def test_clv_pct_ahora_cubre_derivados_con_el_punto_QUIETO(db, monkeypatch):
+    """Actualizado 2026-08-01: el CLV se extendió a derivados cuando el punto NO
+    se movió. La objeción original —un total tomado a 8.5 que cierra en 9.0 no
+    es el mismo mercado— sigue vigente y descarta ESE caso, no el mercado entero.
+
+    Razón para definirlo ahora: elegir el filtro del producto por ROI necesita
+    ~14.800 picks (740 días); por CLV, ~117 (6 días). Extenderlo duplicó la
+    muestra con CLV de 105 a 228 picks del ledger real.
+    """
     ml = _publish(db, "ML_HOME", 1.90)
     over = _publish(db, "OVER", 2.05, total_line=8.5)
     _sweep(db, monkeypatch)
 
     assert _row(db, ml)["clv_pct"] is not None
     over_row = _row(db, over)
-    assert over_row["clv_pct"] is None
+    # El barrido cierra este total en el mismo punto, así que sí tiene CLV.
+    assert over_row["closing_point_moved"] == 0
+    assert over_row["clv_pct"] is not None
     # ...y sin embargo el cierre quedó guardado y es computable después:
     assert over_row["closing_odds_decimal"] == 1.95
     assert over_row["closing_pin_side"] == 1.93

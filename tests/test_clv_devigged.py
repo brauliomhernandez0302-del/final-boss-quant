@@ -93,20 +93,35 @@ def test_sin_ambos_lados_no_hay_clv(kwargs):
 
 @pytest.mark.parametrize("market", ["OVER", "UNDER", "RL_HOME", "RL_AWAY",
                                     "F5_OVER", "F5_HOME"])
-def test_los_derivados_siguen_sin_clv_a_proposito(market):
-    """Decisión del 2026-07-26 que este arreglo NO toca: para un derivado la
-    LÍNEA puede moverse (un total tomado a 8.5 que cierra en 9.0), y comparar
-    precios en puntos distintos no significa nada. Qué es CLV para un derivado
-    lo define el protocolo V2.
+def test_un_derivado_con_el_punto_MOVIDO_no_tiene_clv(market):
+    """Un total tomado a 8.5 que cierra en 9.0 no se puede comparar por precio:
+    son mercados distintos. Ésa era la objeción del 2026-07-26 y sigue vigente."""
+    assert _clv_devigged(2.00, market, pin_side=1.91, pin_opposite=2.05,
+                         point_moved=1) is None
 
-    Lo que sí está resuelto es que el dato ya no falta: `closing_pin_side` y
-    `closing_pin_opposite` se capturan para todos los mercados desde b629f55,
-    así que cuando V2 lo defina se calcula quitando este gate y exigiendo que
-    `closing_point_moved` sea falso. Este test existe para que ampliar el
-    alcance sea una decisión explícita y no un efecto colateral — que es
-    exactamente lo que estuvo a punto de pasar al arreglar el devig.
-    """
-    assert _clv_devigged(2.00, market, pin_side=1.91, pin_opposite=2.05) is None
+
+@pytest.mark.parametrize("market", ["OVER", "UNDER", "RL_HOME", "RL_AWAY"])
+def test_un_derivado_con_el_punto_QUIETO_si_tiene_clv(market):
+    """Cuando el punto es el mismo en los dos momentos, un derivado se compara
+    exactamente igual que un moneyline. La objeción descartaba el caso movido,
+    no el mercado entero."""
+    assert _clv_devigged(2.00, market, pin_side=1.91, pin_opposite=2.05,
+                         point_moved=0) is not None
+
+
+@pytest.mark.parametrize("market", ["OVER", "RL_HOME"])
+def test_sin_saber_si_el_punto_se_movio_no_hay_clv(market):
+    """None significa que faltó el punto de cierre o el tomado. Preferible sin
+    CLV que con uno que compara dos líneas distintas sin saberlo."""
+    assert _clv_devigged(2.00, market, pin_side=1.91, pin_opposite=2.05,
+                         point_moved=None) is None
+
+
+def test_el_moneyline_no_depende_del_punto():
+    """El ML no tiene punto, así que nunca puede quedar excluido por esto."""
+    for pm in (None, 0, 1):
+        assert _clv_devigged(2.10, "ML_HOME", pin_side=1.91, pin_opposite=2.05,
+                             point_moved=pm) is not None
 
 
 @pytest.mark.parametrize("odds", [None, 0, 1.0, -2.0])

@@ -25,6 +25,7 @@ def _clv_devigged(
     pin_away: Optional[float] = None,
     pin_side: Optional[float] = None,
     pin_opposite: Optional[float] = None,
+    point_moved: Optional[int] = None,
 ) -> Optional[float]:
     """CLV contra el precio JUSTO de cierre, no contra el precio crudo.
 
@@ -53,16 +54,24 @@ def _clv_devigged(
     """
     if not odds_tomadas or odds_tomadas <= 1.0:
         return None
-    # MONEYLINE ÚNICAMENTE, por la decisión del 2026-07-26 que NO se toca acá:
-    # para un total o un runline la LÍNEA puede moverse (un total tomado a 8.5
-    # que cierra en 9.0), y comparar precios en puntos distintos no significa
-    # nada. Qué es CLV para un derivado lo define el protocolo V2; lo que ya
-    # está resuelto es que el dato no falta —`closing_pin_side`/`_opposite` se
-    # capturan para todos los mercados desde b629f55— así que cuando V2 lo
-    # defina, esta misma función lo calcula quitándole este gate y exigiendo
-    # `closing_point_moved` falso.
+    # Moneyline siempre; derivados SÓLO si el punto no se movió.
+    #
+    # La objeción original (2026-07-26) era correcta: un total tomado a 8.5 que
+    # cierra en 9.0 no se puede comparar por precio, son mercados distintos. Pero
+    # eso descarta el caso movido, no el mercado entero — cuando el punto es el
+    # mismo en los dos momentos, un total o un runline se compara EXACTAMENTE
+    # igual que un moneyline.
+    #
+    # Medido sobre el ledger: de 142 picks de runline con par de Pinnacle, 101
+    # conservan el punto (el runline casi nunca se mueve); de 81 totales, 47.
+    # Extenderlo duplica la muestra con CLV, de 105 a 228 picks.
+    #
+    # `point_moved` None significa "no se pudo determinar" —falta el punto de
+    # cierre o el tomado— y ahí NO se calcula: preferible sin CLV que con uno
+    # que compara dos líneas distintas.
     if market not in ("ML_HOME", "ML_AWAY"):
-        return None
+        if point_moved is None or point_moved:
+            return None
     lado = opuesto = None
     if pin_side and pin_opposite:
         lado, opuesto = pin_side, pin_opposite
@@ -559,9 +568,6 @@ class TrackRecordDB:
             clv_pct = None
             odds_decimal = row["odds_decimal"]
             market = row["market"]
-            clv_pct = _clv_devigged(odds_decimal, market,
-                                    closing_pin_home, closing_pin_away,
-                                    closing_pin_side, closing_pin_opposite)
 
             # Which point this pick was taken at, by family. ML has no point,
             # so it can never be flagged as moved.
@@ -578,6 +584,14 @@ class TrackRecordDB:
                 # compare magnitudes. 0.01 tolerance for float noise, well
                 # under the 0.5 that separates two real MLB lines.
                 closing_point_moved = int(abs(abs(closing_point) - abs(taken_point)) > 0.01)
+
+            # El CLV se calcula DESPUÉS de saber si el punto se movió: para un
+            # derivado esa condición es la que lo vuelve comparable (ver
+            # _clv_devigged). El orden importaba y estaba al revés.
+            clv_pct = _clv_devigged(odds_decimal, market,
+                                    closing_pin_home, closing_pin_away,
+                                    closing_pin_side, closing_pin_opposite,
+                                    point_moved=closing_point_moved)
 
             cur = conn.execute(
                 """
