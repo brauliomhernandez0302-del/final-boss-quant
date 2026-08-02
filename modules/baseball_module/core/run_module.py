@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from data_fetchers import MLBStatsAPI, MLBDataIntegrator, _current_mlb_season
 from config import MLB_SIMULATIONS, LEAGUE_AVG_RUNS, LEAGUE_AVG_WHIP, LEAGUE_AVG_ERA
 
-from modules.baseball_module.calibration.learning_engine import LearningEngine
+from modules.baseball_module.calibration.learning_engine import LearningEngine, _KALMAN_BLEND
 
 # Park + Weather (symmetric) - ABSOLUTO
 from modules.baseball_module.hfa.park_weather_engine import adjust_for_park_and_weather
@@ -93,8 +93,8 @@ def _compute_lambda_noise(tte_active: bool, enrichment_available: bool, has_real
 
 def run_module(
     game_id: Optional[int] = None,
-    lh_base: float = LEAGUE_AVG_RUNS,  # unused — lambda comes from get_team_lambda()
-    la_base: float = LEAGUE_AVG_RUNS,  # unused — lambda comes from get_team_lambda()
+    lh_base: float = LEAGUE_AVG_RUNS,  # DEPRECADO — ver nota al pie del docstring
+    la_base: float = LEAGUE_AVG_RUNS,  # DEPRECADO — ver nota al pie del docstring
     use_hfa: bool = True,
     use_pitcher: bool = True,
     analyze_f5: bool = True,
@@ -133,6 +133,15 @@ def run_module(
     the argument passed — an escape hatch for ad-hoc debugging sessions that
     call this function through other code paths (e.g. track_record/) that
     don't yet pass `persist` through explicitly.
+
+    `lh_base`/`la_base` están DEPRECADOS y no se leen en ninguna rama. λ sale
+    del True Talent Engine (PASO 1), y si éste falla, del fallback legacy
+    `MLBDataIntegrator.get_team_lambda()` — nunca de estos argumentos. Se
+    conservan en la firma porque quitarlos rompería cualquier llamada
+    posicional de tercero; ningún caller del repo los pasa (verificado por
+    grep 2026-08-03: ui/mlb.py, track_record/publisher.py y los tests usan
+    todos argumentos con nombre). El comentario anterior decía que λ venía de
+    `get_team_lambda()`, cierto sólo para el camino de fallback.
     """
     import os as _os
     _persist = persist and _os.environ.get("FBQ_NO_PERSIST") != "1"
@@ -318,6 +327,14 @@ def run_module(
             'whip':                  home_ps.get('whip', _home_team_whip),
             'k_per_9':               home_ps.get('k_per_9', 8.5),
             'era_last_5':            home_ps.get('era_last_5', _home_era),
+            # Los tres de abajo NO tienen consumidor vivo: su único lector era
+            # `_adjust_pitcher_form`, neutralizado en el paso 8 (devuelve 1.0).
+            # Se conservan a propósito, igual que se conservó la función en vez
+            # de sacar el término de la suma — si alguien reinstaura un ajuste
+            # de forma, la cañería y la evidencia están donde iría a buscarlas.
+            # No cuestan un fetch extra: vienen en el mismo game log que sí
+            # alimenta fatiga (days_rest, last_pitch_count) y el escalado F5
+            # (avg_innings_per_start). Verificado por grep 2026-08-03.
             'era_trend':             home_ps.get('era_trend'),
             'k9_trend':              home_ps.get('k9_trend'),
             'quality_start_pct':     home_ps.get('quality_start_pct'),
@@ -414,7 +431,14 @@ def run_module(
                         "k_pct":           _fg_d.get("k_pct"),
                         "bb_pct":          _fg_d.get("bb_pct"),
                         "swstr_pct":       _fg_d.get("swstr_pct"),
-                        # Luck indicators for pitchers_regression
+                        # Indicadores de suerte. Su consumidor original era
+                        # context_engine/pitchers_regression.py, ELIMINADO del
+                        # pipeline para no doble-contar la corrección de suerte
+                        # con SIERA/xFIP (ver CLAUDE.md). Hoy ningún motor los
+                        # lee: se siguen enriqueciendo porque viajan gratis en
+                        # la misma respuesta de FanGraphs y son la materia prima
+                        # del residual ERA−xERA / FIP−xFIP que el dueño quiere
+                        # usar en el paso de estimadores del pitcher engine.
                         "babip":           _fg_d.get("babip"),
                         "lob_pct":         _fg_d.get("lob_pct"),
                         "hr_fb_pct":       _fg_d.get("hr_fb"),
@@ -583,11 +607,22 @@ def run_module(
         # the True Talent Engine / legacy fallback above, which isn't
         # separately stamped here.
         results['lambdas_history']['kalman_offense'] = {'lh': lh, 'la': la}
-        logger.info(f"   Lambda base (Kalman off+def): λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})")
+        # El log decía "(Kalman off+def)" — la parte de defensa se removió hace
+        # tiempo (ver el bloque REVERTIDO justo arriba) y sólo queda la de
+        # ofensa, que además está en identidad mientras _KALMAN_BLEND sea 0.0.
+        logger.info(
+            f"   Lambda base (Kalman ofensivo, blend={_KALMAN_BLEND:g}): "
+            f"λ_h={lh:.3f} ({home_team}), λ_a={la:.3f} ({away_team})"
+        )
 
         # ── Team bias (LearningEngine) — corrects systematic model error per team ──
         # Applied after Kalman, before any engine modifies λ. The bias is
-        # Kalman-dampened to avoid double-counting the 35% Kalman share.
+        # Amortiguado por el Kalman para no doble-contar su parte. OJO: esa
+        # parte hoy es 0.0 (`_KALMAN_BLEND`, neutralizado en el paso 10), así
+        # que el amortiguamiento está en identidad y el sesgo entra completo.
+        # El comentario anterior decía "the 35% Kalman share", cierto sólo
+        # hasta el paso 10 — ver el postmortem en el docstring de
+        # compute_team_bias_kalman_adjusted antes de tocar esta fórmula.
         # Pass this game's month so compute_multidim_bias can use the
         # team × home_away × month tier when enough samples exist for it,
         # instead of silently degrading to the home_away-only tier.
@@ -806,8 +841,11 @@ def run_module(
         if _def_home or _def_away:
             logger.info("\n🛡️  PASO 6: Defensive Efficiency Engine...")
             lh_def, la_def, def_meta = adjust_for_defense(lh, la, game_data)
-            # Stage factor = DEE-only ratio (post-Kalman baseline) so gradient descent
-            # sees pure fielding signal. Kalman defense applied above, not re-weighted.
+            # Stage factor = razón sólo del DEE, para que el descenso de
+            # gradiente vea señal de fildeo pura. (Antes decía "Kalman defense
+            # applied above": no lo está — ese Kalman se revirtió, ver el
+            # bloque REVERTIDO en PASO 1. El baseline de acá es simplemente λ
+            # tal como sale del PASO 5.)
             _raw_h_def = lh_def / _lh_pre if _lh_pre else 1.0
             _raw_a_def = la_def / _la_pre if _la_pre else 1.0
             _w_def = _weights.get("defense", 1.0)
@@ -826,8 +864,11 @@ def run_module(
                 f"(home_def×λ_a={def_meta['home_mult_on_away']:.4f}  "
                 f"away_def×λ_h={def_meta['away_mult_on_home']:.4f})"
             )
-        # else: Kalman defense stage factors set above remain in _stage_factors;
-        # lambda already has Kalman defense applied, no gradient weight needed.
+        # else: sin datos de defensa de ninguno de los dos equipos, λ pasa
+        # intacta y no se registra factor de etapa — el descenso de gradiente
+        # simplemente no ve esta etapa en esa corrida. (El comentario anterior
+        # hablaba de "Kalman defense stage factors set above", que no existen:
+        # ese Kalman se revirtió y nada los escribe.)
         results['lambdas_history']['defense'] = {'lh': lh, 'la': la}
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -929,7 +970,15 @@ def run_module(
         # F5 λ computado en PASO 3 (post-pitcher + post-context, pre-bullpen).
         # lh_f5 / la_f5 ya asignados — solo logear.
         if lh_f5 is not None:
-            logger.info(f"   F5: λ_h={lh_f5:.3f}  λ_a={la_f5:.3f}  (post-pitcher+context × {F5_SCALE})")
+            # Los escalados que REALMENTE se aplicaron son los dinámicos por
+            # abridor (`_f5s_home`/`_f5s_away`, calculados en PASO 3). Este log
+            # imprimía la constante F5_SCALE del simulador, que en este camino
+            # no se usa — reportaba 0.575 fijo mientras el valor aplicado
+            # variaba en [0.52, 0.63] según las entradas medias del abridor.
+            logger.info(
+                f"   F5: λ_h={lh_f5:.3f} (×{_f5s_home})  "
+                f"λ_a={la_f5:.3f} (×{_f5s_away})  post-pitcher+context"
+            )
         else:
             logger.info("   F5: sin snapshot disponible, el MC usará F5_SCALE internamente")
 

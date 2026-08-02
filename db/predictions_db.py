@@ -43,6 +43,16 @@ class GameData(TypedDict, total=False):
     runline_home: float
     runline_away: float
     runline_line: float
+    # Punto FIRMADO del lado local (−1.5 si el local es favorito, +1.5 si no).
+    # `runline_line` de arriba sólo lleva la MAGNITUD, así que por sí sola no
+    # dice quién cubre qué: sin este campo `analyze_runline` cae a asumir local
+    # favorito, que es exactamente la suposición que causaba PURP-1
+    # (core/value_detector.py, arreglada 2026-07-31 en el camino de fetch).
+    # Añadido 2026-08-03: `_normalize_event()` ya lo producía y el camino de
+    # cron ya lo usaba vía get_best_odds_for_teams(), pero el selector de la UI
+    # lo dejaba caer acá — misma clase de fuga de boundary que las F5 de abajo,
+    # que se arregló el 2026-07-06 por esta misma razón.
+    runline_home_point: float
     # First 5 innings — added 2026-07-06. Previously GameData had no F5
     # fields at all, so the Streamlit-selector-driven analysis path (pick a
     # game from the dropdown -> MLBAnalyzer.analyze()) could never surface

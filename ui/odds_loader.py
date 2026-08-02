@@ -118,10 +118,31 @@ def filter_odds_by_sport(df: pd.DataFrame, keywords: List[str]) -> pd.DataFrame:
 
 
 def _safe_float(val: Any) -> Optional[float]:
-    """Return float(val) or None if val is missing/zero/invalid."""
+    """Return float(val) or None if val is missing/zero/invalid.
+
+    El descarte de `<= 0` es deliberado y correcto para PRECIOS y líneas de
+    total: una cuota decimal de 0 o negativa no existe, y dejarla pasar la
+    haría indistinguible de una real aguas abajo. NO sirve para magnitudes
+    con signo — ver `_safe_signed_float`.
+    """
     try:
         f = float(val)
         return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_signed_float(val: Any) -> Optional[float]:
+    """Igual que `_safe_float` pero CONSERVA el signo (rechaza sólo lo no numérico).
+
+    Existe por el punto firmado del runline: el local favorito se cotiza en
+    −1.5, así que pasarlo por `_safe_float` lo convertía en None justo en el
+    caso más común, borrando exactamente el dato que distingue al favorito.
+    Un cero sí se descarta: un runline de 0 no es un mercado válido.
+    """
+    try:
+        f = float(val)
+        return f if f != 0 else None
     except (TypeError, ValueError):
         return None
 
@@ -173,6 +194,17 @@ def build_game_selector(
             runline_home  = _safe_float(row.get("runline_home")),
             runline_away  = _safe_float(row.get("runline_away")),
             runline_line  = _safe_float(row.get("runline_line")),
+            # El punto FIRMADO, no sólo su magnitud. `_normalize_event()` ya lo
+            # emitía; esta función lo dejaba caer, así que el análisis lanzado
+            # desde el selector llegaba a `analyze_runline` sin él y caía al
+            # supuesto "local favorito" — la causa raíz de PURP-1. El camino de
+            # cron nunca tuvo el problema porque get_best_odds_for_teams() sí lo
+            # entrega. Ver el comentario del campo en db/predictions_db.py.
+            # `_safe_signed_float`, NO `_safe_float`: éste último descarta todo
+            # `<= 0`, y el punto del local favorito es −1.5 — el caso mayoritario.
+            # Pasarlo por el helper de precios lo anulaba en silencio y dejaba
+            # este arreglo sin efecto justo donde más importa.
+            runline_home_point = _safe_signed_float(row.get("runline_home_point")),
             # odds_fetcher.py::_normalize_event()'s own F5 naming scheme
             # (f5_home_odds/f5_over_odds/f5_under_odds) is a THIRD,
             # independent convention from GameOdds' f5_ml_home/f5_total_over

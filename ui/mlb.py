@@ -162,6 +162,12 @@ class MLBAnalyzer(BaseAnalyzer):
                     "runline_home": game_data.get("runline_home"),
                     "runline_away": game_data.get("runline_away"),
                     "runline_line": game_data.get("runline_line"),
+                    # Punto firmado — decide quién es favorito y por lo tanto
+                    # cuál es el evento de cobertura de cada lado. Sin él
+                    # `analyze_runline` asume local favorito (raíz de PURP-1).
+                    # Añadido 2026-08-03 junto con el campo en GameData y su
+                    # copia en odds_loader; el camino de cron ya lo pasaba.
+                    "runline_home_point": game_data.get("runline_home_point"),
                     # F5 — added 2026-07-06 alongside GameData; previously
                     # missing entirely, so the UI-selector-driven analysis
                     # path could never surface F5 markets regardless of the
