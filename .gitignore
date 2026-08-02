@@ -60,3 +60,28 @@ data/pit_raw/
 
 # Cache derivado, lo regenera a1_descomposicion.py
 audit_20260714/estrategia/_data.npz
+
+# Archivos privados y locales
+.claude/
+.codex/
+.npm/
+.nvm/
+.cache/
+.local/
+.vscode-server/
+mi_entorno/
+
+# Secretos
+.env
+.env.*
+*.pem
+*.key
+
+# SQLite temporales
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
