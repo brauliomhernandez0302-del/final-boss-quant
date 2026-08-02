@@ -559,7 +559,22 @@ def run_module(
             'home_days_rest':      game_data.get('home_days_rest'),
             'away_days_rest':      game_data.get('away_days_rest'),
             'travel_source_away':  game_data.get('travel_source_away'),
-            'weather_source':      (game_data.get('weather') or {}).get('source'),
+            # Se ESTAMPA más abajo, justo después del PASO 5, con el valor que
+            # el propio motor calculó (`park_meta['weather_source']`). Acá no
+            # se puede: `park_meta` todavía no existe en este punto del flujo.
+            #
+            # Antes esta línea leía `game_data['weather'].get('source')` — una
+            # clave que NO EXISTE. `WeatherAPI.get_weather_for_stadium()`
+            # devuelve catorce campos (temp_f, wind_speed_mph, wind_direction,
+            # conditions, rain_mm, precip_probability, postponement_risk...) y
+            # ninguno se llama `source`, así que esto era None en el 100% de
+            # los picks aunque el clima SÍ hubiera llegado y SÍ hubiera movido
+            # λ. Medido el 2026-08-03: 0 de 52 picks con el bloque `inputs`
+            # registraron procedencia, mientras el motor aplicaba weather_mult
+            # real (verificado en vivo: 1.018 sobre Truist Park). Un dato bueno
+            # con etiqueta rota es peor que un dato ausente — no se puede
+            # auditar lo que uno cree que nunca llegó.
+            'weather_source':      None,
             'enrichment_failed':   bool(game_data.get('enrichment_failed')),
             # Cuánta ofensa de cada equipo está en lista de lesionados. El λ NO
             # lo descuenta todavía — se registra para poder medir cuánto importa
@@ -812,6 +827,13 @@ def run_module(
         results['metadata']['park_weather'] = park_meta
         _stage_factors['park_on_home_lambda'] = _raw_h_park
         _stage_factors['park_on_away_lambda'] = _raw_a_park
+        # Procedencia real del clima, tomada del motor que la calculó — única
+        # fuente de verdad. La instantánea de entradas la deja en None a
+        # propósito porque `park_meta` no existe todavía a esa altura; ver el
+        # comentario largo ahí sobre por qué la lectura anterior era ciega.
+        # `results['inputs_snapshot']` se devuelve al final, así que estamparla
+        # acá llega intacta a `pipeline_json` en el pick publicado.
+        results['inputs_snapshot']['weather_source'] = park_meta.get('weather_source')
         # Ride-along (roadmap Step 5, MATH-003 5d.3): this flag was write-only
         # metadata since FALL-002 (Step 4) — nobody saw a live REG-015-class
         # failure (unmapped venue, API outage) unless they went looking in

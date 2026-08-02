@@ -87,9 +87,22 @@ MAX_DISPLAY_RECORDS = 50
 # ── Pitcher engine weights ──────────────────────────────────────────────────
 # 5 signals only; park/travel/bullpen removed (double-counted or data-free).
 # Proportionally redistributed from the original 5-signal sum of 0.78.
+#
+# ⚠️ `pitcher_form` PESA 0.256 PERO APORTA CERO. Su factor
+# (`pitcher_engine._adjust_pitcher_form`) está neutralizado desde el paso 8 de
+# la auditoría y devuelve 1.0 fijo: sus tres señales salían de la misma lista
+# de cinco arranques —contando un dato tres veces— y con errores agrupados por
+# pitcher ninguna sobrevive al control por nivel; medían regresión a la media y
+# el motor las leía como persistencia. La combinación del motor es ADITIVA
+# sobre deltas (`total = 1 + Σ wᵢ·(fᵢ−1)`), así que un factor en identidad
+# aporta exactamente 0 sin importar su peso y NO diluye a los otros cuatro —
+# por eso el 0.256 se dejó donde está en vez de redistribuirlo. Se anota acá
+# porque leyendo sólo esta tabla parecería la segunda señal más importante del
+# motor, y es la única que no hace nada. Evidencia completa y condiciones para
+# reinstaurarla: docstring de `_adjust_pitcher_form`.
 PITCHER_ENGINE_WEIGHTS = {
     'pitcher_quality': 0.321,   # SIERA/xFIP/FIP/ERA composite + Savant overlays
-    'pitcher_form':    0.256,   # era_last_5 level, era_trend slope, QS%
+    'pitcher_form':    0.256,   # INERTE — ver la nota de arriba (devuelve 1.0)
     'pitcher_matchup': 0.192,   # historical ERA vs this opponent
     'pitcher_fatigue': 0.128,   # days rest + last pitch count
     'pitcher_platoon': 0.103,   # L/R split × opposing lineup handedness

@@ -120,12 +120,34 @@ def test_el_pipeline_lo_incorpora():
     assert '_injured_pa_share' in bloque
 
 
+def _dict_de_la_instantanea() -> str:
+    """Devuelve el literal COMPLETO de `results['inputs_snapshot']`.
+
+    Antes esto era un corte fijo de 2.400 caracteres desde el inicio del dict,
+    que rompía por motivos ajenos al test en cuanto alguien documentaba un
+    campo: el 2026-08-03 el arreglo de `weather_source` añadió un comentario y
+    empujó las claves de lesiones al carácter 2.4xx, con las claves intactas.
+    Emparejar llaves mide lo que el test dice medir — que estén en el dict —
+    en vez de dónde caen dentro de una ventana arbitraria.
+    """
+    fuente = open("modules/baseball_module/core/run_module.py", encoding="utf-8").read()
+    ini = fuente.index("results['inputs_snapshot'] = {")
+    apertura = fuente.index("{", ini)
+    profundidad = 0
+    for pos in range(apertura, len(fuente)):
+        if fuente[pos] == "{":
+            profundidad += 1
+        elif fuente[pos] == "}":
+            profundidad -= 1
+            if profundidad == 0:
+                return fuente[ini:pos + 1]
+    raise AssertionError("el dict de inputs_snapshot no cierra")
+
+
 def test_queda_registrado_en_cada_pick():
     """Sin esto no se puede medir después si los picks de equipos diezmados
     rinden distinto — que es la pregunta que decide si el λ debe descontarlo."""
-    fuente = open("modules/baseball_module/core/run_module.py", encoding="utf-8").read()
-    i = fuente.index("results['inputs_snapshot']")
-    bloque = fuente[i:i + 2400]
+    bloque = _dict_de_la_instantanea()
     assert "home_injured_pa_share" in bloque and "away_injured_pa_share" in bloque
 
 

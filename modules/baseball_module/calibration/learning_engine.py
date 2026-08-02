@@ -814,6 +814,28 @@ class LearningEngine:
             return
 
         season = row["season"]
+        # Los CUATRO contextos se mantienen, pero hoy tienen consumidores muy
+        # distintos — anotado el 2026-08-03 después de que una auditoría del
+        # mapa del sistema propusiera borrar los dos de defensa por "huérfanos".
+        # No lo son; lo que sigue es la evidencia, para no repetir el análisis:
+        #
+        #   offense_*  → los lee `get_kalman_lambda_adjustment` (run_module
+        #                PASO 1) y su `n_obs` alimenta la confianza epistémica
+        #                del value detector (run_module, `game_meta`). Que hoy
+        #                no muevan λ es sólo porque `_KALMAN_BLEND` es 0.0.
+        #   defense_*  → CERO lectores hoy. Se revirtieron del pipeline tras
+        #                medir doble conteo con el Pitcher Engine (λ_away +3.3%,
+        #                ROI edge≥8% −4.85pp; ver el bloque REVERTIDO en
+        #                run_module.py y AUDIT_FINDINGS.md § "Sprint 2 F8+F6").
+        #
+        # Se siguen actualizando A PROPÓSITO: ese mismo bloque dejó abierta una
+        # puerta —"re-examined via team-level bias correction or DEE when OAA
+        # becomes available"— y OAA YA está disponible, en uso dentro de
+        # `defensive_efficiency_engine.py`. Borrar estas dos líneas arrancaría
+        # el filtro en frío justo cuando su re-examen se volvió posible, y el
+        # costo de mantenerlo es 360 filas que nadie consulta. Si alguien
+        # decide cerrar esa puerta de verdad, que borre las dos líneas Y el
+        # párrafo del REVERTIDO que la dejó abierta — no una sola de las dos.
         self.update_kalman(row["home_team"], "offense_home", season, untruncate_home_runs(float(home_runs)), prediction_source)
         self.update_kalman(row["away_team"], "offense_away", season, float(away_runs), prediction_source)
         self.update_kalman(row["home_team"], "defense_home", season, float(away_runs), prediction_source)
