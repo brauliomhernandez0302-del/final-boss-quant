@@ -4,6 +4,15 @@
 **Rewritten:** 2026-07-06 — full verification against current code, following the 2026-07-06 audit (`docs/AUDITORIA_MLB_2026-07.md`). The 2026-05-13 version had drifted substantially: it cited files that no longer exist (`odds_api.py`, `storage.py`, `ablation_calibrator.py`, `post_game.py`, `train_historical.py`), described a component (`AutoCalibrator`) that was removed and superseded, and predated the entire point-in-time (PIT) rebuild, the `ui/` package split, and 5 pipeline engines that didn't exist yet. Every claim below was verified directly against the code on 2026-07-06.
 **Purpose:** North-star reference — what every file does, what is alive vs dead, and the correct data flow for every sport.
 
+> ⚠️ **Nota de vigencia (2026-08-02).** Verificado contra código el 2026-07-06.
+> Los pasos 0-11 del rebuild y el trabajo posterior **no están reflejados acá**
+> — entre otras cosas, la neutralización del Kalman de ofensa, la del factor de
+> forma del pitcher, el punto firmado del runline, el CLV devigged y la
+> instantánea de entradas del track record. Re-verificación pendiente al cerrar
+> la auditoría paso-a-paso. Mientras tanto, ante una discrepancia entre este
+> documento y el código, manda el código; para el estado cronológico, manda
+> `CLAUDE.md`.
+
 ---
 
 ## Table of Contents
