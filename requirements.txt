@@ -1,8 +1,33 @@
-requests 
+# Dependencias de ejecución. Sin fijar versión, igual que estaba.
+# Para las de desarrollo (pytest), ver requirements-dev.txt.
+
+# ── Núcleo ──────────────────────────────────────────────────────────────────
+requests
 pandas
 numpy
-matplotlib
-flask
+scipy                 # core/value_detector.py, montecarlo/simulator.py, derived_eval
+scikit-learn          # calibration/learning_engine.py (Platt)
+python-dotenv         # carga del .env en data_fetchers.py y los scripts
+
+# ── Interfaces ──────────────────────────────────────────────────────────────
+streamlit             # app.py y ui/ — la app principal
+flask                 # api/server.py — backend del tablero React
+matplotlib            # ui/sidebar.py
+
+# ── Tipado ──────────────────────────────────────────────────────────────────
+typing_extensions     # db/predictions_db.py (TypedDict)
+
+# ── Opcional, deliberadamente NO instalada ──────────────────────────────────
+# MLB-StatsAPI: track_record/reconciler.py la intenta primero para resolver el
+# marcador final, pero dentro de un try/except con un fallback propio sobre
+# data_fetchers.MLBStatsAPI que sí funciona y es el que corre hoy. Agregarla
+# activaría un camino de código que nunca se ha ejercitado — eso es un cambio
+# de comportamiento, no una corrección de dependencias.
+# MLB-StatsAPI
+
+# ── Heredadas, sin uso detectado ────────────────────────────────────────────
+# Ningún .py del repo las importa (grep sobre `git ls-files` el 2026-08-02).
+# Se dejan para no romper un entorno que dependa de ellas por otra vía;
+# candidatas a quitar cuando alguien lo confirme.
 websocket-client
-scikit-learn
 beautifulsoup4
