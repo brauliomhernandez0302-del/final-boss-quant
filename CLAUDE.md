@@ -21,6 +21,21 @@ era desde que D0 quedó SUPERSEDED, y ahora además el motor se mueve.
 Para re-armarlo hay que hacer **las dos cosas**: volver el campo del protocolo a
 `VIGENTE` **y** re-apuntar el `engine_commit` al HEAD de ese momento.
 
+> ⚠️ **Al re-armar, el `engine_commit` DEBE apuntar a un SHA de esta historia.**
+> El Registro ancla hoy `b3325a52680e44ea75e1b1dcc26f9d9af6369393`. Ese commit
+> existe en el almacén de objetos local, pero **no es alcanzable desde ninguna
+> rama** —ni desde `HEAD` ni desde lo publicado en GitHub— porque el repo
+> remoto nació como *clean upload* y reescribió los SHA del repositorio viejo.
+> Un `git gc` puede podarlo, y un clon limpio nunca lo tuvo.
+>
+> El modo de fallo es silencioso, que es lo peligroso:
+> `tests/test_engine_freeze.py` hace `git cat-file -e` antes de diffear y, si el
+> commit no resuelve, hace **skip** en vez de fallar. Así que un freeze marcado
+> `VIGENTE` contra un SHA inalcanzable **se ve armado y no verifica nada** —
+> peor que un fallo ruidoso. Verificado el 2026-08-02: el objeto existe local,
+> `git merge-base --is-ancestor` da falso contra `HEAD` y contra
+> `origin/feature/point-in-time-rebuild`.
+
 ⚠️ Esta sección estuvo desactualizada del 2026-07-27 al 2026-07-28 (decía
 "congelado" cuando ya no lo estaba) y alcanzó a hacer que una consulta externa
 diera una advertencia operativa equivocada. Si cambia el estado del freeze, se
@@ -74,7 +89,6 @@ Each sport has a `run_module()` function that returns `Dict[str, Any]` with keys
 | MLB | `run_module()` | `modules/baseball_module/core/run_module.py` |
 | NBA | `run_module()` | `modules/basketball_module.py` |
 | UFC | `run_module()` | `modules/ufc_module.py` |
-| Soccer | `run_module()` | `modules/football_module.py` (disabled) |
 
 ### MLB pipeline (most complex)
 
@@ -116,7 +130,34 @@ Each sport has a `run_module()` function that returns `Dict[str, Any]` with keys
 
 ## Estado actual
 
-**Baseline vigente (2026-07-09): Brier 0.24525 / accuracy 55.30%** (`--season 2024,2025 --use-full-pit`, 4,830 juegos, 453 tests). Este es el primer número simultáneamente reproducible (seed determinístico), libre del leak de team-bias, y correctamente calibrado con Platt — reemplaza cualquier cifra anterior (0.24242, 0.24274, 0.24272, 0.24592).
+> ### ⬛ BASELINE VIGENTE — declarado UNA sola vez, acá
+>
+> **Brier 0.24624 / accuracy 54.84%**
+> `--season 2024,2025 --use-full-pit`, 4.825 juegos.
+> **Reporte canónico:** `audit_20260714/paso10/backtest_canonico_kalman0.json`
+> (la ruta del JSON es la fuente de verdad, no la prosa — ver por qué más abajo).
+> Fijado el 2026-07-28 por el paso 10 de la auditoría (Kalman de ofensa a 0.0).
+>
+> Cualquier cifra distinta que aparezca más abajo en este documento es
+> **historia**, no el estado actual. La cadena completa se conserva a propósito
+> —cada eslabón explica por qué cayó el anterior— pero al citar el baseline en
+> cualquier sitio nuevo, se cita éste.
+>
+> Cadena histórica, de la más vieja a la más nueva:
+> `0.24242 → 0.24525 → 0.24482 → 0.24483 → 0.24650 → 0.24675 → **0.24624**`
+
+**Nota de coherencia (2026-08-02)**: esta sección declaraba como vigente el
+baseline del 2026-07-09 (0.24525 / 55.30%), que llevaba superseded desde el
+2026-07-11 y contradecía a la sección del 2026-07-28 más abajo. Se corrige acá
+sin borrar nada de lo que sigue: el relato de los tres bugs de medición del
+párrafo siguiente conserva su valor aunque su número ya no sea el vigente.
+
+### Histórico — 2026-07-09 (superseded)
+
+**Brier 0.24525 / accuracy 55.30%** (4.830 juegos, 453 tests). Fue el primer
+número simultáneamente reproducible (seed determinístico), libre del leak de
+team-bias, y correctamente calibrado con Platt — reemplazó a 0.24242, 0.24274,
+0.24272 y 0.24592.
 
 Tres bugs de medición reales, independientes, se encontraron y corrigieron en sucesión, cada uno moviendo el número 1-2pp de accuracy:
 1. **Look-ahead leak en `LearningEngine.compute_team_bias`/`compute_multidim_bias`** (`calibration/learning_engine.py`) — sin corte de fecha (`WHERE season = ?` sin `game_date <`), el bias que se multiplica a λ veía resultados reales de *toda la temporada*, incluyendo juegos posteriores al que se predecía. Corregido con un parámetro `before_date` walk-forward. El modo live nunca tuvo este leak (no existen resultados futuros en producción). Test de regresión: `tests/test_anti_leakage_opening_day_2024.py`.
@@ -129,7 +170,7 @@ Nota adicional: la temporada 2024 de este backtest corre con calibración Platt 
 
 **Consecuencia real, no solo cosmética**: al remover el leak, accuracy cayó de 56.27% a 54.35% y el ROI se volvió negativo para edge<10% (antes positivo desde edge≥8%). La conclusión "el sistema es rentable" que sostenían los números anteriores ya no está validada — sigue siendo una pregunta abierta con el número honesto actual.
 
-Auditoría completa (solo lectura, componente por componente) realizada el 2026-07-06 — reporte completo en `docs/AUDITORIA_MLB_2026-07.md` (su baseline citado, 0.24242, está superseded por lo de arriba, ver nota al inicio del documento). Resumen aún válido: el pipeline de lambda (los 7 motores) está en su mejor estado histórico tras la revisión exhaustiva de esa sesión. `CONTRACTS.md` ya fue reescrito (2026-07-06, ya no es un riesgo pendiente). Ver `docs/FBQ_MASTER_BLUEPRINT.md` (v1.2) para la hoja de ruta completa.
+Auditoría completa (solo lectura, componente por componente) realizada el 2026-07-06 — reporte completo en `docs/AUDITORIA_MLB_2026-07.md` (su baseline citado, 0.24242, está superseded por lo de arriba, ver nota al inicio del documento). Resumen aún válido: el pipeline de lambda (los 7 motores) está en su mejor estado histórico tras la revisión exhaustiva de esa sesión. `CONTRACTS.md` ya fue reescrito (2026-07-06, ya no es un riesgo pendiente). Ver `docs/FBQ_MASTER_BLUEPRINT.md` (v1.8) para la hoja de ruta completa.
 
 ### Actualización 2026-07-11/12 — higiene de motores + descubrimiento de caché de TTE incompleta
 
@@ -554,3 +595,81 @@ errores agrupados por entidad (pitcher, equipo). Tres falsos positivos de esta a
 con t=+4.79, "suerte" con t=−21, y la ventaja del compuesto TTE— desaparecieron al agrupar.
 
 Memoria de la sesión: `project_auditoria_pasos_2026_07.md`.
+
+### Actualización 2026-08-02 — trabajo posterior al paso 11, ya en la rama
+
+**Baseline sin cambios** (Brier 0.24624 / accuracy 54.84%, reporte canónico
+`audit_20260714/paso10/backtest_canonico_kalman0.json`). Nada de lo que sigue toca un motor de
+predicción ni ninguna λ: es precio de mercado, medición y telemetría. Se documenta acá porque
+estaba en la rama sin quedar registrado en ningún sitio.
+
+**Runline preciado con el punto FIRMADO, de punta a punta** (`c6bb482`, `ffb2c93`). `analyze_runline`
+usaba la MAGNITUD de la línea y calculaba siempre `P(diff > 1.5)` —"el local gana por 2 o más"—
+sin mirar quién era el favorito. Cuando el local era el NO-favorito, el mercado traía los precios
+de HOME +1.5 y AWAY −1.5 pero se apareaban con las probabilidades de HOME −1.5 y AWAY +1.5: la
+probabilidad del evento FÁCIL con el precio del evento DIFÍCIL. Es PURP-1, arreglada el 07-31 con
+`runline_home_point`. El 08-02 se cerró el segundo agujero: el camino del selector de la UI perdía
+el punto en DOS sitios independientes —`build_game_selector()` no lo copiaba a `GameData`, y una
+vez copiado `_safe_float()` lo anulaba por descartar todo `<= 0`, justo cuando el local favorito
+cotiza −1.5, el caso mayoritario—. Nuevo `_safe_signed_float()` para magnitudes con signo. El
+camino de cron nunca estuvo afectado.
+
+**CLV medido contra el cierre JUSTO, no contra el crudo** (`2a40a04`). `clv_pct` era
+`odds_tomadas / precio_crudo − 1`, y el precio crudo lleva el margen de la casa adentro: regalaba
+el vig entero como si fuera habilidad. Sobre los picks reales, media +1.514% y 61.4% positivos
+pasaron a **−0.497% y 40.9%** (t=−0.85) al desvigorizar. La diferencia es exactamente el overround
+de cierre de Pinnacle. El signo se invierte con los cuatro métodos habituales, con magnitudes casi
+idénticas: el método no importa, medir contra crudo sí. **El único indicador de habilidad positivo
+que tenía el proyecto era un artefacto del vig.**
+
+**CLV extendido a derivados cuando el punto no se movió** (`83299f3`). La objeción del 07-26 era
+correcta pero demasiado amplia: un total tomado a 8.5 que cierra en 9.0 no se puede comparar por
+precio, pero eso descarta el caso MOVIDO, no el mercado entero. Con `closing_point_moved == 0` un
+runline o un total se compara igual que un moneyline. Duplicó la muestra del ledger: 105 → 253
+picks con CLV. `None` también excluye — preferible sin CLV que con uno que compara dos líneas
+distintas sin saberlo. Motivación medida: elegir el filtro del producto por ROI pediría ~14.800
+picks (740 días al ritmo actual); por CLV alcanzan ~117 (6 días).
+
+**El track record guarda lo que el modelo VIO** (`127bac6`). `pipeline_json` guardaba `lambdas`,
+`mc_probs` y `bet` — los RESULTADOS, nunca las ENTRADAS. Se descubrió al intentar medir cuántas
+veces el abridor analizado no es el que termina lanzando: con 26.6 horas medianas de anticipación
+tiene que pasar seguido, y resultó IMPOSIBLE de medir porque la API sólo devuelve el probable
+ACTUAL. Ahora se guarda identidad y PROCEDENCIA de ambos abridores, `lineup_confirmed`,
+`home_lhb_source`, descanso y las banderas de calidad de dato.
+
+**Lesiones integradas al módulo de béisbol** (`4f6b4c6`). `app.py` tenía `home_injuries: []`
+hardcodeado en vacío y nada en el módulo miraba lesiones. Importa porque la ofensa sale del
+Statcast ACUMULADO, que incluye entera la producción de quien hoy está en lista de lesionados: los
+Yankees del 08-01 tenían 19.2% de sus turnos ofensivos en jugadores que no iban a jugar. Sobre la
+cartelera real la dispersión va de 1.6% a 22.1% entre equipos. **λ todavía NO lo descuenta** — se
+registra como `injured_pa_share` para medir cuánto importa antes de decidir cómo usarlo.
+
+**Telemetría de clima honesta** (`092cefd`). La instantánea de entradas leía
+`game_data['weather']['source']`, una clave que NO existe: el fetcher devuelve catorce campos y
+ninguno se llama así. Resultado, 0 de 52 picks registraban procedencia mientras el motor SÍ recibía
+el clima y SÍ movía λ (verificado en vivo, `weather_mult` 1.018 sobre Truist Park). Ahora se estampa
+desde `park_meta`, la fuente que el propio motor calcula. Era un fallo de telemetría, no de captura
+— y un dato bueno con la etiqueta rota es peor que un dato ausente, porque nadie audita lo que cree
+que nunca llegó.
+
+**Guard de implausibilidad del edge** (`d885267`). Contra un precio YA desvigorizado, un edge enorme
+no es ventaja: es la firma de que modelo y mercado hablan de eventos distintos. Vive en
+`analyze_market_generic`, el embudo único de los tres mercados, y bloquea forzando el tier a
+NEGATIVE. Umbrales calibrados contra la muestra real de PURP-1, no elegidos a ojo: 20pp bloquea el
+62% de aquellos falsos tocando 1 de 71 picks posteriores sanos; 15pp subiría a 77% pero clipearía 5
+sanos. Zona de aviso 12-20pp que marca sin bloquear. **Es un detector de humo, no la solución**: el
+38% de aquellos falsos tenía inflación menor a 20pp. La defensa real es que probabilidad y precio
+salgan de la misma identidad de mercado.
+
+**Instrumentos de estrategia** (`3120226`). Nueve scripts repetibles de solo lectura en
+`audit_20260714/estrategia/` (a1..c1) que atacan la pregunta abierta del proyecto —¿hay alfa real o
+sólo Brier?— más las salidas de sus corridas. No tocan el motor ni ninguna λ.
+
+**Dimensión del daño de PURP-1, medida el 2026-08-02**: re-calificados los 134 picks de runline
+previos al arreglo, re-simulando las λ finales guardadas en cada `pipeline_json`, **55 (41%) se
+publicaron con EV positivo cuando el real era ≤ 0**. EV medio publicado +34.47% contra −2.27% real;
+probabilidad media 0.6419 contra 0.4871. Y vía Kelly el EV inflado agrandaba las apuestas: 508 de
+las 822 unidades arriesgadas —el 61.8% del capital— estaban en picks con edge fabricado, con stake
+medio 13.04 u contra 3.82 u del resto. **El track record en vivo anterior al 07-31 no mide el
+modelo**: mide el modelo más un error de emparejamiento que sobredimensionaba las apuestas justo
+donde más se equivocaba.

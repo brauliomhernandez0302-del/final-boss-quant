@@ -65,6 +65,17 @@ Desde D0, los umbrales y definiciones de este documento son inmutables. Solo se 
   - El `engine_commit` de abajo se conserva sin tocar: es el commit del último baseline medido
     (`0.24675 / 55.05%`), y sigue siendo la referencia de contra qué se comparan los deltas de
     esta auditoría.
+  - ⚠️ **Anotación operativa (2026-08-02), sin efecto sobre umbrales ni decisiones**: el SHA
+    anclado abajo existe en el almacén de objetos local pero **no es alcanzable desde ninguna
+    rama** — ni desde `HEAD` ni desde `origin/feature/point-in-time-rebuild`. El repositorio
+    remoto nació como *clean upload* y reescribió los SHA del repo viejo, así que ese commit
+    nunca llegó a GitHub; un `git gc` local puede podarlo y un clon limpio nunca lo tuvo
+    (comprobado con `git merge-base --is-ancestor`, falso en ambos casos).
+    El modo de fallo es **silencioso**: `test_engine_freeze.py` hace `git cat-file -e` antes de
+    diffear y, si el commit no resuelve, hace `skip` en vez de fallar. Un freeze marcado
+    `VIGENTE` contra un SHA inalcanzable **se vería armado sin verificar nada**. Por eso, al
+    re-armar, el `engine_commit` nuevo tiene que ser un SHA de ESTA historia (alcanzable desde
+    la rama publicada), no sólo el HEAD del momento.
 
 - Protocolo commiteado: 2026-07-20, commit siguiente a `80d0fae` en `feature/point-in-time-rebuild`
 - engine_commit congelado: `b3325a52680e44ea75e1b1dcc26f9d9af6369393` (2026-07-25 — rebaseline
