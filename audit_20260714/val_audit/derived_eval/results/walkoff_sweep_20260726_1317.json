@@ -1,0 +1,99 @@
+{
+  "run_at": "2026-07-26T13:25:36.663433+00:00",
+  "note": "WALKOFF_9TH_SHARE es una constante asumida (1/9). Este barrido la mide, no la cambia \u2014 el valor en el c\u00f3digo sigue intacto.",
+  "current_default": 0.1111111111111111,
+  "config": {
+    "seasons": [
+      2024,
+      2025
+    ],
+    "n_games": 4825,
+    "n_sims": 30000
+  },
+  "sweep": [
+    {
+      "walkoff_9th_share": 0.0,
+      "is_current_default": false,
+      "rl_home_mean_pred": 0.3691105008635579,
+      "rl_home_bias_pp": 1.4084594127806604,
+      "rl_home_brier": 0.22790143018606793,
+      "val13_model": 0.7829901556202744,
+      "val13_gap_pp": 11.671244266811575,
+      "mean_total": 9.11189968911917,
+      "mean_total_bias": 0.27480124352331536,
+      "mean_margin": 0.2500425284974093,
+      "mean_margin_bias": 0.22247776165803107,
+      "seconds": 79.7
+    },
+    {
+      "walkoff_9th_share": 0.04,
+      "is_current_default": false,
+      "rl_home_mean_pred": 0.35210034542314333,
+      "rl_home_bias_pp": -0.29255613126079605,
+      "rl_home_brier": 0.22759200293033965,
+      "val13_model": 0.7468614914746257,
+      "val13_gap_pp": 8.0583778522467,
+      "mean_total": 9.011020248704662,
+      "mean_total_bias": 0.1739218031088079,
+      "mean_margin": 0.1495526839378238,
+      "mean_margin_bias": 0.12198791709844557,
+      "seconds": 91.1
+    },
+    {
+      "walkoff_9th_share": 0.06,
+      "is_current_default": false,
+      "rl_home_mean_pred": 0.3446494991364421,
+      "rl_home_bias_pp": -1.037640759930919,
+      "rl_home_brier": 0.22764052646010358,
+      "val13_model": 0.7310570475347985,
+      "val13_gap_pp": 6.477933458263985,
+      "mean_total": 8.96334999654577,
+      "mean_total_bias": 0.12625155094991491,
+      "mean_margin": 0.1018824317789292,
+      "mean_margin_bias": 0.07431766493955096,
+      "seconds": 87.7
+    },
+    {
+      "walkoff_9th_share": 0.08,
+      "is_current_default": false,
+      "rl_home_mean_pred": 0.3378591571675302,
+      "rl_home_bias_pp": -1.7166749568221118,
+      "rl_home_brier": 0.2277849465084629,
+      "val13_model": 0.7166536395391897,
+      "val13_gap_pp": 5.037592658703105,
+      "mean_total": 8.91765209671848,
+      "mean_total_bias": 0.08055365112262614,
+      "mean_margin": 0.05618453195164075,
+      "mean_margin_bias": 0.02861976511226251,
+      "seconds": 83.9
+    },
+    {
+      "walkoff_9th_share": 0.1111,
+      "is_current_default": false,
+      "rl_home_mean_pred": 0.3284997789291882,
+      "rl_home_bias_pp": -2.6526127806563107,
+      "rl_home_brier": 0.22812207925135292,
+      "val13_model": 0.6968008922152338,
+      "val13_gap_pp": 3.052317926307513,
+      "mean_total": 8.85047128151986,
+      "mean_total_bias": 0.013372835924005955,
+      "mean_margin": -0.010996283246977545,
+      "mean_margin_bias": -0.03856105008635578,
+      "seconds": 80.2
+    },
+    {
+      "walkoff_9th_share": 0.13,
+      "is_current_default": false,
+      "rl_home_mean_pred": 0.32345959240069083,
+      "rl_home_bias_pp": -3.156631433506046,
+      "rl_home_brier": 0.22836930503995398,
+      "val13_model": 0.6861098455380146,
+      "val13_gap_pp": 1.9832132585855922,
+      "mean_total": 8.812084905008636,
+      "mean_total_bias": -0.02501354058721894,
+      "mean_margin": -0.049382659758203794,
+      "mean_margin_bias": -0.07694742659758202,
+      "seconds": 79.8
+    }
+  ]
+}

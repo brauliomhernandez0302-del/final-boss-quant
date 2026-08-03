@@ -1,0 +1,158 @@
+.wrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--fbq-space-5);
+}
+
+@media (max-width: 720px) {
+  .wrap {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  background: var(--fbq-bg-card);
+  border: 1px solid var(--fbq-border-hairline);
+  border-radius: var(--fbq-radius-md);
+  padding: var(--fbq-space-4);
+  box-shadow: var(--fbq-shadow-card);
+}
+
+.panelHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: var(--fbq-space-2);
+}
+
+.team {
+  font-family: var(--fbq-font-sans);
+  font-size: var(--fbq-size-title);
+  font-weight: 600;
+  color: var(--fbq-text-primary);
+}
+
+.roleTag {
+  font-family: var(--fbq-font-mono);
+  font-size: var(--fbq-size-micro);
+  color: var(--fbq-text-muted);
+  letter-spacing: 0.08em;
+}
+
+/* Bookend rows — talent base and final lambda — are absolute numbers, not
+   multipliers, so they get their own bigger, un-barred treatment. */
+.bookend {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 6px 0;
+}
+
+.bookendLabel {
+  font-family: var(--fbq-font-sans);
+  font-size: 12px;
+  color: var(--fbq-text-secondary);
+}
+
+.bookendValue {
+  font-family: var(--fbq-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--fbq-text-primary);
+}
+
+.finalValue {
+  font-size: 22px;
+  color: var(--fbq-accent-blue-soft);
+  text-shadow: var(--fbq-glow-blue-sm);
+}
+
+.divider {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--fbq-border-hairline) 15%,
+    var(--fbq-border-hairline) 85%,
+    transparent 100%
+  );
+  margin: 4px 0;
+}
+
+.steps {
+  display: flex;
+  flex-direction: column;
+}
+
+.na {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) 1fr minmax(56px, auto);
+  gap: var(--fbq-space-3);
+  padding: 3px 0;
+  align-items: center;
+}
+
+.naLabel {
+  font-family: var(--fbq-font-sans);
+  font-size: 12px;
+  color: var(--fbq-text-muted);
+}
+
+.naValue {
+  font-family: var(--fbq-font-mono);
+  font-size: 12px;
+  color: var(--fbq-text-muted);
+  text-align: right;
+}
+
+.detail {
+  margin: 0 0 4px 0;
+}
+
+.detailSummary {
+  cursor: pointer;
+  font-family: var(--fbq-font-sans);
+  font-size: 10.5px;
+  color: var(--fbq-text-muted);
+  letter-spacing: 0.04em;
+  padding-left: calc(90px + var(--fbq-space-3));
+  list-style: none;
+}
+
+.detailSummary::-webkit-details-marker {
+  display: none;
+}
+
+.detailSummary:hover {
+  color: var(--fbq-accent-blue-soft);
+}
+
+.detailBody {
+  padding-left: calc(90px + var(--fbq-space-3));
+  display: flex;
+  gap: var(--fbq-space-4);
+  font-family: var(--fbq-font-mono);
+  font-size: 11px;
+  color: var(--fbq-text-secondary);
+  padding-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.legend {
+  display: flex;
+  gap: var(--fbq-space-4);
+  align-items: center;
+  font-size: 11px;
+  color: var(--fbq-text-muted);
+  margin-bottom: var(--fbq-space-4);
+  flex-wrap: wrap;
+}
+
+.legendDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+}

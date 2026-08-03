@@ -1,390 +1,195 @@
 """
-HFA ENGINE G10 PRO - VERSIÓN HÍBRIDA DEFINITIVA
-================================================
+HFA ENGINE — Asymmetric home field advantage for MLB lambda pipeline
+====================================================================
 
-Combina:
-✅ Tus dataclasses originales (StadiumFactors, etc.)
-✅ Tu STADIUM_DATABASE completo
-✅ Mi lógica funcional ejecutable
-✅ Park factors separados (batter vs pitcher)
+Scope — asymmetric adjustments ONLY:
+  Away-team travel fatigue (subtracts from λ_away only).
+  Small uniform home-win-probability correction (see below).
 
-Autor: Braulio & Claude
-Versión: G10 Pro Hybrid
+Removed (E3 / FIX C2):
+  Home crowd/familiarity boost: confirmed pure noise (Pearson=-0.015,
+  direction 53% random). The per-stadium hfa_base lookup table (varying
+  boost by park) has been removed entirely and stays removed — that was
+  a genuinely uncorrelated static signal, not resurrected below.
+
+Added 2026-07-11 (post-leak-fix calibration diagnostic, distinct from the
+removed per-park lookup):
+  A residual analysis of the triple-clean, engine-hygiene-fixed backtest
+  (4,830 games, both 2024 and 2025 independently) found the model
+  under-predicts home win probability by a small, uniform ~1.6-1.7pp —
+  NOT park-specific noise like the removed feature, but a flat shift
+  present in both seasons. The signature is asymmetric by favorite side:
+  home-favorite picks are calibrated almost exactly (resid -0.4pp/+0.8pp),
+  while away-favorite picks over-rate the away team by 3-4pp in both
+  seasons. Market (Pinnacle) sits much closer to the true home win rate
+  than the model in both seasons, consistent with the model missing a
+  small real effect the market prices in. `_UNIFORM_HOME_MULT` below is a
+  single global constant (not per-park), sized from the observed
+  residual via Skellam sensitivity at typical λ (~2.8% λ_home ≈ 1.6-1.8pp
+  win-probability). Needs re-validation against a fresh backtest after
+  landing — if the residual doesn't close to ~0 in both seasons, revert
+  and look at Platt's intercept instead (the two are structurally
+  entangled: 2024 runs Platt at identity by design, 2025 doesn't, so a
+  downstream-only fix can't cover both seasons — this is why the fix
+  belongs in λ-space, not Platt).
+
+NOT in scope (handled by ParkWeatherEngine, PASO 5):
+  Park run-environment factor — symmetric, belongs in its own engine.
+  Weather (temp, wind, rain)  — symmetric, belongs in ParkWeatherEngine.
 """
 
-import numpy as np
-from typing import Dict, Any, Tuple, Optional
-from dataclasses import dataclass
 import logging
+from typing import Dict, Any, Tuple
+from config import LEAGUE_AVG_RUNS
 
 logger = logging.getLogger(__name__)
 
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PARTE 1: TUS DATACLASSES ORIGINALES
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-@dataclass
-class StadiumFactors:
-    """Factores específicos del estadio."""
-    runs_factor: float = 1.0
-    hr_factor: float = 1.0
-    hits_factor: float = 1.0
-    altitude: float = 0
+# Uniform home-win-probability correction — see module docstring
+# "Added 2026-07-11" for the diagnostic that justifies this. Distinct from
+# the removed per-park hfa_base lookup: this is one flat constant applied
+# to every game, not a per-stadium table, so it cannot reproduce the old
+# feature's near-zero Pearson correlation with real HFA variation.
+_UNIFORM_HOME_MULT = 0.028
 
 
-@dataclass
-class PitcherStats:
-    """Estadísticas del pitcher."""
-    name: str
-    era: float
-    fip: Optional[float] = None
-    whip: Optional[float] = None
-    k_per_9: Optional[float] = None
-    bb_per_9: Optional[float] = None
-    home_era: Optional[float] = None
-    away_era: Optional[float] = None
-
-
-@dataclass
-class WeatherConditions:
-    """Condiciones climáticas."""
-    temp_f: float = 75
-    wind_mph: float = 0
-    humidity_pct: float = 50
-    precipitation: bool = False
-    roof_closed: bool = False
-
-
-@dataclass
-class TeamContext:
-    """Contexto adicional del equipo."""
-    team_name: str
-    home_record: Optional[Tuple[int, int]] = None
-    away_record: Optional[Tuple[int, int]] = None
-    rest_days: int = 1
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PARTE 2: TU STADIUM DATABASE ORIGINAL (COMPLETO)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-STADIUM_DATABASE = {
-    # Últimos 10 juegos - STADIUM DATABASE (Park Factors MLB 2024)
-    "Coors Field": StadiumFactors(1.25, 1.35, 1.20, 1660),
-    "Great American Ball Park": StadiumFactors(1.12, 1.20, 1.02, 1609),
-    "Fenway Park": StadiumFactors(1.05, 1.15, 1.25, 10),
-    "Yankee Stadium": StadiumFactors(1.05, 1.20, 1.02, 15),
-    "Oracle Park": StadiumFactors(0.87, 0.81, 0.90, 0),
-    "T-Mobile Park": StadiumFactors(0.92, 0.81, 0.90, 15),
-    "Dodger Stadium": StadiumFactors(0.95, 0.92, 0.88, 0),
-    "Tropicana Field": StadiumFactors(0.98, 0.96, 0.93, 0),
-    "Chase Field": StadiumFactors(1.08, 1.15, 1.05, 1669),
-    "Citizens Bank Park": StadiumFactors(1.08, 1.15, 0.96, 0),
-    "Minute Maid Park": StadiumFactors(1.10, 1.18, 1.08, 12),
-    "Globe Life Field": StadiumFactors(1.12, 1.20, 1.08, 13),
-    "Target Field": StadiumFactors(0.97, 0.94, 1.08, 161),
-    "Kauffman Stadium": StadiumFactors(0.96, 0.92, 0.97, 229),
-    "Camden Yards": StadiumFactors(1.02, 1.09, 1.03, 97),
-    "Wrigley Field": StadiumFactors(1.04, 1.05, 1.03, 180),
-    "Guaranteed Rate Field": StadiumFactors(1.00, 1.08, 1.00, 181),
-    "Progressive Field": StadiumFactors(0.98, 0.96, 0.99, 187),
-    "Rogers Centre": StadiumFactors(1.01, 1.03, 1.00, 182),
-    "Comerica Park": StadiumFactors(0.94, 0.88, 0.96, 182),
-    "PNC Park": StadiumFactors(0.96, 0.94, 0.97, 231),
-    "Busch Stadium": StadiumFactors(0.99, 0.98, 1.00, 14),
-    "Petco Park": StadiumFactors(0.90, 0.85, 0.90, 144),
-    "Angel Stadium": StadiumFactors(0.98, 0.86, 0.97, 231),
-    "loanDepot park": StadiumFactors(0.90, 0.95, 0.99, 48),
-    "Truist Park": StadiumFactors(0.98, 1.00, 0.96, 48),
-    "Citi Field": StadiumFactors(0.94, 0.88, 0.96, 3),
-    "Nationals Park": StadiumFactors(1.01, 1.05, 1.01, 305),
-    "American Family Field": StadiumFactors(1.00, 1.07, 0.97, 7),
-    "RingCentral Coliseum": StadiumFactors(0.94, 0.98, 0.96, 194),
-}
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PARTE 3: MI CLASE HFAEngine CON LÓGICA FUNCIONAL
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ── HFA Engine ────────────────────────────────────────────────────────────────
 
 class HFAEngine:
     """
-    Motor de Home Field Advantage enfocado en EQUIPO.
-    
-    Usa tu STADIUM_DATABASE original + park factors separados.
+    Adjusts (λ_home, λ_away) for crowd advantage and away-team travel fatigue.
+    Park factor and weather are handled upstream by ParkWeatherEngine (PASO 5).
     """
-    
+
     def __init__(self):
-        self.name = "HFA Engine G10 Pro Hybrid"
-        
-        # Usar tu STADIUM_DATABASE
-        self.stadium_db = STADIUM_DATABASE
-        
-        # HFA base por estadio (crowd effect)
-        self.hfa_base = {
-            'Yankee Stadium': 0.18,
-            'Fenway Park': 0.17,
-            'Dodger Stadium': 0.16,
-            'Busch Stadium': 0.15,
-            'Wrigley Field': 0.16,
-            'Oracle Park': 0.15,
-            'Coors Field': 0.14,
-            'Petco Park': 0.14,
-            'Citizens Bank Park': 0.15,
-            'Progressive Field': 0.14,
-            'Comerica Park': 0.13,
-            'Target Field': 0.13,
-            'PNC Park': 0.13,
-            'Great American Ball Park': 0.13,
-            'Guaranteed Rate Field': 0.12,
-            'Truist Park': 0.13,
-            'Chase Field': 0.12,
-            'T-Mobile Park': 0.13,
-            'Tropicana Field': 0.10,
-            'Rogers Centre': 0.11,
-            'loanDepot park': 0.10,
-            'RingCentral Coliseum': 0.11,
-        }
-        
-        # Park factors SOLO PARA BATEADORES (diferente a pitchers)
-        # Derivados de tu STADIUM_DATABASE pero con ajustes
-        self.park_factors_hitters = {}
-        for stadium, factors in STADIUM_DATABASE.items():
-            # Usar runs_factor como base para hitters
-            self.park_factors_hitters[stadium] = factors.runs_factor
-    
-    
+        self.name = "HFA Engine"
+
+    # ── Public interface ───────────────────────────────────────────────────────
+
     def get_adjusted_lambdas(
         self,
         lh: float,
         la: float,
-        game_data: Dict[str, Any]
+        game_data: Dict[str, Any],
     ) -> Tuple[float, float, Dict[str, Any]]:
         """
-        Ajusta lambdas por todos los factores del EQUIPO.
-        
+        Apply crowd advantage and travel fatigue (asymmetric adjustments only).
+        Park factor and weather are handled by ParkWeatherEngine (PASO 5).
+
         Args:
-            lh: Lambda home después de calibration
-            la: Lambda away después de calibration
-            game_data: Dict completo con info del juego
-        
+            lh: Home expected runs after ParkWeatherEngine.
+            la: Away expected runs after ParkWeatherEngine.
+            game_data: Dict with keys 'park' (→ 'name'), optionally
+                       'miles_traveled_away', 'time_zones_crossed_away'.
+
         Returns:
-            (lh_adjusted, la_adjusted, metadata)
+            (lh_adjusted, la_adjusted, metadata_dict)
         """
-        
-        logger.info(f"🏟️  HFA Engine G10 Pro - Ajustando por equipo")
-        logger.info(f"   Input: λ_h={lh:.3f}, λ_a={la:.3f}")
-        
-        metadata = {
-            'hfa_base': 0.0,
-            'park_factor': 1.0,
-            'travel_away': 0.0,
-            'offense_home': 1.0,
-            'offense_away': 1.0,
-            'defense_home': 1.0,
-            'defense_away': 1.0,
-            'altitude': 0.0
-        }
-        
-        # Extraer datos
-        home_team = game_data.get('home_team', {})
-        away_team = game_data.get('away_team', {})
-        park = game_data.get('park', {})
-        park_name = park.get('name', 'Unknown')
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 1: HOME FIELD ADVANTAGE BASE
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        hfa_boost = self.hfa_base.get(park_name, 0.13)
-        lh_new = lh + hfa_boost
-        metadata['hfa_base'] = hfa_boost
-        
-        logger.info(f"   HFA Base: +{hfa_boost:.3f} runs")
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 2: PARK FACTORS FOR HITTERS
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        park_mult = self.park_factors_hitters.get(park_name, 1.00)
-        
-        lh_new *= park_mult
-        la_new = la * park_mult
-        
-        metadata['park_factor'] = park_mult
-        
-        logger.info(f"   Park Factor (hitters): {park_mult:.3f}x")
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 3: ALTITUDE EFFECTS
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        if park_name in self.stadium_db:
-            altitude = self.stadium_db[park_name].altitude
-            
-            if altitude > 1000:  # Significant altitude
-                # Convertir altitude a boost de runs
-                alt_boost = (altitude / 5000) * 0.15
-                
-                # Home acostumbrado (50% efecto)
-                lh_new += (alt_boost * 0.5)
-                la_new += alt_boost
-                
-                metadata['altitude'] = alt_boost
-                logger.info(f"   Altitude: +{alt_boost:.3f} runs")
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 4: TRAVEL FATIGUE (EQUIPO)
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
+        park_name = (game_data.get("park") or {}).get("name", "Unknown")
+
+        logger.debug("HFA Engine | park=%s  λh=%.3f  λa=%.3f  [crowd_boost=disabled]", park_name, lh, la)
+
+        # Crowd boost eliminated (FIX C2 / E3): Pearson=-0.015, direction 53% random.
+        # Kalman + multidim_bias cover ~95% of empirical HFA signal.
+        hfa_boost = 0.0
+
+        # Uniform home correction (added 2026-07-11, see module docstring) —
+        # a single flat multiplier, not a per-park lookup.
+        hfa_mult  = 1.0 + _UNIFORM_HOME_MULT
+        lh_new    = lh * hfa_mult
+
+        # ── Step 2: Away-team travel fatigue (asymmetric, λ_away only) ────────
+        # Travel penalty retained: 69.3% activation rate, max 1.3% λ reduction.
+        # Mechanistic basis (circadian disruption) empirically confirmed.
+        la_new = la
         travel_penalty = self._calculate_travel_fatigue(game_data)
-        la_new -= travel_penalty
-        metadata['travel_away'] = travel_penalty
-        
-        if travel_penalty > 0:
-            logger.info(f"   Travel Away: -{travel_penalty:.3f} runs")
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 5: TEAM OFFENSE
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        off_mult_home = self._calculate_offense_multiplier(home_team)
-        off_mult_away = self._calculate_offense_multiplier(away_team)
-        
-        lh_new *= off_mult_home
-        la_new *= off_mult_away
-        
-        metadata['offense_home'] = off_mult_home
-        metadata['offense_away'] = off_mult_away
-        
-        logger.info(f"   Offense: home {off_mult_home:.3f}x, away {off_mult_away:.3f}x")
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # PASO 6: TEAM DEFENSE
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        def_mult_home = self._calculate_defense_multiplier(home_team)
-        def_mult_away = self._calculate_defense_multiplier(away_team)
-        
-        la_new *= def_mult_home
-        lh_new *= def_mult_away
-        
-        metadata['defense_home'] = def_mult_home
-        metadata['defense_away'] = def_mult_away
-        
-        logger.info(f"   Defense: home {def_mult_home:.3f}x, away {def_mult_away:.3f}x")
-        
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # RESULTADO FINAL
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        
-        logger.info(f"✅ HFA Engine completado:")
-        logger.info(f"   λ_home: {lh:.3f} → {lh_new:.3f} (Δ={lh_new-lh:+.3f})")
-        logger.info(f"   λ_away: {la:.3f} → {la_new:.3f} (Δ={la_new-la:+.3f})")
-        
-        return lh_new, la_new, metadata
-    
-    
-    def _calculate_travel_fatigue(self, game_data: Dict) -> float:
-        """Calcula penalty por travel del EQUIPO away."""
-        
-        miles = game_data.get('miles_traveled_away', 0)
-        time_zones = game_data.get('time_zones_crossed_away', 0)
-        back_to_back = game_data.get('back_to_back_away', False)
-        
-        penalty = 0.0
-        
-        if miles > 2500:
-            penalty += 0.12
-        elif miles > 1500:
-            penalty += 0.08
-        elif miles > 800:
-            penalty += 0.05
-        
-        if time_zones >= 3:
-            penalty += 0.10
-        elif time_zones == 2:
-            penalty += 0.06
-        elif time_zones == 1:
-            penalty += 0.03
-        
-        if back_to_back:
-            penalty += 0.05
-        
-        return min(penalty, 0.25)
-    
-    
-    def _calculate_offense_multiplier(self, team: Dict) -> float:
-        """Calcula multiplicador por calidad ofensiva."""
-        
-        woba = team.get('woba', 0.320)
-        ops = team.get('ops', 0.735)
-        wrc_plus = team.get('wrc_plus', 100)
-        
-        if wrc_plus and wrc_plus != 100:
-            mult = (
-                (wrc_plus / 100) * 0.50 +
-                (woba / 0.320) * 0.30 +
-                (ops / 0.735) * 0.20
-            )
-        else:
-            mult = (
-                (woba / 0.320) * 0.60 +
-                (ops / 0.735) * 0.40
-            )
-        
-        return np.clip(mult, 0.80, 1.22)
-    
-    
-    def _calculate_defense_multiplier(self, team: Dict) -> float:
-        """Calcula multiplicador por calidad defensiva."""
-        
-        der = team.get('der', 0.700)
-        uzr = team.get('uzr', 0.0)
-        fielding_pct = team.get('fielding_pct', 0.985)
-        
-        der_mult = 0.700 / der
-        
-        if uzr > 20:
-            uzr_adj = 0.95
-        elif uzr > 10:
-            uzr_adj = 0.97
-        elif uzr < -20:
-            uzr_adj = 1.06
-        elif uzr < -10:
-            uzr_adj = 1.03
-        else:
-            uzr_adj = 1.00
-        
-        field_mult = 0.985 / fielding_pct
-        
-        mult = (
-            der_mult * 0.50 +
-            uzr_adj * 0.30 +
-            field_mult * 0.20
+        if travel_penalty > 0.0:
+            la_new *= 1.0 - travel_penalty / LEAGUE_AVG_RUNS
+
+        metadata = {
+            "park_name":       park_name,
+            "hfa_boost_runs":  round(hfa_boost, 4),
+            "hfa_mult":        round(hfa_mult, 4),
+            "uniform_home_mult": _UNIFORM_HOME_MULT,
+            "travel_penalty":  round(travel_penalty, 4),
+            # FALL-002 fix (roadmap Step 4): purely additive provenance
+            # marker, same contract as park_weather_engine.py's
+            # weather_source — does not affect travel_penalty's value.
+            "travel_source":   game_data.get("travel_source_away", "live"),
+        }
+
+        logger.debug(
+            "HFA Engine done | λh: %.3f→%.3f  λa: %.3f→%.3f",
+            lh, lh_new, la, la_new,
         )
-        
-        return np.clip(mult, 0.88, 1.12)
+
+        return lh_new, la_new, metadata
+
+    # ── Private helpers ────────────────────────────────────────────────────────
+
+    def _calculate_travel_fatigue(self, game_data: Dict) -> float:
+        """
+        Away-team penalty for cross-timezone travel and long-distance trips.
+
+        Design notes:
+          • Time-zone crossings are the primary causal mechanism (circadian
+            disruption), so they take precedence over distance.
+          • Miles used only as a fallback when time_zones data is unavailable
+            (== 0 from API) but miles are non-zero — avoids double-counting.
+          • Max penalty 0.10 runs (~2.2% λ cut): empirical estimates put the
+            travel effect at ~0.5–1% win-prob, equivalent to ~0.05–0.10 runs.
+          • Back-to-back is intentionally excluded: owned by ContextualEngine
+            (PASO 3), which applies the B2B penalty to BOTH teams asymmetrically
+            (home/away multipliers differ, FIX D4) via their own rest_days
+            signal. Keeping it here would double-count the away team's B2B.
+          • In practice travel fields are rarely populated by the free MLB API;
+            the penalty fires mainly when game_data is enriched externally.
+          • FALL-002 fix (roadmap Step 4, audit_20260714/): when
+            data_fetchers.py::get_travel_fatigue() couldn't resolve
+            coordinates for one of the two venues (an unmapped/renamed
+            stadium — REG-015's exact failure mode), it now reports
+            travel_source_away="missing" instead of fabricating a
+            plausible-looking 1000mi/1tz guess. This function honors that:
+            a missing source means a genuinely neutral (zero) penalty, not
+            a specific fabricated one — an honest "we don't know, so we
+            don't adjust" beats a confident-looking wrong number.
+        """
+        if game_data.get("travel_source_away", "live") == "missing":
+            return 0.0
+
+        _mi = game_data.get("miles_traveled_away")
+        miles      = float(_mi if _mi is not None else 0)
+        _tz = game_data.get("time_zones_crossed_away")
+        time_zones = int(_tz   if _tz is not None else 0)
+
+        penalty = 0.0
+
+        if time_zones >= 3:
+            penalty = 0.06   # coast-to-coast: ~1.3% λ reduction
+        elif time_zones == 2:
+            penalty = 0.04
+        elif time_zones == 1:
+            penalty = 0.02
+        elif miles > 2000:
+            # Fallback when time_zones not populated but trip is long
+            penalty = 0.05
+        elif miles > 1000:
+            penalty = 0.03
+
+        return min(penalty, 0.10)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# PARTE 4: FUNCIÓN HELPER PARA RUN_MODULE
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ── Module-level helper (public interface used by run_module.py) ───────────────
 
 def get_adjusted_lambdas(
     lh: float,
     la: float,
-    game_data: Dict[str, Any]
+    game_data: Dict[str, Any],
 ) -> Tuple[float, float, Dict[str, Any]]:
     """
-    Función helper para importar en run_module.
-    
+    Convenience wrapper — matches the import used in run_module.py.
+
     Usage:
         from hfa.hfa_engine import get_adjusted_lambdas
-        
         lh_hfa, la_hfa, meta = get_adjusted_lambdas(lh, la, game_data)
     """
-    
-    engine = HFAEngine()
-    return engine.get_adjusted_lambdas(lh, la, game_data)
+    return HFAEngine().get_adjusted_lambdas(lh, la, game_data)

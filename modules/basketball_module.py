@@ -25,6 +25,8 @@ from datetime import datetime
 from dataclasses import dataclass, field
 import logging
 import numpy as np
+from config import NBA_SIMULATIONS, KELLY_FRACTION
+from core.utils import calculate_ev
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -275,7 +277,7 @@ class NBAAnalyzerG10PlusV2:
         away_team: Dict[str, Any],
         game_context: Optional[Dict[str, Any]] = None,
         market_data: Optional[Dict[str, Any]] = None,
-        n_simulations: int = 100_000,
+        n_simulations: int = NBA_SIMULATIONS,
     ) -> Dict[str, Any]:
         """
         Análisis completo con 12 dictámenes mejorados.
@@ -1949,8 +1951,8 @@ class NBAAnalyzerG10PlusV2:
         # Edge real
         edge = probability - implied_prob
 
-        # EV por unidad apostada
-        ev_per_unit = (probability * (decimal_odds - 1)) - (1 - probability)
+        # EV por unidad apostada (canonical formula from core.utils)
+        ev_per_unit = calculate_ev(probability, decimal_odds) / 100
 
         # Kelly Criterion
         if edge > 0 and decimal_odds > 1:
@@ -1958,7 +1960,7 @@ class NBAAnalyzerG10PlusV2:
         else:
             kelly_full = 0.0
 
-        kelly_quarter = kelly_full * 0.25
+        kelly_quarter = kelly_full * KELLY_FRACTION
         kelly_half = kelly_full * 0.50
 
         # Criterio de apuesta worthy
@@ -2190,7 +2192,7 @@ def run_module(
     away_team: Optional[Dict[str, Any]] = None,
     game_context: Optional[Dict[str, Any]] = None,
     market_data: Optional[Dict[str, Any]] = None,
-    n_simulations: int = 100_000,
+    n_simulations: int = NBA_SIMULATIONS,
 ) -> Dict[str, Any]:
     """
     Función principal para ejecutar NBA G10+ Ultra Pro V2.

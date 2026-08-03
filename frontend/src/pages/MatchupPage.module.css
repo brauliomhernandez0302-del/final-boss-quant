@@ -1,0 +1,42 @@
+.picker {
+  display: flex;
+  align-items: center;
+  gap: var(--fbq-space-3);
+  margin-bottom: var(--fbq-space-7);
+}
+
+.pickerLabel {
+  font-size: var(--fbq-size-label);
+  color: var(--fbq-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: var(--fbq-tracking-label);
+  font-weight: 600;
+}
+
+.select {
+  background: var(--fbq-bg-inset);
+  border: 1px solid var(--fbq-border-hairline);
+  color: var(--fbq-text-primary);
+  border-radius: var(--fbq-radius-sm);
+  padding: 8px 12px;
+  font-family: var(--fbq-font-sans);
+  font-size: var(--fbq-size-body);
+  min-width: 340px;
+  transition: border-color var(--fbq-dur-fast) var(--fbq-ease);
+}
+
+.select:hover,
+.select:focus {
+  border-color: var(--fbq-border-strong);
+  outline: none;
+}
+
+.status {
+  color: var(--fbq-text-muted);
+  font-size: var(--fbq-size-body);
+}
+
+.statusError {
+  color: var(--fbq-accent-red);
+  font-size: var(--fbq-size-body);
+}

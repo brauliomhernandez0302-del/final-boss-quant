@@ -1,0 +1,47 @@
+Evaluador distribucional runline/total — CALIBRACIÓN, NO ROI
+(no hay líneas históricas de estos mercados en la DB; ningún número de acá es rentabilidad)
+
+Juegos: 4825  |  temporadas [2024, 2025]  |  50,000 sims × 2 variantes
+
+  250/4825 juegos  (15s, 62 ms/juego)
+  500/4825 juegos  (30s, 60 ms/juego)
+  750/4825 juegos  (44s, 59 ms/juego)
+  1000/4825 juegos  (58s, 58 ms/juego)
+  1250/4825 juegos  (73s, 58 ms/juego)
+  1500/4825 juegos  (86s, 57 ms/juego)
+  1750/4825 juegos  (100s, 57 ms/juego)
+  2000/4825 juegos  (114s, 57 ms/juego)
+  2250/4825 juegos  (129s, 57 ms/juego)
+  2500/4825 juegos  (142s, 57 ms/juego)
+  2750/4825 juegos  (157s, 57 ms/juego)
+  3000/4825 juegos  (171s, 57 ms/juego)
+  3250/4825 juegos  (184s, 57 ms/juego)
+  3500/4825 juegos  (199s, 57 ms/juego)
+  3750/4825 juegos  (212s, 57 ms/juego)
+  4000/4825 juegos  (226s, 57 ms/juego)
+  4250/4825 juegos  (239s, 56 ms/juego)
+  4500/4825 juegos  (252s, 56 ms/juego)
+  4750/4825 juegos  (266s, 56 ms/juego)
+  4825/4825 juegos  (270s, 56 ms/juego)
+
+==============================================================================
+RESUMEN — 4825 juegos
+==============================================================================
+mercado                   real    viejo    nuevo   sesgo_v   sesgo_n   Brier_v   Brier_n
+RL_HOME_-1.5            0.3550   0.3685   0.3285     1.35p    -2.66p   0.22781   0.22807
+RL_AWAY_-1.5            0.3585   0.3237   0.3244    -3.48p    -3.41p   0.23049   0.23045
+ML_HOME (control)       0.5328   0.5240   0.5254    -0.88p    -0.75p   0.24707   0.24743
+TOTAL_OVER_6.5          0.6721   0.7144   0.6967     4.23p     2.46p   0.22155   0.22061
+TOTAL_OVER_7.5          0.5575   0.6147   0.5897     5.72p     3.22p   0.24873   0.24669
+TOTAL_OVER_8.5          0.4856   0.5136   0.4900     2.80p     0.44p   0.24945   0.24868
+TOTAL_OVER_9.5          0.3847   0.4174   0.3904     3.27p     0.57p   0.23707   0.23592
+TOTAL_OVER_10.5         0.3215   0.3305   0.3071     0.90p    -1.43p   0.21830   0.21832
+TOTAL_OVER_11.5         0.2458   0.2554   0.2322     0.96p    -1.36p   0.18621   0.18605
+
+VAL-1.3  P(margen local ≥2 | ganó el local):  real 0.6663  |  viejo 0.7820 (+11.58pp)  |  nuevo 0.6968 (+3.05pp)
+Total medio:  real 8.837  |  viejo 9.112  |  nuevo 8.850
+RPS total   :  viejo 2.47007  |  nuevo 2.46399
+RPS margen  :  viejo 2.49288  |  nuevo 2.49773
+
+Por juego: audit_20260714/val_audit/derived_eval/results/per_game_20260726_1308.csv
+Métricas  : audit_20260714/val_audit/derived_eval/results/metrics_20260726_1308.json

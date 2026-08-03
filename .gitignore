@@ -13,6 +13,7 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+data/pit_raw/
 
 # Logs / cache
 *.log
@@ -21,6 +22,14 @@ __pycache__/
 # Variables sensibles
 .env
 .streamlit/secrets.toml
+
+# Claude Code session state (not project source)
+.claude.json
+.claude.json.tmp.*
+.claude/
+
+# npm cache
+.npm/
 
 # Sistema específico
 .aws/
@@ -40,3 +49,39 @@ __pycache__/
 .motd_shown
 .streamlit/credentials.toml
 .streamlit/machine_id_v4
+
+# Estado de sesion de otras herramientas (contiene credenciales)
+.codex/
+.config/
+
+# SQLite WAL/shm (la .db ya esta ignorada arriba)
+*.db-shm
+*.db-wal
+
+# Cache derivado, lo regenera a1_descomposicion.py
+audit_20260714/estrategia/_data.npz
+
+# Archivos privados y locales
+.claude/
+.codex/
+.npm/
+.nvm/
+.cache/
+.local/
+.vscode-server/
+mi_entorno/
+
+# Secretos
+.env
+.env.*
+*.pem
+*.key
+
+# SQLite temporales
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/

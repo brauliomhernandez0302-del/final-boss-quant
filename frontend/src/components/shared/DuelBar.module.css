@@ -1,0 +1,95 @@
+.row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--fbq-space-2);
+  padding: 4px 0;
+}
+
+.side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sideAway {
+  flex-direction: row-reverse;
+}
+
+.track {
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--fbq-bg-inset);
+  overflow: hidden;
+  display: flex;
+}
+
+.trackAway {
+  justify-content: flex-end;
+}
+
+.fill {
+  height: 100%;
+  border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .fill {
+    transition: width 500ms var(--fbq-ease);
+  }
+}
+
+.fillHome {
+  background: linear-gradient(90deg, var(--fbq-accent-blue-soft), var(--fbq-accent-blue));
+}
+
+.fillAway {
+  background: var(--fbq-border-strong);
+}
+
+/* Signed mode — same direction convention as the λ waterfall:
+   teal raises the affected λ, red lowers it. */
+.fillUp {
+  background: linear-gradient(90deg, var(--fbq-accent-teal-soft), var(--fbq-accent-teal));
+}
+
+.fillDown {
+  background: linear-gradient(90deg, var(--fbq-accent-red), var(--fbq-accent-red));
+}
+
+.fillFlat {
+  background: var(--fbq-border-strong);
+}
+
+.value {
+  font-family: var(--fbq-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  color: var(--fbq-text-secondary);
+  min-width: 42px;
+}
+
+.valueAway {
+  text-align: right;
+}
+
+.winner {
+  color: var(--fbq-text-primary);
+  font-weight: 700;
+}
+
+.winnerDot {
+  color: var(--fbq-accent-teal);
+  font-size: 9px;
+}
+
+.label {
+  font-family: var(--fbq-font-sans);
+  font-size: 11px;
+  color: var(--fbq-text-muted);
+  text-align: center;
+  white-space: nowrap;
+  padding: 0 4px;
+}

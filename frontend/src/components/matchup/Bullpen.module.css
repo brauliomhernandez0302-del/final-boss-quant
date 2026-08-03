@@ -1,0 +1,100 @@
+.aggregate {
+  background: var(--fbq-bg-card);
+  border: 1px solid var(--fbq-border-hairline);
+  border-radius: var(--fbq-radius-md);
+  padding: var(--fbq-space-4);
+  box-shadow: var(--fbq-shadow-card);
+  margin-bottom: var(--fbq-space-3);
+}
+
+.aggregateHeader {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--fbq-font-sans);
+  font-size: var(--fbq-size-label);
+  font-weight: 600;
+  letter-spacing: var(--fbq-tracking-label);
+  text-transform: uppercase;
+  color: var(--fbq-text-secondary);
+  margin-bottom: var(--fbq-space-3);
+}
+
+.multRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--fbq-space-5);
+  margin-top: var(--fbq-space-3);
+  padding-top: var(--fbq-space-3);
+  border-top: 1px solid var(--fbq-border-hairline);
+}
+
+.tierRow {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--fbq-space-2);
+}
+
+.table {
+  display: flex;
+  flex-direction: column;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--fbq-border-hairline);
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.idx {
+  font-family: var(--fbq-font-mono);
+  font-size: 11px;
+  color: var(--fbq-text-muted);
+  width: 16px;
+  flex-shrink: 0;
+}
+
+.name {
+  font-family: var(--fbq-font-sans);
+  font-size: 13px;
+  color: var(--fbq-text-primary);
+  flex: 1;
+  min-width: 0;
+}
+
+/* A position player the engine's reliever classifier admitted (any pitching
+   appearance, zero starts) — labeled instead of silently listed as a pitcher. */
+.positionFlag {
+  font-family: var(--fbq-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--fbq-accent-amber, var(--fbq-text-muted));
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* The engine's actual weights for this reliever: PA into the Savant aggregate,
+   IP into the SIERA one. */
+.weights {
+  font-size: 11px;
+  color: var(--fbq-text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.excludedNote {
+  margin-top: var(--fbq-space-3);
+  padding-top: var(--fbq-space-2);
+  border-top: 1px solid var(--fbq-border-hairline);
+  font-size: 11px;
+  color: var(--fbq-text-muted);
+  font-style: italic;
+}

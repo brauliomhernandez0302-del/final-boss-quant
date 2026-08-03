@@ -1,0 +1,66 @@
+.section {
+  position: relative;
+  padding: var(--fbq-space-6) 0;
+}
+
+.section:first-child {
+  padding-top: 0;
+}
+
+/* Gradient divider that fades at both ends — not a flat solid rule. */
+.section:not(:first-child)::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--fbq-border-strong) 15%,
+    var(--fbq-border-strong) 85%,
+    transparent 100%
+  );
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--fbq-space-4);
+}
+
+.summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  list-style: none;
+  margin-bottom: var(--fbq-space-4);
+}
+
+.summary::-webkit-details-marker {
+  display: none;
+}
+
+.title {
+  font-family: var(--fbq-font-sans);
+  font-size: var(--fbq-size-label);
+  font-weight: 700;
+  letter-spacing: var(--fbq-tracking-label);
+  text-transform: uppercase;
+  color: var(--fbq-text-secondary);
+  margin: 0;
+}
+
+.marker {
+  color: var(--fbq-accent-blue);
+  text-shadow: var(--fbq-glow-blue-sm);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fbq-space-4);
+}

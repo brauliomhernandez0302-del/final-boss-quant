@@ -1,0 +1,165 @@
+{
+  "run_at": "2026-05-13T16:13:27.409078+00:00",
+  "n_games": 5422,
+  "n_errors": 0,
+  "seasons": [
+    2024,
+    2025,
+    2026
+  ],
+  "n_mc_sims": 10000,
+  "WITH_calibrator": {
+    "brier": 0.24006,
+    "accuracy_pct": 57.78,
+    "mean_lambda_spread": 0.0291,
+    "pct_home_favored": 50.6,
+    "roi_edge10": {
+      "bets": 595,
+      "profit": 56.63,
+      "roi_pct": 9.52
+    },
+    "roi_edge5": {
+      "bets": 2101,
+      "profit": 229.22,
+      "roi_pct": 10.91
+    }
+  },
+  "WITHOUT_calibrator": {
+    "brier": 0.24429,
+    "accuracy_pct": 56.71,
+    "mean_lambda_spread": 0.0294,
+    "pct_home_favored": 51.5,
+    "roi_edge10": {
+      "bets": 978,
+      "profit": 64.58,
+      "roi_pct": 6.6
+    },
+    "roi_edge5": {
+      "bets": 2524,
+      "profit": 20.98,
+      "roi_pct": 0.83
+    }
+  },
+  "delta": {
+    "brier": 0.00423,
+    "accuracy_pp": 1.07,
+    "lambda_spread": -0.0004
+  },
+  "by_season": {
+    "2024": {
+      "n": 2429,
+      "WITH": {
+        "acc": 58.21,
+        "brier": 0.24034,
+        "spread": -0.0214
+      },
+      "WITHOUT": {
+        "acc": 55.74,
+        "brier": 0.24469,
+        "spread": -0.0201
+      }
+    },
+    "2025": {
+      "n": 2430,
+      "WITH": {
+        "acc": 57.16,
+        "brier": 0.24082,
+        "spread": 0.0606
+      },
+      "WITHOUT": {
+        "acc": 56.83,
+        "brier": 0.24494,
+        "spread": 0.0627
+      }
+    },
+    "2026": {
+      "n": 563,
+      "WITH": {
+        "acc": 58.61,
+        "brier": 0.23553,
+        "spread": 0.1108
+      },
+      "WITHOUT": {
+        "acc": 60.39,
+        "brier": 0.23973,
+        "spread": 0.0995
+      }
+    }
+  },
+  "calibration": {
+    "WITH": {
+      "<40%": {
+        "n": 523,
+        "pred_pct": 37.0,
+        "actual_pct": 37.3
+      },
+      "40-45%": {
+        "n": 901,
+        "pred_pct": 42.8,
+        "actual_pct": 43.6
+      },
+      "45-50%": {
+        "n": 1246,
+        "pred_pct": 47.6,
+        "actual_pct": 50.0
+      },
+      "50-55%": {
+        "n": 1228,
+        "pred_pct": 52.4,
+        "actual_pct": 54.3
+      },
+      "55-60%": {
+        "n": 941,
+        "pred_pct": 57.3,
+        "actual_pct": 62.3
+      },
+      "60-70%": {
+        "n": 565,
+        "pred_pct": 63.1,
+        "actual_pct": 71.7
+      },
+      ">70%": {
+        "n": 18,
+        "pred_pct": 71.5,
+        "actual_pct": 94.4
+      }
+    },
+    "WITHOUT": {
+      "<40%": {
+        "n": 62,
+        "pred_pct": 38.7,
+        "actual_pct": 41.9
+      },
+      "40-45%": {
+        "n": 674,
+        "pred_pct": 43.2,
+        "actual_pct": 40.1
+      },
+      "45-50%": {
+        "n": 1892,
+        "pred_pct": 47.8,
+        "actual_pct": 48.8
+      },
+      "50-55%": {
+        "n": 1994,
+        "pred_pct": 52.3,
+        "actual_pct": 56.8
+      },
+      "55-60%": {
+        "n": 697,
+        "pred_pct": 56.9,
+        "actual_pct": 64.7
+      },
+      "60-70%": {
+        "n": 103,
+        "pred_pct": 61.7,
+        "actual_pct": 80.6
+      },
+      ">70%": {
+        "n": 0,
+        "pred_pct": 0,
+        "actual_pct": null
+      }
+    }
+  }
+}

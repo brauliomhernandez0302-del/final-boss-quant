@@ -1,0 +1,137 @@
+{
+  "run_at": "2026-05-13T15:59:38.600289+00:00",
+  "n_games": 5,
+  "n_errors": 0,
+  "seasons": [
+    2024
+  ],
+  "n_mc_sims": 25000,
+  "WITH_calibrator": {
+    "brier": 0.19294,
+    "accuracy_pct": 80.0,
+    "mean_lambda_spread": 0.6639,
+    "pct_home_favored": 80.0,
+    "roi_edge10": {
+      "bets": 1,
+      "profit": 1.65,
+      "roi_pct": 165.0
+    },
+    "roi_edge5": {
+      "bets": 2,
+      "profit": 2.61,
+      "roi_pct": 130.5
+    }
+  },
+  "WITHOUT_calibrator": {
+    "brier": 0.22107,
+    "accuracy_pct": 60.0,
+    "mean_lambda_spread": 0.2682,
+    "pct_home_favored": 60.0,
+    "roi_edge10": {
+      "bets": 1,
+      "profit": 1.65,
+      "roi_pct": 165.0
+    },
+    "roi_edge5": {
+      "bets": 2,
+      "profit": 0.65,
+      "roi_pct": 32.5
+    }
+  },
+  "delta": {
+    "brier": 0.02813,
+    "accuracy_pp": 20.0,
+    "lambda_spread": 0.3958
+  },
+  "by_season": {
+    "2024": {
+      "n": 5,
+      "WITH": {
+        "acc": 80.0,
+        "brier": 0.19294,
+        "spread": 0.6639
+      },
+      "WITHOUT": {
+        "acc": 60.0,
+        "brier": 0.22107,
+        "spread": 0.2682
+      }
+    }
+  },
+  "calibration": {
+    "WITH": {
+      "<40%": {
+        "n": 0,
+        "pred_pct": 0,
+        "actual_pct": null
+      },
+      "40-45%": {
+        "n": 0,
+        "pred_pct": 0,
+        "actual_pct": null
+      },
+      "45-50%": {
+        "n": 1,
+        "pred_pct": 45.3,
+        "actual_pct": 0.0
+      },
+      "50-55%": {
+        "n": 1,
+        "pred_pct": 50.4,
+        "actual_pct": 0.0
+      },
+      "55-60%": {
+        "n": 2,
+        "pred_pct": 57.9,
+        "actual_pct": 100.0
+      },
+      "60-70%": {
+        "n": 1,
+        "pred_pct": 61.2,
+        "actual_pct": 100.0
+      },
+      ">70%": {
+        "n": 0,
+        "pred_pct": 0,
+        "actual_pct": null
+      }
+    },
+    "WITHOUT": {
+      "<40%": {
+        "n": 0,
+        "pred_pct": 0,
+        "actual_pct": null
+      },
+      "40-45%": {
+        "n": 0,
+        "pred_pct": 0,
+        "actual_pct": null
+      },
+      "45-50%": {
+        "n": 2,
+        "pred_pct": 46.5,
+        "actual_pct": 50.0
+      },
+      "50-55%": {
+        "n": 1,
+        "pred_pct": 50.8,
+        "actual_pct": 0.0
+      },
+      "55-60%": {
+        "n": 2,
+        "pred_pct": 57.2,
+        "actual_pct": 100.0
+      },
+      "60-70%": {
+        "n": 0,
+        "pred_pct": 0,
+        "actual_pct": null
+      },
+      ">70%": {
+        "n": 0,
+        "pred_pct": 0,
+        "actual_pct": null
+      }
+    }
+  }
+}

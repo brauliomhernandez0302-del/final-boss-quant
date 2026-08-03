@@ -11,6 +11,7 @@ import numpy as np
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 import logging
+from config import UFC_SIMULATIONS
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ class UFCAnalyzer:
         fighter2: Dict[str, Any],
         weight_class: str = "Welterweight",
         is_title_fight: bool = False,
-        n_simulations: int = 100_000,
+        n_simulations: int = UFC_SIMULATIONS,
     ) -> Dict[str, Any]:
         """
         Análisis completo de una pelea UFC.
@@ -396,7 +397,7 @@ class UFCAnalyzer:
         finish_rates1: Dict[str, float],
         finish_rates2: Dict[str, float],
         is_title_fight: bool = False,  # noqa: ARG002
-        n_sim: int = 100_000,
+        n_sim: int = UFC_SIMULATIONS,
     ) -> Dict[str, float]:
         """
         Simulación Monte Carlo de métodos de victoria.
@@ -546,7 +547,7 @@ def run_module(
     fighter2_data: Optional[Dict[str, Any]] = None,
     weight_class: str = "Welterweight",
     is_title_fight: bool = False,
-    n_simulations: int = 100_000,
+    n_simulations: int = UFC_SIMULATIONS,
 ) -> Dict[str, Any]:
     """
     Función principal para ejecutar el módulo UFC desde app.py.

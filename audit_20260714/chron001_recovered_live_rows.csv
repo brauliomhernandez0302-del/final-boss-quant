@@ -1,0 +1,8 @@
+game_pk,game_date,lambda_home,lambda_away,p_home,p_away,p_home_raw,p_away_raw,stage_factors_json,recovered_from_backup
+# NO ROWS RECOVERED — see chron001_forensics_report.md for the exact reasoning.
+# Every one of the 563 season-2026 rows currently stamped backtest_run_at is dated
+# exactly 2026-06-28 (a single batch run). All 18 pre-existing DB backups on disk are
+# dated 2026-07-05 or later — i.e. AFTER that overwrite already happened. The earliest
+# available backup (predictions_history_backup_pre_clean_pit_backtest_20260705_080552.db)
+# already shows all 563 rows with backtest_run_at=2026-06-28 set. There is no backup,
+# anywhere on disk, that predates the overwrite event. 0 of 563 rows are recoverable.

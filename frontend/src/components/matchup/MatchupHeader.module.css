@@ -1,0 +1,123 @@
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fbq-space-5);
+  padding-bottom: var(--fbq-space-6);
+}
+
+.matchup {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--fbq-space-7);
+}
+
+.teamBlock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--fbq-space-2);
+  min-width: 160px;
+}
+
+/* HUD corner brackets around each logo — the esports signature. Two
+   opposite corners only (not a full box) so it reads as a targeting
+   reticle, not a frame. */
+.logoFrame {
+  position: relative;
+  padding: 14px;
+}
+
+.logoFrame::before,
+.logoFrame::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--fbq-accent-blue);
+  opacity: 0.55;
+}
+
+.logoFrame::before {
+  top: 0;
+  left: 0;
+  border-right: none;
+  border-bottom: none;
+}
+
+.logoFrame::after {
+  bottom: 0;
+  right: 0;
+  border-left: none;
+  border-top: none;
+}
+
+.logoFrame img,
+.logoFrame > div:first-child {
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
+}
+
+.teamName {
+  font-family: var(--fbq-font-sans);
+  font-size: var(--fbq-size-title);
+  font-weight: 600;
+  color: var(--fbq-text-primary);
+  text-align: center;
+  letter-spacing: -0.01em;
+}
+
+.roleTag {
+  font-family: var(--fbq-font-mono);
+  font-size: var(--fbq-size-micro);
+  letter-spacing: 0.14em;
+  color: var(--fbq-text-muted);
+}
+
+.at {
+  font-family: var(--fbq-font-mono);
+  color: var(--fbq-text-muted);
+  font-size: 22px;
+  font-weight: 300;
+}
+
+.badges {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--fbq-space-2);
+}
+
+.chip {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--fbq-bg-inset);
+  border: 1px solid var(--fbq-border-hairline);
+  color: var(--fbq-text-secondary);
+  font-size: var(--fbq-size-micro);
+  font-family: var(--fbq-font-sans);
+  letter-spacing: 0.02em;
+}
+
+.liveBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px 4px 10px;
+  border-radius: 999px;
+  background: rgba(47, 227, 180, 0.10);
+  border: 1px solid rgba(47, 227, 180, 0.35);
+  color: var(--fbq-accent-teal);
+  font-size: var(--fbq-size-micro);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  font-family: var(--fbq-font-sans);
+}
+
+.liveDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fbq-accent-teal);
+  box-shadow: var(--fbq-glow-teal);
+  flex-shrink: 0;
+}

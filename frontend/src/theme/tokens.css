@@ -1,0 +1,201 @@
+/* FBQ theme tokens V2 — "quant terminal × esports".
+   Single source of truth for color/depth/type/motion. Every component reads
+   these variables; never a hardcoded hex outside this file. Dark is the
+   primary target; light is the same tokens, different values — never a
+   separate hardcoded palette. */
+
+:root {
+  /* ================= surfaces — layered depth, not one flat bg ========= */
+  --fbq-canvas-0: #050810;   /* true edge of the radial gradient */
+  --fbq-canvas-1: #0A0F1A;   /* canvas center */
+  --fbq-bg-canvas: var(--fbq-canvas-1);
+
+  /* Deliberately much lighter than canvas — a card barely distinguishable
+     from its background reads as "flat", not "glass". The gap between
+     canvas and card IS the depth cue. */
+  --fbq-bg-card: rgba(26, 36, 56, 0.82);
+  --fbq-bg-card-elevated: rgba(34, 46, 70, 0.90);
+  --fbq-bg-inset: rgba(10, 15, 26, 0.75);
+  --fbq-blur-card: 20px;
+
+  /* ================= borders — luminous hairlines, not flat grey ======= */
+  --fbq-border-hairline: rgba(140, 180, 255, 0.16);
+  --fbq-border-strong: rgba(140, 180, 255, 0.34);
+  --fbq-border-glow: rgba(93, 170, 255, 0.6);
+
+  /* ================= text =============================================== */
+  --fbq-text-primary: #EAF1FC;
+  --fbq-text-secondary: #93A6C2;
+  --fbq-text-muted: #57647A;
+
+  /* ================= semantic accents (never decorative) =============== */
+  --fbq-accent-blue: #3D8EFF;       /* primary data / probability */
+  --fbq-accent-blue-soft: #82B6FF;
+  --fbq-accent-teal: #2FE3B4;       /* positive / favorable */
+  --fbq-accent-teal-soft: #7EF0D2;
+  --fbq-accent-amber: #FFB130;      /* alert / high tier */
+  --fbq-accent-amber-soft: #FFCB70;
+  --fbq-accent-red: #FF4D6D;        /* negative / unfavorable */
+
+  /* glow shadows — controlled, only where a value has meaning, but strong
+     enough to actually register at normal viewing size (a glow you have to
+     zoom in to see isn't doing its job). */
+  --fbq-glow-blue-sm: 0 0 12px rgba(61, 142, 255, 0.5);
+  --fbq-glow-blue-lg: 0 0 4px rgba(180, 210, 255, 0.95), 0 0 28px rgba(61, 142, 255, 0.65), 0 0 70px rgba(61, 142, 255, 0.35);
+  --fbq-glow-teal: 0 0 20px rgba(47, 227, 180, 0.5);
+  --fbq-glow-amber: 0 0 20px rgba(255, 177, 48, 0.5);
+  --fbq-glow-red: 0 0 20px rgba(255, 77, 109, 0.45);
+
+  /* ================= tier grades ========================================= */
+  --fbq-tier-s: var(--fbq-accent-amber);
+  --fbq-tier-a: var(--fbq-accent-teal);
+  --fbq-tier-b: var(--fbq-accent-blue);
+  --fbq-tier-c: var(--fbq-text-secondary);
+
+  /* ================= provenance / data-quality states ==================== */
+  --fbq-provenance-warn-bg: rgba(255, 177, 48, 0.10);
+  --fbq-provenance-warn-border: rgba(255, 177, 48, 0.35);
+  --fbq-provenance-warn-text: var(--fbq-accent-amber);
+
+  /* ================= typography ========================================== */
+  --fbq-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  --fbq-font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+
+  /* type scale — display / title / data / label / micro */
+  --fbq-size-display: 48px;
+  --fbq-size-title: 20px;
+  --fbq-size-subtitle: 15px;
+  --fbq-size-data: 15px;
+  --fbq-size-body: 13px;
+  --fbq-size-label: 11px;
+  --fbq-size-micro: 10px;
+
+  --fbq-tracking-label: 0.08em;
+  --fbq-tracking-micro: 0.06em;
+
+  /* ================= spacing scale (4px base) ============================ */
+  --fbq-space-1: 4px;
+  --fbq-space-2: 8px;
+  --fbq-space-3: 12px;
+  --fbq-space-4: 16px;
+  --fbq-space-5: 24px;
+  --fbq-space-6: 32px;
+  --fbq-space-7: 48px;
+  --fbq-space-8: 64px;
+
+  --fbq-radius-sm: 6px;
+  --fbq-radius-md: 10px;
+  --fbq-radius-lg: 16px;
+
+  /* ================= layered shadows (never a single flat shadow) ======== */
+  --fbq-shadow-card:
+    0 1px 1px rgba(0, 0, 0, 0.3),
+    0 8px 20px -10px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  --fbq-shadow-elevated:
+    0 2px 3px rgba(0, 0, 0, 0.4),
+    0 20px 44px -14px rgba(0, 0, 0, 0.65),
+    0 0 0 1px var(--fbq-border-glow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  /* ================= motion =============================================== */
+  --fbq-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --fbq-dur-fast: 160ms;
+  --fbq-dur-med: 220ms;
+
+  color-scheme: dark;
+}
+
+/* ============================================================================
+   Light mode is opt-in ONLY via :root[data-theme="light"] (a manual toggle
+   hook, not wired to any UI control yet). Dark is the unconditional default
+   — it must NOT follow the OS/browser prefers-color-scheme signal, so no
+   `@media (prefers-color-scheme: light)` block exists here on purpose.
+============================================================================ */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --fbq-canvas-0: #E8EDF5;
+  --fbq-canvas-1: #F3F6FA;
+  --fbq-bg-card: rgba(255, 255, 255, 0.72);
+  --fbq-bg-card-elevated: rgba(255, 255, 255, 0.92);
+  --fbq-bg-inset: rgba(230, 235, 242, 0.8);
+  --fbq-border-hairline: rgba(40, 70, 120, 0.12);
+  --fbq-border-strong: rgba(40, 70, 120, 0.22);
+  --fbq-border-glow: rgba(29, 111, 189, 0.4);
+  --fbq-text-primary: #10151F;
+  --fbq-text-secondary: #47566B;
+  --fbq-text-muted: #7A8798;
+  --fbq-accent-blue: #1D6FBD;
+  --fbq-accent-blue-soft: #4A8FCB;
+  --fbq-accent-teal: #128F6C;
+  --fbq-accent-teal-soft: #1FAE86;
+  --fbq-accent-amber: #B9760E;
+  --fbq-accent-amber-soft: #D6900F;
+  --fbq-accent-red: #C23F3F;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--fbq-text-primary);
+  font-family: var(--fbq-font-sans);
+  -webkit-font-smoothing: antialiased;
+  /* Dimensional canvas: a soft radial glow behind the top of the page plus
+     a faint terminal grid (the actual texture cue — a gradient alone reads
+     as "slightly darker corner", a grid reads as "instrument"). Both are
+     intentionally faint: this is texture, not a pattern the eye chases. */
+  background:
+    radial-gradient(ellipse 1100px 700px at 50% -8%, rgba(61, 142, 255, 0.10) 0%, transparent 60%),
+    repeating-linear-gradient(0deg, rgba(140, 180, 255, 0.035) 0px, rgba(140, 180, 255, 0.035) 1px, transparent 1px, transparent 32px),
+    repeating-linear-gradient(90deg, rgba(140, 180, 255, 0.035) 0px, rgba(140, 180, 255, 0.035) 1px, transparent 1px, transparent 32px),
+    radial-gradient(ellipse 1400px 900px at 50% -10%, var(--fbq-canvas-1) 0%, var(--fbq-canvas-0) 75%),
+    var(--fbq-canvas-0);
+  background-attachment: fixed;
+}
+
+code, .fbq-num {
+  font-family: var(--fbq-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+a {
+  color: inherit;
+}
+
+/* ============================================================================
+   Motion — off by default, enabled only when the user hasn't asked for less.
+============================================================================ */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes fbq-live-pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(47, 227, 180, 0.55); }
+    50% { opacity: 0.65; box-shadow: 0 0 0 5px rgba(47, 227, 180, 0); }
+  }
+
+  @keyframes fbq-fade-rise {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .fbq-animate-in {
+    animation: fbq-fade-rise 480ms var(--fbq-ease) backwards;
+  }
+
+  .fbq-pulse-dot {
+    animation: fbq-live-pulse 2.2s ease-in-out infinite;
+  }
+}

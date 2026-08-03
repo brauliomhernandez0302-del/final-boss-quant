@@ -1,0 +1,114 @@
+.wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--fbq-space-3);
+}
+
+/* A real glow blob behind the hero number, not just a text-shadow — a
+   radial light source the hero number sits in front of. */
+.wrap::before {
+  content: "";
+  position: absolute;
+  top: -60px;
+  left: -40px;
+  width: 320px;
+  height: 200px;
+  background: radial-gradient(ellipse, rgba(61, 142, 255, 0.22) 0%, transparent 70%);
+  filter: blur(8px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.labels,
+.track {
+  position: relative;
+  z-index: 1;
+}
+
+.labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+
+.side {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  transition: opacity var(--fbq-dur-med) var(--fbq-ease);
+}
+
+.sideRight {
+  flex-direction: row-reverse;
+}
+
+.name {
+  font-family: var(--fbq-font-sans);
+  color: var(--fbq-text-secondary);
+  font-size: var(--fbq-size-subtitle);
+  font-weight: 500;
+}
+
+.pct {
+  font-weight: 700;
+  color: var(--fbq-text-primary);
+  letter-spacing: -0.02em;
+  transition: font-size var(--fbq-dur-med) var(--fbq-ease), text-shadow var(--fbq-dur-med) var(--fbq-ease);
+}
+
+/* Hero: the favored side is the dominant number on the page. Uses
+   text-primary (not a hardcoded white) so the glow reads as a highlight in
+   dark mode and doesn't wash out to illegible white-on-light in light mode. */
+.hero .pct {
+  font-size: 56px;
+  font-weight: 800;
+  color: var(--fbq-text-primary);
+  text-shadow: var(--fbq-glow-blue-lg);
+}
+
+.hero .name {
+  color: var(--fbq-text-primary);
+  font-weight: 600;
+}
+
+/* Secondary: present, legible, but visually receded. */
+.secondary .pct {
+  font-size: 22px;
+  color: var(--fbq-text-secondary);
+  text-shadow: none;
+}
+
+.secondary .name {
+  color: var(--fbq-text-muted);
+}
+
+.track {
+  display: flex;
+  height: 10px;
+  width: 100%;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--fbq-bg-inset);
+  border: 1px solid var(--fbq-border-hairline);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.fill {
+  position: relative;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .fill {
+    transition: width 700ms var(--fbq-ease);
+  }
+}
+
+.home {
+  background: linear-gradient(90deg, var(--fbq-accent-blue) 0%, var(--fbq-accent-blue-soft) 100%);
+  box-shadow: var(--fbq-glow-blue-sm);
+}
+
+.away {
+  background: var(--fbq-border-strong);
+}

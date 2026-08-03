@@ -1,0 +1,81 @@
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 208px;
+  flex-shrink: 0;
+  background: var(--fbq-bg-card);
+  backdrop-filter: blur(var(--fbq-blur-card));
+  -webkit-backdrop-filter: blur(var(--fbq-blur-card));
+  border-right: 1px solid var(--fbq-border-hairline);
+  padding: var(--fbq-space-6) var(--fbq-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--fbq-space-7);
+}
+
+.brand {
+  font-family: var(--fbq-font-mono);
+  font-weight: 800;
+  font-size: 20px;
+  letter-spacing: 0.14em;
+  color: var(--fbq-text-primary);
+  text-shadow: var(--fbq-glow-blue-lg);
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.link {
+  position: relative;
+  padding: var(--fbq-space-2) var(--fbq-space-3) var(--fbq-space-2) 18px;
+  border-radius: var(--fbq-radius-sm);
+  color: var(--fbq-text-secondary);
+  text-decoration: none;
+  font-size: var(--fbq-size-body);
+  font-family: var(--fbq-font-sans);
+  border: 1px solid transparent;
+  transition:
+    background-color var(--fbq-dur-fast) var(--fbq-ease),
+    color var(--fbq-dur-fast) var(--fbq-ease),
+    border-color var(--fbq-dur-fast) var(--fbq-ease);
+}
+
+.link:hover {
+  background: var(--fbq-bg-inset);
+  color: var(--fbq-text-primary);
+}
+
+.active {
+  background: rgba(61, 142, 255, 0.14);
+  border-color: rgba(61, 142, 255, 0.4);
+  color: var(--fbq-accent-blue-soft);
+  font-weight: 600;
+}
+
+/* Left accent bar — the active-state signature, not just a background tint. */
+.active::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--fbq-accent-blue);
+  box-shadow: var(--fbq-glow-blue-sm);
+}
+
+.main {
+  flex: 1;
+  padding: var(--fbq-space-7);
+  max-width: 980px;
+  margin: 0 auto;
+  width: 100%;
+}
