@@ -56,6 +56,8 @@ class ValueConfig:
     FRACTIONAL_KELLY: float = _cfg.KELLY_FRACTION
     MIN_CONFIDENCE: float = _cfg.MIN_CONFIDENCE
     MIN_EDGE: float = _cfg.MIN_EDGE
+    IMPLAUSIBLE_EDGE_PP: float = getattr(_cfg, "IMPLAUSIBLE_EDGE_PP", 20.0)
+    SUSPICIOUS_EDGE_PP: float = getattr(_cfg, "SUSPICIOUS_EDGE_PP", 12.0)
     VIG_METHODS: List[str] = None
     BOOTSTRAP_SAMPLES: int = _cfg.BOOTSTRAP_SAMPLES
     CI_LEVEL: float = _cfg.CI_LEVEL
@@ -563,7 +565,37 @@ def analyze_market_generic(
     )
     
     tier = classify_value_tier(ev_stats['ev'], confidence, edge, score['composite_score'])
-    
+
+    # ── Detector de implausibilidad ───────────────────────────────────────
+    # Contra el precio YA desvigorizado, un edge enorme no es una ventaja: es
+    # la firma de que el modelo y el mercado no están hablando del mismo
+    # evento. Ver la nota de calibración en config.py, escrita sobre los 134
+    # picks de runline que PURP-1 publicó con la probabilidad de un evento y
+    # el precio de otro. Se bloquea forzando el tier, que es lo que lee todo
+    # aguas abajo (publisher incluido), en vez de agregar una compuerta nueva
+    # que cada consumidor tendría que acordarse de consultar.
+    implausible = edge >= CONFIG.IMPLAUSIBLE_EDGE_PP
+    suspicious  = (not implausible) and edge >= CONFIG.SUSPICIOUS_EDGE_PP
+    if implausible:
+        tier = ValueTier.NEGATIVE
+        logger.error(
+            "IMPLAUSIBLE %s: edge=%.1fpp sobre el precio desvigorizado "
+            "(umbral %.1fpp). p_modelo=%.4f vs p_mercado=%.4f, cuota=%s, "
+            "EV=%.1f%%. Un desacuerdo de este tamaño casi siempre significa "
+            "que la probabilidad y el precio pertenecen a mercados distintos "
+            "— revisar el emparejamiento antes de creerle. Pick BLOQUEADO.",
+            market_name, edge, CONFIG.IMPLAUSIBLE_EDGE_PP,
+            model_prob, true_implied, odds, ev_stats['ev'],
+        )
+    elif suspicious:
+        logger.warning(
+            "Edge alto en %s: %.1fpp (aviso desde %.1fpp, bloqueo en %.1fpp). "
+            "p_modelo=%.4f vs p_mercado=%.4f. No se bloquea, pero conviene "
+            "mirarlo si se repite en el mismo mercado.",
+            market_name, edge, CONFIG.SUSPICIOUS_EDGE_PP,
+            CONFIG.IMPLAUSIBLE_EDGE_PP, model_prob, true_implied,
+        )
+
     return {
         'market': market_name,
         'probability': round(model_prob, 4),
@@ -585,6 +617,11 @@ def analyze_market_generic(
         'tier': tier.value[0],
         'tier_grade': tier.value[2],
         'tier_enum': tier,
+        # Se exponen siempre (no sólo cuando saltan) para que un análisis
+        # posterior pueda contar cuántos picks rozaron el umbral sin pasarlo —
+        # que es la señal temprana de un emparejamiento que empieza a torcerse.
+        'implausible': implausible,
+        'edge_suspicious': suspicious,
     }
 
 def analyze_runline(

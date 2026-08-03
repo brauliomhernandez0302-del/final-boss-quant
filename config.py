@@ -29,6 +29,27 @@ MIN_KELLY       = 0.01
 MAX_KELLY       = 0.15   # single source of truth for the max stake fraction per bet
 MIN_CONFIDENCE  = 0.65
 MIN_EDGE        = 0.5    # percentage points
+
+# ── Detector de implausibilidad ─────────────────────────────────────────────
+# Un "edge" enorme contra el precio DESVIGORIZADO de una casa no es una ventaja:
+# es la firma de que el modelo y el mercado están hablando de EVENTOS DISTINTOS.
+# Existe porque eso ya pasó, con dinero real: hasta el 2026-07-31 `analyze_runline`
+# emparejaba la probabilidad de "el local gana por 2+" con el precio del runline
+# sin mirar quién era el favorito, así que cuando el local era el no-favorito se
+# apareaba la probabilidad del evento FÁCIL con el precio del evento DIFÍCIL.
+# Resultado medido sobre los 134 picks de runline previos al arreglo: 55 (41 %)
+# se publicaron con EV positivo cuando el real era ≤ 0, EV medio +34.47 % contra
+# −2.27 % real, y probabilidad media 0.642 contra 0.487.
+#
+# Umbrales calibrados contra esa muestra (no elegidos a ojo):
+#   20pp bloquea el 62 % de aquellos falsos y toca 1 de 71 picks posteriores sanos
+#   15pp subiría a 77 % pero clipearía 5 de 71 sanos
+#   25pp sólo atraparía el 49 %
+# Es un DETECTOR DE HUMO, no la solución: el 38 % de aquellos falsos tenía una
+# inflación menor a 20pp y habría pasado igual. La defensa real es que la
+# probabilidad y el precio salgan de la misma identidad de mercado.
+IMPLAUSIBLE_EDGE_PP = 20.0   # bloquea: tier forzado a NEGATIVE + log de error
+SUSPICIOUS_EDGE_PP  = 12.0   # sólo avisa: se marca y se loguea, no se bloquea
 VIG_METHODS     = ["multiplicative", "power", "shin"]
 BOOTSTRAP_SAMPLES = 1_000
 CI_LEVEL        = 0.95
