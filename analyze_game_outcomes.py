@@ -3,12 +3,21 @@ Game outcomes analysis: 5422 games in game_outcomes table.
 Analyzes ROI by stadium, month, day/night proxy, max drawdown, and systematic failures.
 """
 
+import os
 import sqlite3
 import json
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 
-DB = "/home/raulio/data/predictions_history.db"
+# Relativa a la raíz del repo, no a un $HOME concreto: antes era
+# "/home/raulio/data/predictions_history.db", que sólo resuelve en la máquina
+# del dueño. `FBQ_DB_PATH` permite apuntar a otra copia (una restaurada de
+# backup, por ejemplo) sin editar el archivo.
+DB = os.environ.get(
+    "FBQ_DB_PATH",
+    str(Path(__file__).resolve().parent / "data" / "predictions_history.db"),
+)
 
 STADIUM_MAP = {
     "Arizona Diamondbacks": "Chase Field",
