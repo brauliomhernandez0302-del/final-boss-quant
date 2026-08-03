@@ -31,7 +31,7 @@ interface Step {
 
 export function LambdaWaterfall({ prediction, schedule }: Props) {
   const { lambdas_history, metadata } = prediction;
-  const { contextual, park_weather, hfa, pipeline_diagnostics: diag } = metadata;
+  const { contextual, park_weather, pipeline_diagnostics: diag } = metadata;
   const finalLambda = lambdas_history.final;
 
   const talentAway = metadata.tte_away?.lambda_talent ?? null;
@@ -46,8 +46,15 @@ export function LambdaWaterfall({ prediction, schedule }: Props) {
     );
   }
 
+  // Capturados tras el guard de arriba. `makeSide` es una declaración de
+  // función, y el estrechamiento de tipo de `if (!diag)` no alcanza el cuerpo
+  // de una función anidada —podría invocarse más tarde, cuando la garantía ya
+  // no valdría—, así que leer `diag.` ahí dentro daba TS18048. Mismo patrón
+  // que ya usaban `rr` y `w`.
   const rr = diag.raw_ratios;
   const w = diag.pipeline_weights;
+  const kalmanRatio = diag.kalman_ratio;
+  const teamBias = diag.team_bias;
   const effOf = (raw: number, weight: number) => 1 + weight * (raw - 1);
 
   function weightedStep(key: string, label: string, rawKey: string, weightKey: keyof typeof w): Step {
@@ -70,12 +77,12 @@ export function LambdaWaterfall({ prediction, schedule }: Props) {
       {
         key: "kalman",
         label: "Kalman offense",
-        effective: diag.kalman_ratio[side],
+        effective: kalmanRatio[side],
       },
       {
         key: "bias",
         label: "Sesgo de equipo",
-        effective: diag.team_bias[side],
+        effective: teamBias[side],
       },
       weightedStep("pitcher", "Pitcher rival", pitcherKey, "pitcher"),
       { ...weightedStep("rest", `Descanso (${restReason ?? "?"})`, contextKey, "context") },
