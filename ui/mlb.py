@@ -107,6 +107,59 @@ class BaseAnalyzer:
         return saved
 
 
+# ── Costura odds → pipeline ───────────────────────────────────────────────
+
+# Nombres de GameData → nombres que espera `run_module`/`GameOdds`. Es un
+# renombre puro: no hay lógica, sólo la traducción entre dos convenciones.
+#
+# Vive en una tabla y no en un dict literal dentro de `analyze()` porque esta
+# costura ya se rompió DOS veces por la misma causa —un campo nuevo que sólo
+# se enchufó en uno de los dos caminos que llegan a `GameOdds`—:
+#   2026-07-06  las cinco claves de F5, ausentes por completo acá
+#   2026-08-02  `runline_home_point`, con el que `analyze_runline` sabe quién
+#               es el favorito; sin él asume local favorito, que es PURP-1
+# Ambas se descubrieron por sus consecuencias, no por un test. Al ser una
+# tabla, `tests/test_odds_seam_contract.py` puede recorrerla y exigir que
+# cubra todo `GameOdds`, así que el próximo campo que falte falla en CI.
+MARKET_ODDS_FIELD_MAP: Dict[str, str] = {
+    # destino (GameOdds)      # origen (GameData)
+    "ml_home":                "home_odds",
+    "ml_away":                "away_odds",
+    "pin_home":               "pin_home",
+    "pin_away":               "pin_away",
+    "total_line":             "total_line",
+    "total_over":             "total_over",
+    "total_under":            "total_under",
+    "runline_home":           "runline_home",
+    "runline_away":           "runline_away",
+    "runline_line":           "runline_line",
+    "runline_home_point":     "runline_home_point",
+    "f5_ml_home":             "f5_ml_home",
+    "f5_ml_away":             "f5_ml_away",
+    "f5_total_line":          "f5_total_line",
+    "f5_total_over":          "f5_total_over",
+    "f5_total_under":         "f5_total_under",
+}
+
+
+def build_market_odds(game_data: GameData) -> Optional[Dict[str, Any]]:
+    """Traduce el `GameData` del selector al dict que espera `run_module`.
+
+    Se pasa ya resuelto para que `run_module` no repita la llamada a la API
+    (y no dependa del emparejamiento difuso de nombres, que puede fallar).
+
+    Devuelve None si no hay moneyline: sin las dos patas de ML el selector no
+    tiene un evento utilizable, y fabricar un precio par sería indistinguible
+    de uno real aguas abajo.
+    """
+    if not (game_data.get("home_odds") and game_data.get("away_odds")):
+        return None
+    return {
+        destino: game_data.get(origen)
+        for destino, origen in MARKET_ODDS_FIELD_MAP.items()
+    }
+
+
 # ── MLB Analyzer ──────────────────────────────────────────────────────────
 
 
@@ -147,37 +200,7 @@ class MLBAnalyzer(BaseAnalyzer):
                     st.warning("⚠️ No se encontró Game ID — usando modo simulado")
                     game_id = CONFIG.MLB_FALLBACK_GAME_ID
 
-            # Build market_odds from the selector's GameData so run_module()
-            # doesn't need a second API call (and won't miss on fuzzy-match).
-            market_odds = None
-            if game_data.get("home_odds") and game_data.get("away_odds"):
-                market_odds = {
-                    "ml_home":      game_data.get("home_odds"),
-                    "ml_away":      game_data.get("away_odds"),
-                    "pin_home":     game_data.get("pin_home"),
-                    "pin_away":     game_data.get("pin_away"),
-                    "total_line":   game_data.get("total_line"),
-                    "total_over":   game_data.get("total_over"),
-                    "total_under":  game_data.get("total_under"),
-                    "runline_home": game_data.get("runline_home"),
-                    "runline_away": game_data.get("runline_away"),
-                    "runline_line": game_data.get("runline_line"),
-                    # Punto firmado — decide quién es favorito y por lo tanto
-                    # cuál es el evento de cobertura de cada lado. Sin él
-                    # `analyze_runline` asume local favorito (raíz de PURP-1).
-                    # Añadido 2026-08-03 junto con el campo en GameData y su
-                    # copia en odds_loader; el camino de cron ya lo pasaba.
-                    "runline_home_point": game_data.get("runline_home_point"),
-                    # F5 — added 2026-07-06 alongside GameData; previously
-                    # missing entirely, so the UI-selector-driven analysis
-                    # path could never surface F5 markets regardless of the
-                    # separate get_best_odds_for_teams() naming fix.
-                    "f5_ml_home":    game_data.get("f5_ml_home"),
-                    "f5_ml_away":    game_data.get("f5_ml_away"),
-                    "f5_total_line": game_data.get("f5_total_line"),
-                    "f5_total_over": game_data.get("f5_total_over"),
-                    "f5_total_under": game_data.get("f5_total_under"),
-                }
+            market_odds = build_market_odds(game_data)
 
             with st.spinner("⚡ Ejecutando análisis MLB G10 Ultra Pro..."):
                 result = run_module(
