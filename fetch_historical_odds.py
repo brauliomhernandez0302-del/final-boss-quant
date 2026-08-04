@@ -53,8 +53,24 @@ _ODDS_BASE = "https://api.the-odds-api.com/v4"
 _MLB_BASE  = "https://statsapi.mlb.com/api/v1"
 
 SNAPSHOT_TIME = "T17:00:00Z"   # noon ET, pre-game for all MLB games
+# Región y mercados: el COSTE de cuota es (nº mercados × nº regiones × 10) por
+# llamada histórica, así que la combinación importa mucho. Medido el 2026-08-04
+# contra el endpoint real:
+#
+#     h2h,totals,spreads  en us,eu   → 60 por día  (369 días = 22.140, NO cabe)
+#     totals,spreads      en us      → 20 por día  pero SIN Pinnacle
+#     totals,spreads      en eu      → 20 por día  CON Pinnacle  ← ésta
+#
+# Pinnacle es indispensable: su par es contra el que se desvigoriza para
+# obtener la probabilidad justa. Vive en la región `eu`, así que pedir sólo esa
+# baja el coste a un tercio y no pierde nada que se use.
 REGIONS       = "us,eu"        # 27 books including Pinnacle
 MARKETS       = "h2h"
+
+# Backfill de derivados: se piden APARTE de la corrida de moneyline, para no
+# re-descargar 369 días de h2h que ya están en la tabla desde hace meses.
+REGIONS_DERIVADOS = "eu"           # Pinnacle vive acá; us no lo trae
+MARKETS_DERIVADOS = "totals,spreads"
 ODDS_FORMAT   = "decimal"
 REQUEST_DELAY = 0.25           # seconds between Odds API calls
 
@@ -132,6 +148,8 @@ def extract_odds(game: dict) -> dict:
     else:
         fair_h = fair_a = None
 
+    derivados = _extract_derived(game, home, away)
+
     return {
         "odds_api_id":   game["id"],
         "home_team":     home,
@@ -147,6 +165,84 @@ def extract_odds(game: dict) -> dict:
         "fair_prob_home": fair_h,
         "fair_prob_away": fair_a,
         "n_bookmakers":  len(game.get("bookmakers", [])),
+        **derivados,
+    }
+
+
+def _extract_derived(game: dict, home: str, away: str) -> dict:
+    """Total y runline, con el PUNTO FIRMADO de cada lado.
+
+    Se guarda el punto además del precio porque sin él un precio de runline no
+    significa nada: `analyze_runline` necesita saber quién pone el −1.5 para
+    decidir cuál es el evento de cobertura de cada lado. Asumir local favorito
+    es exactamente PURP-1, que publicó 55 picks con EV falso.
+
+    Se prefiere Pinnacle para el par (su margen es el más limpio y es contra lo
+    que se desvigoriza), y se guarda además la mejor línea disponible, que es a
+    lo que realmente se apostaría. Los dos, no uno: la primera decide la
+    probabilidad justa y la segunda el retorno.
+
+    Un total sólo se acepta si Over y Under vienen en el MISMO punto de la
+    MISMA casa; un runline, si los dos lados suman cero. Un par tomado de
+    puntos distintos no es un mercado, es dos mercados mezclados.
+    """
+    tot_pin_over = tot_pin_under = tot_pin_point = None
+    tot_best_over = tot_best_under = tot_best_point = None
+    rl_pin_home = rl_pin_away = rl_pin_home_point = None
+    rl_best_home = rl_best_away = rl_best_home_point = None
+
+    for bk in game.get("bookmakers", []):
+        es_pin = bk["key"] in _PINNACLE_KEYS
+        for mkt in bk.get("markets", []):
+            outs = mkt.get("outcomes", [])
+
+            if mkt["key"] == "totals":
+                over = next((o for o in outs if o["name"] == "Over"), None)
+                under = next((o for o in outs if o["name"] == "Under"), None)
+                if not (over and under):
+                    continue
+                if over.get("point") is None or over.get("point") != under.get("point"):
+                    continue  # par de puntos distintos: no es un mercado
+                po, pu, pt = over["price"], under["price"], float(over["point"])
+                if not (po > 1.0 and pu > 1.0):
+                    continue
+                if es_pin:
+                    tot_pin_over, tot_pin_under, tot_pin_point = po, pu, pt
+                # "mejor" = el par con menor overround, no el mejor precio de un
+                # lado: mezclar casas da un par que nadie puede apostar junto.
+                if tot_best_over is None or (1/po + 1/pu) < (1/tot_best_over + 1/tot_best_under):
+                    tot_best_over, tot_best_under, tot_best_point = po, pu, pt
+
+            elif mkt["key"] == "spreads":
+                oh = next((o for o in outs if o["name"] == home), None)
+                oa = next((o for o in outs if o["name"] == away), None)
+                if not (oh and oa):
+                    continue
+                if oh.get("point") is None or oa.get("point") is None:
+                    continue
+                if abs(float(oh["point"]) + float(oa["point"])) > 1e-9:
+                    continue  # los dos lados deben sumar cero
+                ph, pa_, pt = oh["price"], oa["price"], float(oh["point"])
+                if not (ph > 1.0 and pa_ > 1.0):
+                    continue
+                if es_pin:
+                    rl_pin_home, rl_pin_away, rl_pin_home_point = ph, pa_, pt
+                if rl_best_home is None or (1/ph + 1/pa_) < (1/rl_best_home + 1/rl_best_away):
+                    rl_best_home, rl_best_away, rl_best_home_point = ph, pa_, pt
+
+    return {
+        "total_point_pin":    tot_pin_point,
+        "total_over_pin":     tot_pin_over,
+        "total_under_pin":    tot_pin_under,
+        "total_point_best":   tot_best_point,
+        "total_over_best":    tot_best_over,
+        "total_under_best":   tot_best_under,
+        "rl_home_point_pin":  rl_pin_home_point,
+        "rl_home_pin":        rl_pin_home,
+        "rl_away_pin":        rl_pin_away,
+        "rl_home_point_best": rl_best_home_point,
+        "rl_home_best":       rl_best_home,
+        "rl_away_best":       rl_best_away,
     }
 
 
@@ -211,13 +307,20 @@ def fetch_mlb_local_dates(session: requests.Session, season: int) -> LocalDateMa
 
 # ── Odds API fetch ────────────────────────────────────────────────────────────
 
-def fetch_odds_for_date(session: requests.Session, local_date: str) -> Tuple[List[dict], dict]:
-    """One bulk call — returns (list_of_game_objects, response_headers)."""
+def fetch_odds_for_date(session: requests.Session, local_date: str,
+                        solo_derivados: bool = False) -> Tuple[List[dict], dict]:
+    """One bulk call — returns (list_of_game_objects, response_headers).
+
+    `solo_derivados` pide únicamente totals+spreads de la región `eu`. Cuesta
+    20 de cuota por día en vez de 60, y sigue trayendo Pinnacle — ver la nota
+    de REGIONS_DERIVADOS. Se usa para rellenar los derivados de días cuyo
+    moneyline ya está en la tabla, sin volver a pagar por el h2h.
+    """
     snapshot_ts = local_date + SNAPSHOT_TIME
     data, headers = _request(session, f"{_ODDS_BASE}/historical/sports/baseball_mlb/odds/", {
         "apiKey":     _ODDS_KEY,
-        "regions":    REGIONS,
-        "markets":    MARKETS,
+        "regions":    REGIONS_DERIVADOS if solo_derivados else REGIONS,
+        "markets":    MARKETS_DERIVADOS if solo_derivados else MARKETS,
         "oddsFormat": ODDS_FORMAT,
         "date":       snapshot_ts,
     })
@@ -310,6 +413,30 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             ON historical_odds(game_date);
     """)
 
+    # Derivados (2026-08-04) — idempotente, mismo patrón que las columnas de
+    # game_outcomes de abajo. Hasta ahora esta tabla era moneyline puro, y por
+    # eso `backtest_and_retrain.py` sólo podía puntuar moneyline mientras el
+    # 69 % de los picks publicados son runline o total.
+    #
+    # El PUNTO va junto al precio en todos los casos: un precio de runline sin
+    # saber quién pone el −1.5 no identifica ningún evento, que es exactamente
+    # la confusión que causó PURP-1.
+    #
+    # Se guardan DOS pares por mercado y no uno: el de Pinnacle, que es contra
+    # el que se desvigoriza para obtener la probabilidad justa, y el mejor par
+    # disponible, que es a lo que realmente se apostaría. El primero decide si
+    # hay ventaja; el segundo, cuánto rinde.
+    for col_def in [
+        "total_point_pin    REAL", "total_over_pin     REAL", "total_under_pin    REAL",
+        "total_point_best   REAL", "total_over_best    REAL", "total_under_best   REAL",
+        "rl_home_point_pin  REAL", "rl_home_pin        REAL", "rl_away_pin        REAL",
+        "rl_home_point_best REAL", "rl_home_best       REAL", "rl_away_best       REAL",
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE historical_odds ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass  # ya existe
+
     # Add enrichment columns to game_outcomes (idempotent via try/except)
     for col_def in [
         "ml_home_open     REAL",
@@ -330,20 +457,45 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 
 # ── DB writes ─────────────────────────────────────────────────────────────────
 
-def insert_historical_odds(conn: sqlite3.Connection, rows: List[dict]) -> int:
-    """INSERT OR IGNORE into historical_odds. Returns number of new rows."""
-    inserted = 0
+_COLS_DERIVADOS = (
+    "total_point_pin", "total_over_pin", "total_under_pin",
+    "total_point_best", "total_over_best", "total_under_best",
+    "rl_home_point_pin", "rl_home_pin", "rl_away_pin",
+    "rl_home_point_best", "rl_home_best", "rl_away_best",
+)
+
+
+def insert_historical_odds(conn: sqlite3.Connection, rows: List[dict]) -> tuple:
+    """Inserta filas nuevas y rellena los derivados de las que ya existían.
+
+    Devuelve (nuevas, actualizadas).
+
+    El `ON CONFLICT` toca EXCLUSIVAMENTE las columnas de derivados. Las de
+    moneyline de una fila existente no se rozan: llevan meses ahí, el backtest
+    canónico se midió con ellas, y re-escribirlas desde un snapshot nuevo
+    cambiaría datos históricos por un efecto colateral de un backfill. Es la
+    misma disciplina que CHRON-001 impuso en `game_outcomes`.
+    """
+    set_clause = ", ".join(f"{c}=excluded.{c}" for c in _COLS_DERIVADOS)
+    cols_der = ", ".join(_COLS_DERIVADOS)
+    vals_der = ", ".join(f":{c}" for c in _COLS_DERIVADOS)
+
+    nuevas = actualizadas = 0
     for r in rows:
-        cur = conn.execute(
-            """
-            INSERT OR IGNORE INTO historical_odds (
+        ya_existia = conn.execute(
+            "SELECT 1 FROM historical_odds WHERE game_pk=?", (r["game_pk"],)
+        ).fetchone() is not None
+        conn.execute(
+            f"""
+            INSERT INTO historical_odds (
                 game_pk, game_date, season, odds_api_id,
                 home_team, away_team, snapshot_ts,
                 ml_home_best, ml_away_best, ml_home_best_bk, ml_away_best_bk,
                 ml_home_cons, ml_away_cons,
                 ml_home_pin,  ml_away_pin,
                 fair_prob_home, fair_prob_away,
-                n_bookmakers
+                n_bookmakers,
+                {cols_der}
             ) VALUES (
                 :game_pk, :game_date, :season, :odds_api_id,
                 :home_team, :away_team, :snapshot_ts,
@@ -351,15 +503,19 @@ def insert_historical_odds(conn: sqlite3.Connection, rows: List[dict]) -> int:
                 :ml_home_cons, :ml_away_cons,
                 :ml_home_pin,  :ml_away_pin,
                 :fair_prob_home, :fair_prob_away,
-                :n_bookmakers
+                :n_bookmakers,
+                {vals_der}
             )
+            ON CONFLICT(game_pk) DO UPDATE SET {set_clause}
             """,
             r,
         )
-        if cur.rowcount == 1:
-            inserted += 1
+        if ya_existia:
+            actualizadas += 1
+        else:
+            nuevas += 1
     conn.commit()
-    return inserted
+    return nuevas, actualizadas
 
 
 def enrich_game_outcomes(conn: sqlite3.Connection) -> int:
@@ -395,6 +551,11 @@ def main() -> None:
     parser.add_argument("--seasons", nargs="+", type=int, default=DEFAULT_SEASONS)
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and parse, do not write to DB")
+    parser.add_argument("--derivados", action="store_true",
+                        help="rellenar SOLO total/runline en las filas ya existentes "
+                             "(20 de cuota por día en vez de 60; no re-descarga h2h)")
+    parser.add_argument("--limite-dias", type=int, default=0,
+                        help="con --derivados: procesar como mucho N días (piloto)")
     parser.add_argument("--enrich-only", action="store_true",
                         help="Skip fetch, only run enrich_game_outcomes()")
     args = parser.parse_args()
@@ -459,12 +620,26 @@ def main() -> None:
         ).fetchall():
             existing_pks.add(row[0])
 
+        # Modo derivados: sólo días que YA están en la tabla — son los que
+        # tienen moneyline y a los que les falta total/runline. Un día sin
+        # moneyline no se toca: rellenar derivados de una fila que no existe
+        # crearía una fila a medias.
+        if args.derivados:
+            sorted_dates = [d for d in sorted_dates
+                            if any(gk in existing_pks for gk, _, _ in date_index[d])]
+            if args.limite_dias:
+                sorted_dates = sorted_dates[:args.limite_dias]
+
         total_dates = len(sorted_dates)
         remaining_api = None
-        inserted = skipped = no_odds = unmatched = 0
+        inserted = updated = skipped = no_odds = unmatched = 0
 
         print(f"  Game days: {total_dates}  |  Already in DB: {len(existing_pks)} games")
-        print(f"\n  Fetching odds ({REGIONS}, cost ~20/day)...\n")
+        if args.derivados:
+            print(f"  Modo DERIVADOS: {MARKETS_DERIVADOS} en '{REGIONS_DERIVADOS}' "
+                  f"— 20 de cuota/día, coste estimado {total_dates * 20:,}")
+        else:
+            print(f"\n  Fetching odds ({REGIONS}, cost ~20/day)...\n")
 
         batch: List[dict] = []
 
@@ -472,9 +647,10 @@ def main() -> None:
             date_games = date_index[local_date]   # [(game_pk, home, away)]
             snapshot_ts = local_date + SNAPSHOT_TIME
 
-            # Skip date if all games already in DB
+            # Skip date if all games already in DB. En modo derivados es al
+            # revés: interesan justo los días que YA están.
             new_pks_on_date = [gk for gk, _, _ in date_games if gk not in existing_pks]
-            if not new_pks_on_date:
+            if not args.derivados and not new_pks_on_date:
                 skipped += len(date_games)
                 if i % 20 == 0 or i == total_dates:
                     print(f"  {_bar(i, total_dates)}", end="\r")
@@ -482,7 +658,8 @@ def main() -> None:
 
             # Fetch odds snapshot for this date
             try:
-                odds_games, headers = fetch_odds_for_date(session, local_date)
+                odds_games, headers = fetch_odds_for_date(
+                    session, local_date, solo_derivados=args.derivados)
                 remaining_api = headers.get("x-requests-remaining", "?")
             except Exception as exc:
                 print(f"\n  ⚠️  {local_date}: fetch failed — {exc}")
@@ -499,11 +676,26 @@ def main() -> None:
             unmatched += len(date_games) - len(matches)
 
             for odds_game, game_pk in matches:
-                if game_pk in existing_pks:
+                # En modo derivados las filas que YA están son justamente el
+                # objetivo: se les rellena total/runline vía el ON CONFLICT.
+                # Una que NO esté se salta — insertarla sin moneyline dejaría
+                # una fila a medias que el backtest no puede usar.
+                if args.derivados:
+                    if game_pk not in existing_pks:
+                        skipped += 1
+                        continue
+                elif game_pk in existing_pks:
                     skipped += 1
                     continue
+
                 odds_info = extract_odds(odds_game)
-                if odds_info["ml_home_best"] is None:
+                # El gate de moneyline sólo aplica al modo normal: en derivados
+                # no se pide h2h, así que ml_home_best viene None por diseño.
+                if args.derivados:
+                    if odds_info["total_over_pin"] is None and odds_info["rl_home_pin"] is None:
+                        no_odds += 1
+                        continue
+                elif odds_info["ml_home_best"] is None:
                     no_odds += 1
                     continue
 
@@ -518,9 +710,10 @@ def main() -> None:
 
             # Flush batch every 50 dates
             if not args.dry_run and (len(batch) >= 200 or i == total_dates):
-                n = insert_historical_odds(conn, batch)
+                n, upd = insert_historical_odds(conn, batch)
                 inserted += n
-                skipped  += len(batch) - n
+                updated  += upd
+                skipped  += len(batch) - n - upd
                 batch.clear()
 
             if i % 5 == 0 or i == total_dates:
