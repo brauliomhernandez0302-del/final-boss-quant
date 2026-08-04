@@ -99,7 +99,8 @@ def cargar(con: sqlite3.Connection, season: int | None) -> list[dict]:
     return [dict(r) for r in con.execute(sql, params)]
 
 
-def apuestas_del_juego(g: dict, home: np.ndarray, away: np.ndarray) -> list[dict]:
+def apuestas_del_juego(g: dict, home: np.ndarray, away: np.ndarray,
+                       p_home_sim: float) -> list[dict]:
     """Todas las apuestas evaluables de un juego, con su edge y su resultado."""
     n = len(home)
     margen = home - away
@@ -107,8 +108,17 @@ def apuestas_del_juego(g: dict, home: np.ndarray, away: np.ndarray) -> list[dict
     out: list[dict] = []
 
     # ── Moneyline ──────────────────────────────────────────────────────────
+    # `p_home` del simulador, NO `(home > away).mean()`. El 10.9 % de las
+    # simulaciones terminan empatadas —juegos que en la realidad irían a
+    # entradas extra— y el simulador las reparte proporcionalmente al ruido de
+    # λ de esa misma simulación. Contarlas todas como derrota del local
+    # sub-estimaba su probabilidad en 5.6 pp, que a su vez fabricaba un "edge"
+    # sistemático hacia el visitante en el 84 % de los juegos. Ese era un bug
+    # de ESTE script, no del modelo — encontrado comparando contra
+    # `game_outcomes.backtest_p_home_raw`, que daba 0.5207 donde este cálculo
+    # daba 0.4674.
     if all(g[k] for k in ("ml_home_pin", "ml_away_pin", "ml_home_best", "ml_away_best")):
-        p_mod = float(np.count_nonzero(margen > 0) / n)
+        p_mod = float(p_home_sim)
         fair_h, fair_a = _devig(g["ml_home_pin"], g["ml_away_pin"])
         gano_local = bool(g["home_won"])
         out += [
@@ -127,7 +137,13 @@ def apuestas_del_juego(g: dict, home: np.ndarray, away: np.ndarray) -> list[dict
         linea = float(g["total_point_pin"])
         real_total = g["actual_home_runs"] + g["actual_away_runs"]
         if real_total != linea:  # push: ni gana ni pierde, se excluye
-            p_over = float(np.count_nonzero(total > linea) / n)
+            # Con línea entera (9.0) el empate es PUSH, no under: se saca del
+            # denominador en vez de contarlo como acierto del under. Mismo
+            # cuidado que con los empates del moneyline.
+            no_push = int(np.count_nonzero(total != linea))
+            if no_push == 0:
+                return out
+            p_over = float(np.count_nonzero(total > linea) / no_push)
             fair_o, fair_u = _devig(g["total_over_pin"], g["total_under_pin"])
             out += [
                 {"mercado": "TOTAL", "lado": "OVER", "p": p_over, "fair": fair_o,
@@ -146,7 +162,12 @@ def apuestas_del_juego(g: dict, home: np.ndarray, away: np.ndarray) -> list[dict
         # por menos de 2, o ganar). Es la corrección de PURP-1.
         umbral = -punto
         if real_margen != umbral:
-            p_home_cubre = float(np.count_nonzero(margen > umbral) / n)
+            # Ídem: con punto entero (±1.0, ±2.0 — 25 juegos de la muestra) un
+            # margen igual al umbral es push.
+            no_push_rl = int(np.count_nonzero(margen != umbral))
+            if no_push_rl == 0:
+                return out
+            p_home_cubre = float(np.count_nonzero(margen > umbral) / no_push_rl)
             fair_h, fair_a = _devig(g["rl_home_pin"], g["rl_away_pin"])
             out += [
                 {"mercado": "RUNLINE", "lado": f"HOME {punto:+.1f}", "p": p_home_cubre,
@@ -192,7 +213,8 @@ def main() -> int:
             analyze_f5=False, rng_seed=int(g["game_pk"]) % (2**32),
         )
         todas += apuestas_del_juego(g, np.asarray(mc["home_samples"]),
-                                    np.asarray(mc["away_samples"]))
+                                    np.asarray(mc["away_samples"]),
+                                    float(mc["p_home"]))
         if i % 200 == 0 or i == len(juegos):
             print(f"  simulados {i}/{len(juegos)}", end="\r")
     print(" " * 40, end="\r")
@@ -270,7 +292,15 @@ def main() -> int:
             }
     print()
 
+    n_celdas = 3 * len(UMBRALES)
     print("CÓMO LEER ESTO")
+    print(f"  ⚠ COMPARACIONES MÚLTIPLES: se prueban {n_celdas} celdas a la vez. Con "
+          f"{n_celdas} pruebas")
+    print(f"      independientes, ver al menos una con |t|>=1.96 por puro azar tiene "
+          f"probabilidad ~{100*(1-0.95**n_celdas):.0f} %.")
+    print("      Un solo asterisco NO es un hallazgo. Lo que sí lo sería: un patrón")
+    print("      monótono —el ROI sube al subir el umbral— sostenido en un mercado y")
+    print("      reproducido en otra temporada. Un asterisco aislado es ruido.")
     print("  * = |t| >= 1.96. Sin asterisco, el ROI no se distingue de cero por más")
     print("      llamativo que sea el número: una apuesta paga (cuota−1) o −1, y esa")
     print("      varianza mueve el ROI varios puntos con unos cientos de apuestas.")

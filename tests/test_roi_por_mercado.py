@@ -35,6 +35,15 @@ def _muestras(margenes: list[int], totales: list[int]):
     return home, away
 
 
+def _p_sim(home, away) -> float:
+    """Aproximación del `p_home` del simulador para los fixtures: reparte los
+    empates a la mitad. En producción el simulador los reparte según el ruido
+    de λ, pero acá sólo hace falta que NO se cuenten como derrota."""
+    import numpy as _np
+    m = _np.asarray(home) - _np.asarray(away)
+    return float((_np.count_nonzero(m > 0) + 0.5 * _np.count_nonzero(m == 0)) / len(m))
+
+
 def _juego(**kw):
     base = dict(
         game_pk=1, season=2025, game_date="2025-06-15", home_won=1,
@@ -59,7 +68,7 @@ def test_local_favorito_cubre_solo_ganando_por_dos():
                rl_home_point_best=-1.5, rl_home_best=2.45, rl_away_best=1.66)
     # márgenes simulados: +3, +2, +1, 0, −1  → cubre con margen>1.5 → 2 de 5
     home, away = _muestras([3, 2, 1, 0, -1], [9, 8, 7, 6, 5])
-    apuestas = {a["lado"]: a for a in roi.apuestas_del_juego(g, home, away)
+    apuestas = {a["lado"]: a for a in roi.apuestas_del_juego(g, home, away, _p_sim(home, away))
                 if a["mercado"] == "RUNLINE"}
     assert apuestas["HOME -1.5"]["p"] == pytest.approx(0.4)
     assert apuestas["AWAY +1.5"]["p"] == pytest.approx(0.6)
@@ -75,7 +84,7 @@ def test_local_no_favorito_cubre_perdiendo_por_uno():
                rl_home_point_pin=1.5, rl_home_pin=1.64, rl_away_pin=2.40,
                rl_home_point_best=1.5, rl_home_best=1.68, rl_away_best=2.45)
     home, away = _muestras([3, 2, 1, 0, -1], [9, 8, 7, 6, 5])
-    apuestas = {a["lado"]: a for a in roi.apuestas_del_juego(g, home, away)
+    apuestas = {a["lado"]: a for a in roi.apuestas_del_juego(g, home, away, _p_sim(home, away))
                 if a["mercado"] == "RUNLINE"}
     # cubre con margen > −1.5 → los cinco menos ninguno = 5 de 5
     assert apuestas["HOME +1.5"]["p"] == pytest.approx(1.0)
@@ -92,11 +101,11 @@ def test_los_dos_puntos_dan_probabilidades_distintas():
     fav = roi.apuestas_del_juego(
         _juego(rl_home_point_pin=-1.5, rl_home_pin=2.4, rl_away_pin=1.6,
                rl_home_point_best=-1.5, rl_home_best=2.4, rl_away_best=1.6),
-        home, away)
+        home, away, _p_sim(home, away))
     nofav = roi.apuestas_del_juego(
         _juego(rl_home_point_pin=1.5, rl_home_pin=1.6, rl_away_pin=2.4,
                rl_home_point_best=1.5, rl_home_best=1.6, rl_away_best=2.4),
-        home, away)
+        home, away, _p_sim(home, away))
     p_fav = next(a["p"] for a in fav if a["mercado"] == "RUNLINE" and "HOME" in a["lado"])
     p_nofav = next(a["p"] for a in nofav if a["mercado"] == "RUNLINE" and "HOME" in a["lado"])
     assert p_fav != p_nofav
@@ -105,7 +114,7 @@ def test_los_dos_puntos_dan_probabilidades_distintas():
 def test_sin_punto_firmado_no_se_evalua_runline():
     """Adivinar el punto es lo que causó PURP-1. Sin él, el mercado se salta."""
     g = _juego(rl_home_pin=2.4, rl_away_pin=1.6, rl_home_best=2.4, rl_away_best=1.6)
-    assert not [a for a in roi.apuestas_del_juego(g, *_muestras([1], [7]))
+    assert not [a for a in roi.apuestas_del_juego(g, *_muestras([1], [7]), 0.5)
                 if a["mercado"] == "RUNLINE"]
 
 
@@ -114,7 +123,7 @@ def test_punto_distinto_entre_pinnacle_y_mejor_precio_se_descarta():
     mercados distintos."""
     g = _juego(rl_home_point_pin=-1.5, rl_home_pin=2.4, rl_away_pin=1.6,
                rl_home_point_best=-2.5, rl_home_best=3.1, rl_away_best=1.4)
-    assert not [a for a in roi.apuestas_del_juego(g, *_muestras([1], [7]))
+    assert not [a for a in roi.apuestas_del_juego(g, *_muestras([1], [7]), 0.5)
                 if a["mercado"] == "RUNLINE"]
 
 
@@ -125,7 +134,7 @@ def test_total_resuelve_over_y_under():
                total_point_pin=8.5, total_over_pin=1.90, total_under_pin=1.98,
                total_point_best=8.5, total_over_best=1.95, total_under_best=2.02)
     home, away = _muestras([1, 1, 1, 1], [7, 8, 9, 10])          # >8.5 → 2 de 4
-    ap = {a["lado"]: a for a in roi.apuestas_del_juego(g, home, away)
+    ap = {a["lado"]: a for a in roi.apuestas_del_juego(g, home, away, _p_sim(home, away))
           if a["mercado"] == "TOTAL"}
     assert ap["OVER"]["p"] == pytest.approx(0.5)
     assert ap["OVER"]["gano"] is True and ap["UNDER"]["gano"] is False
@@ -137,7 +146,7 @@ def test_push_de_total_se_excluye():
     g = _juego(actual_home_runs=5, actual_away_runs=4,           # total 9.0
                total_point_pin=9.0, total_over_pin=1.90, total_under_pin=1.98,
                total_point_best=9.0, total_over_best=1.95, total_under_best=2.02)
-    assert not [a for a in roi.apuestas_del_juego(g, *_muestras([1], [9]))
+    assert not [a for a in roi.apuestas_del_juego(g, *_muestras([1], [9]), 0.5)
                 if a["mercado"] == "TOTAL"]
 
 
@@ -147,7 +156,7 @@ def test_el_fair_sale_de_pinnacle_y_el_pago_del_mejor_precio():
     """Confundirlos inventa ventaja: el mejor par tiene overround artificialmente
     bajo porque mezcla casas, así que usarlo como referencia justa infla el edge."""
     g = _juego(ml_home_pin=1.90, ml_away_pin=2.00, ml_home_best=1.99, ml_away_best=2.10)
-    ml = {a["lado"]: a for a in roi.apuestas_del_juego(g, *_muestras([1], [7]))
+    ml = {a["lado"]: a for a in roi.apuestas_del_juego(g, *_muestras([1], [7]), 0.5)
           if a["mercado"] == "MONEYLINE"}
     esperado_h, esperado_a = roi._devig(1.90, 2.00)
     assert ml["HOME"]["fair"] == pytest.approx(esperado_h)
