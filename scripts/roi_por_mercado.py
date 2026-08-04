@@ -200,8 +200,8 @@ def main() -> int:
     # ── ROI por mercado y umbral ───────────────────────────────────────────
     resultado: dict = {}
     print(f"{'mercado':10s} {'umbral':>7s} {'apuestas':>9s} {'aciertos':>9s} "
-          f"{'ROI':>9s} {'edge medio':>11s}")
-    print("─" * 62)
+          f"{'ROI':>8s} {'±SE':>5s} {'t':>6s} {'edge medio':>11s}")
+    print("─" * 78)
     for mercado in ("MONEYLINE", "TOTAL", "RUNLINE"):
         delm = [a for a in todas if a["mercado"] == mercado
                 and a["cuota"] and a["cuota"] <= CUOTA_MAXIMA]
@@ -209,26 +209,78 @@ def main() -> int:
         for thr in UMBRALES:
             sel = [a for a in delm if (a["p"] - a["fair"]) >= thr]
             if not sel:
-                print(f"{mercado:10s} {thr:6.0%} {0:9d} {'—':>9s} {'—':>9s} {'—':>11s}")
+                print(f"{mercado:10s} {thr:6.0%} {0:9d} {'—':>9s} {'—':>8s}")
                 resultado[mercado][f"edge>={thr:.0%}"] = {"apuestas": 0}
                 continue
             ganadas = sum(1 for a in sel if a["gano"])
-            profit = sum((a["cuota"] - 1) if a["gano"] else -1.0 for a in sel)
+            pagos = np.array([(a["cuota"] - 1) if a["gano"] else -1.0 for a in sel])
+            profit = float(pagos.sum())
             roi = 100 * profit / len(sel)
             edge = 100 * sum(a["p"] - a["fair"] for a in sel) / len(sel)
+            # Error estándar del ROI medio. Una apuesta paga (cuota−1) o −1, así
+            # que su varianza es grande y con pocas apuestas el ROI se mueve
+            # varios puntos por puro azar. Sin esto, un +6 % sobre 900 apuestas
+            # se lee como señal cuando puede ser ruido — que es justo el error
+            # que este proyecto ya cometió con el CLV medido contra el crudo.
+            se = 100 * float(pagos.std(ddof=1)) / np.sqrt(len(sel)) if len(sel) > 1 else float("nan")
+            t = roi / se if se and np.isfinite(se) and se > 0 else float("nan")
+            marca = "  *" if abs(t) >= 1.96 else ""
             print(f"{mercado:10s} {thr:6.0%} {len(sel):9d} "
-                  f"{100*ganadas/len(sel):8.1f}% {roi:8.2f}% {edge:10.2f}pp")
+                  f"{100*ganadas/len(sel):8.1f}% {roi:7.2f}% ±{se:4.2f} "
+                  f"{t:+6.2f} {edge:9.2f}pp{marca}")
             resultado[mercado][f"edge>={thr:.0%}"] = {
                 "apuestas": len(sel), "aciertos_pct": round(100*ganadas/len(sel), 2),
                 "profit_u": round(profit, 3), "roi_pct": round(roi, 3),
+                "roi_se_pp": round(se, 3), "t": round(t, 3),
+                "ic95": [round(roi - 1.96*se, 2), round(roi + 1.96*se, 2)],
                 "edge_medio_pp": round(edge, 3),
             }
         print()
 
-    print("Lectura honesta: el ROI de un umbral alto se mide sobre pocas apuestas.")
-    print("Un ROI llamativo con n<200 es ruido, no una señal — mirar la columna.")
-    print("\nY el fair sale de Pinnacle mientras la apuesta se paga al mejor precio:")
-    print("parte del ROI positivo es line shopping, no habilidad del modelo.")
+    # ── Diagnóstico de sesgo direccional ───────────────────────────────────
+    # Si el modelo elige casi siempre el mismo lado de un mercado, lo que se
+    # está midiendo no es habilidad juego a juego sino un sesgo sistemático que
+    # esta muestra premió. Un sesgo puede ser rentable por un tiempo y no
+    # sobrevivir a otra temporada, así que se reporta aparte y explícito.
+    print("SESGO DIRECCIONAL — ¿elige lados o elige juegos?")
+    print(f"  {'mercado':10s} {'umbral':>7s} {'lado dominante':>28s} {'reparto':>9s}")
+    for mercado in ("MONEYLINE", "TOTAL", "RUNLINE"):
+        delm = [a for a in todas if a["mercado"] == mercado
+                and a["cuota"] and a["cuota"] <= CUOTA_MAXIMA]
+        for thr in (0.00, 0.10):
+            sel = [a for a in delm if (a["p"] - a["fair"]) >= thr]
+            if not sel:
+                continue
+            # Para runline se agrupa por si el lado elegido es el que PONE o el
+            # que RECIBE las carreras, no por local/visitante.
+            def familia(a):
+                if a["mercado"] != "RUNLINE":
+                    return a["lado"]
+                return "pone (favorito)" if "-" in a["lado"] else "recibe (no-favorito)"
+            cuenta = defaultdict(int)
+            for a in sel:
+                cuenta[familia(a)] += 1
+            dom, n_dom = max(cuenta.items(), key=lambda kv: kv[1])
+            pct = 100 * n_dom / len(sel)
+            aviso = "  ← sesgo fuerte" if pct >= 70 else ""
+            print(f"  {mercado:10s} {thr:6.0%} {dom:>28s} {pct:8.1f}%{aviso}")
+            resultado[mercado].setdefault("sesgo", {})[f"edge>={thr:.0%}"] = {
+                "lado_dominante": dom, "pct": round(pct, 1),
+                "reparto": dict(cuenta),
+            }
+    print()
+
+    print("CÓMO LEER ESTO")
+    print("  * = |t| >= 1.96. Sin asterisco, el ROI no se distingue de cero por más")
+    print("      llamativo que sea el número: una apuesta paga (cuota−1) o −1, y esa")
+    print("      varianza mueve el ROI varios puntos con unos cientos de apuestas.")
+    print("  El fair sale del devig de PINNACLE y el pago va al MEJOR par disponible,")
+    print("      así que parte de cualquier ROI positivo es line shopping y no")
+    print("      habilidad del modelo. El overround del mejor par es ~1-2pp menor.")
+    print("  Las λ vienen de `game_outcomes.backtest_lambda_*`, o sea de corridas de")
+    print("      backtest anteriores. Si esas corridas están contaminadas, esto mide")
+    print("      su contaminación con precisión. Re-correr el backtest limpio ANTES")
+    print("      de tomar cualquier decisión con estos números.")
 
     if args.json:
         args.json.write_text(json.dumps(
