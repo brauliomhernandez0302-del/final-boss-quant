@@ -838,3 +838,60 @@ duplicación fue lo que DELATÓ el error, porque `picks` tenía el `6-5` correct
 
 Ninguno bloquea el paso 3, que es el evaluador — donde el mercado deja de ser un dato y pasa a ser
 la barra contra la que compite todo lo demás.
+
+#### Paso 3 — El evaluador (`evaluator/`, 2026-08-04)
+
+**Nuevo módulo `evaluator/`**, solo lectura. Regla de diseño única: **el candidato entra por
+parámetro**. No importa ningún engine, no puede favorecer al modelo de la casa, y el mercado
+desvigorizado es siempre el nulo. Reemplaza conceptualmente a
+`audit_20260714/estrategia/a1_descomposicion.py`, que era una FOTO (clavada a
+`backtest_run_at='2026-07-30'` y a dos temporadas, un solo candidato, y produciendo un `_data.npz`
+del que dependen otros cinco scripts).
+
+```
+python3 -m evaluator --seasons 2024 2025 --candidato backtest
+python3 -m evaluator --seasons 2026 --candidato live
+python3 -m evaluator --seasons 2024 2025 --candidato mercado   # autoprueba
+```
+
+**Autoprueba**: puntuar el propio mercado reproduce la barra con brecha `+0.00000`. **Validación
+cruzada**: sobre 2024/2025 reproduce a1 al último decimal (0.24620 vs 0.24052, `b_cand=−0.1294`,
+IC95 `[−0.3774, +0.1049]`, P(b>0)=14.2%).
+
+**Lo que agrega — el gate de ROI por umbral**, sobre la corrida canónica:
+
+```
+ 2%: n=3494  −0.42%   |   4%: n=2518  +0.21%   |   6%: n=1677  −2.87%
+ 8%: n=1053  −3.27%   |  10%: n= 617  −4.04%
+```
+
+El ROI empeora casi monótonamente al SUBIR el umbral. Si hubiera edge real, más edge declarado
+debería dar más ROI; que ocurra lo contrario dice que la señal de edge es anti-predictiva — los
+picks donde el modelo está más seguro son sus peores picks.
+
+**Primera medición de 2026 contra el mercado, y lo que destapó.** El primer resultado fue el modelo
+GANÁNDOLE al mercado (Brier 0.24581 vs 0.24789, b=+0.6061, ROI +10.72%). Era falso, y la señal de
+alarma fue el NULO, no el candidato: un mercado con Brier 0.24789 contra tasa base 0.24900 es
+Pinnacle casi sin habilidad, lo cual no ocurre. Al tirar del hilo: **578 de 832 filas de 2026 (69%)
+tienen su `p_home` escrito DESPUÉS del juego, y 563 son `source='backtest'`** — el daño de
+CHRON-001, la corrida del 2026-06-28, con un motor anterior al arreglo del leak V4. La columna
+"live" de 2026 es 68% predicción contaminada.
+
+Sobre las 209 predicciones genuinamente pre-juego (168 con precio): Brier 0.24775 vs 0.25201 del
+mercado, `b=+0.7539` pero **IC95 `[−0.6469, +1.9049]`, P(b>0)=86.5% — el intervalo cruza el cero**.
+**NO es medible todavía**, y los ROI de +8% a +30% se calculan sobre 25-132 apuestas. Citarlos como
+evidencia sería exactamente el error que este paso existe para impedir.
+
+**Tests**: `tests/test_evaluator.py` (10), incluido un CONTROL POSITIVO — un candidato que hace
+trampa mirando el resultado TIENE que detectarse, porque un instrumento que no detecta una señal
+plantada tampoco detectaría una real.
+
+**Residuales del paso 3**:
+- El veredicto "aporta sobre el precio" no distingue información nueva de una transformación
+  determinística del precio: con colinealidad perfecta el coeficiente se reparte y el IC excluye el
+  cero igual (se ve en la autoprueba, `+0.4999/+0.5000`). Importa al evaluar un candidato
+  construido a partir del propio precio.
+- **Sólo puntúa moneyline.** Runline y total no tienen líneas históricas en esta DB, así que su ROI
+  sigue sin medirse — la única herramienta para esos mercados sigue siendo
+  `audit_20260714/val_audit/derived_eval/`, y mide CALIBRACIÓN, no rentabilidad.
+- Los cinco scripts que consumen `_data.npz` de a1 no se migraron; a1 sigue en pie.
