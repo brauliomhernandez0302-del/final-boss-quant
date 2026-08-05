@@ -976,3 +976,52 @@ el campo que dejó de llegar (alarma) y el campo ya arreglado (se reporta, no al
 **Residual del paso 5**: no existe una verificación automática de que el camino PIT y el vivo
 llenen las mismas claves de `game_data` para el mismo juego. Hoy la única defensa es que los
 motores sean compartidos, que detecta una divergencia de CÓDIGO pero no una de DATOS.
+
+#### Paso 6 — La primera feature (2026-08-04)
+
+En un build desde cero, acá se agrega UNA cosa a v0 y tiene que ganarse su coeficiente contra el
+precio, fuera de muestra. La traducción honesta al proyecto real: **¿cuál de los nueve motores
+aporta algo, individualmente, sobre el precio?**
+
+`a7_alfa_por_motor.py` ya atacaba esto pero EN MUESTRA, y su resultado era: sólo `defense` con
+coeficiente positivo e IC que no cruza cero (+0.0680, [+0.0071, +0.1299], P=99.0%). Con ocho
+motores y dos temporadas, encontrar uno positivo es casi lo esperable por azar — condición
+necesaria, no suficiente.
+
+**Nuevo `a8_motores_fuera_de_muestra.py`** (solo lectura, repetible): ajusta
+`y ~ logit(Pinnacle) + motor` en una temporada y lo aplica a la otra, comparando contra el Brier de
+Pinnacle en esa MISMA temporada de prueba. La estandarización del motor usa media y desvío del
+pliegue de ENTRENAMIENTO únicamente — estandarizar con la muestra completa mete el pliegue de
+prueba en el ajuste por la puerta de al lado, fuga chica pero real en señales de coeficiente 0.05.
+
+**Resultado: las 14 celdas son negativas. Ningún motor mejora a Pinnacle fuera de muestra, en
+ninguna dirección del corte.**
+
+```
+  motor               entrena→prueba  Pinnacle  con motor    mejora     coef
+  l0 (TTE ofensa)          2025→2024   0.24042    0.24105  -0.00063  -0.0943
+  pitcher                  2025→2024   0.24042    0.24095  -0.00054  -0.0508
+  defense                  2025→2024   0.24042    0.24145  -0.00103  +0.1192
+  defense                  2024→2025   0.24063    0.24083  -0.00020  +0.0218
+  hfa                      2024→2025   0.24063    0.24076  -0.00013  -0.0561
+```
+
+**`defense` es el hallazgo del paso**: el único que a7 marcaba como significativo en muestra es el
+PEOR de los siete al probarlo en 2024 (−0.00103). Su coeficiente ajustado en 2025 vale +0.1192 y el
+ajustado en 2024 vale +0.0218 — no transfiere. Era sobreajuste, y era justo el que alguien habría
+tomado por bueno.
+
+**Lo que este resultado NO dice**: que los motores sean dañinos. Agregar cualquier regresor ruidoso
+a un predictor ya casi óptimo cuesta un poco de Brier por error de estimación, y las magnitudes
+(−0.0001 a −0.0012) son de ese orden. Lo que dice es que **ninguno se paga a sí mismo** sobre
+moneyline.
+
+`park` se omite del análisis: mueve idéntico ambos lados, así que su aporte al moneyline es cero
+por construcción.
+
+**Consecuencia para el recorrido**: los pasos 7 a 12 (simulador, detección de valor, sizing,
+publicación, CLV, producto) son maquinaria construida sobre la salida de estos motores. Auditarlos
+encuentra defectos de plomería reales —el recorrido ya encontró varios— pero no cambia este
+veredicto. La única puerta que sigue abierta con evidencia a favor son los mercados DERIVADOS,
+donde el fix del simulador sí corrigió un sesgo medido (VAL-1.3: 11.58pp → 3.05pp) y donde nunca se
+midió rentabilidad por falta de líneas históricas.
