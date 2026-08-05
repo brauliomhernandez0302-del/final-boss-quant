@@ -98,3 +98,56 @@ def test_el_linescore_de_un_final_trae_las_carreras():
     juego = {"linescore": {"currentInning": 9,
                            "teams": {"home": {"runs": 5}, "away": {"runs": 6}}}}
     assert mlb_stats.linescore_final(juego) == (5, 6, 9)
+
+
+# ── Statcast ─────────────────────────────────────────────────────────────
+
+
+class _Respuesta:
+    def __init__(self, texto): self.text = texto
+    def raise_for_status(self): pass
+
+
+def _fila_csv(fecha="2026-08-01", n=1):
+    cab = "game_date,pitcher,launch_speed\n"
+    return cab + "".join(f"{fecha},12345,95.1\n" for _ in range(n))
+
+
+def test_una_respuesta_en_el_tope_de_filas_falla_ruidoso(monkeypatch):
+    """Savant devuelve las primeras N filas y calla cuando trunca. Lo que hay
+    dentro es un prefijo arbitrario, no una muestra: agregarlo daría una
+    métrica sesgada que se ve perfectamente normal."""
+    from fbq.sources import statcast
+    monkeypatch.setattr(statcast._SESION, "get",
+                        lambda *a, **k: _Respuesta(_fila_csv(n=statcast.TOPE_FILAS)))
+    with pytest.raises(statcast.DatoTruncado):
+        statcast.eventos("2026-08-01")
+
+
+def test_una_fila_de_otro_dia_falla_ruidoso(monkeypatch):
+    """Una instantánea etiquetada con la fecha equivocada rompe el contrato de
+    tiempo aguas abajo sin dejar rastro."""
+    from fbq.sources import statcast
+    monkeypatch.setattr(statcast._SESION, "get",
+                        lambda *a, **k: _Respuesta(_fila_csv(fecha="2026-08-02")))
+    with pytest.raises(statcast.FechaInesperada):
+        statcast.eventos("2026-08-01")
+
+
+def test_un_dia_normal_devuelve_las_filas_crudas(monkeypatch):
+    from fbq.sources import statcast
+    monkeypatch.setattr(statcast._SESION, "get",
+                        lambda *a, **k: _Respuesta(_fila_csv(n=3)))
+    filas = statcast.eventos("2026-08-01")
+    assert len(filas) == 3
+    assert filas[0]["launch_speed"] == "95.1"
+
+
+def test_el_bom_no_rompe_la_primera_columna(monkeypatch):
+    """Sin quitar el BOM, la PRIMERA columna queda con un nombre que no
+    coincide con ninguna clave esperada, y el fallo aparece como un campo
+    vacío mucho más tarde."""
+    from fbq.sources import statcast
+    monkeypatch.setattr(statcast._SESION, "get",
+                        lambda *a, **k: _Respuesta("﻿" + _fila_csv(n=1)))
+    assert statcast.eventos("2026-08-01")[0]["game_date"] == "2026-08-01"

@@ -8,7 +8,7 @@ sorpresa seis meses después.
 | | Paquete | Qué establece | Estado |
 |---|---|---|---|
 | 0 | `core/` | El contrato de tiempo e identidad | ✅ |
-| — | `sources/` | Los fetchers: hablan con el exterior, devuelven crudo | MLB + odds |
+| — | `sources/` | Los fetchers: hablan con el exterior, devuelven crudo | MLB, odds, Statcast |
 | 1 | `market/` | Precios, append-only, con trayectoria | ✅ |
 | 2 | `results/` | Los hechos: quién ganó | ✅ |
 | 3-4 | `evaluator/` | La balanza, y v0 = el mercado | ✅ |
