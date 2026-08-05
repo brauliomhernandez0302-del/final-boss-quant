@@ -46,7 +46,16 @@ def _insert_games(engine, team, season, actual_over_lambda_ratios, lambda_val=4.
             p_home=0.55,
             p_away=0.45,
         )
-        engine.update_outcome(1000 + i, actual_home_runs=actual, actual_away_runs=3)
+        # El marcador visitante es irrelevante para el sesgo (que compara la λ
+        # local contra las carreras locales), pero tiene que ser un marcador
+        # LEGAL: `update_outcome` rechaza los empates desde el 2026-08-04,
+        # porque en MLB no existe un final empatado y guardar uno significaba
+        # escribir un juego no terminado como verdad de terreno. Con ratio=0.67
+        # y λ=4.5 el local queda en 3, que empataba con este 3 fijo.
+        engine.update_outcome(
+            1000 + i, actual_home_runs=actual,
+            actual_away_runs=3 if actual != 3 else 2,
+        )
 
 
 class TestBiasNeutral:

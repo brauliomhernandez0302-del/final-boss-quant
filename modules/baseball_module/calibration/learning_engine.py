@@ -706,31 +706,47 @@ class LearningEngine:
         session = _req.Session()
         for row in pending:
             try:
-                r = session.get(f"{_MLB_API_BASE}/game/{row['game_pk']}/linescore", timeout=8)
-                r.raise_for_status()
-                data = r.json()
-                home_runs = data.get("teams", {}).get("home", {}).get("runs")
-                away_runs = data.get("teams", {}).get("away", {}).get("runs")
-                if home_runs is None or away_runs is None:
-                    continue
-
-                # /linescore alone never says whether the game is actually
-                # over — it updates live, mid-game. A West Coast night game
-                # still in progress past UTC midnight would otherwise have
-                # its PARTIAL score locked in here, and update_outcome()'s
-                # own idempotency guard (WHERE actual_home_runs IS NULL)
-                # means that wrong score can never be corrected afterward.
-                # Same two-step pattern as track_record/reconciler.py's
-                # _fetch_mlb_final_v2().
+                # El estado Y el marcador salen de la MISMA respuesta. Antes el
+                # marcador venía de una llamada previa a /linescore y el estado
+                # de ésta: si el juego terminaba entre las dos, el guard veía
+                # "Final" y escribía el marcador parcial de la llamada anterior.
+                # /schedule?hydrate=linescore ya trae ambos, así que además es
+                # una llamada menos por juego.
                 sched = session.get(
                     f"{_MLB_API_BASE}/schedule?gamePk={row['game_pk']}&hydrate=linescore",
                     timeout=8,
                 )
                 sched.raise_for_status()
+                # Dos agujeros de este guard, encontrados el 2026-08-04
+                # comparando las 862 filas de 2026 contra el schedule real:
+                #
+                # 1. `abstractGameState` vale "Final" TAMBIÉN para un juego
+                #    POSPUESTO. El que distingue es `detailedState`.
+                # 2. Para un juego pospuesto y rejugado, /schedule devuelve DOS
+                #    bloques de fecha con el MISMO gamePk — el cascarón
+                #    pospuesto primero y el jugado después. Leer `dates[0]`
+                #    agarraba el cascarón.
+                #
+                # Juntos dejaban pasar el caso pospuesto: el guard veía
+                # abstract="Final" sobre el cascarón del día original y
+                # escribía el marcador que /linescore devolvía en ese momento
+                # (parcial o suspendido). Caso real: game_pk=824490
+                # (Guardians @ Reds, 2026-07-27), guardado 5–5 cuando el final
+                # fue 6–5 — y la guarda de idempotencia de update_outcome()
+                # vuelve ese error permanente.
                 sdates = sched.json().get("dates", [])
-                sgames = sdates[0].get("games", []) if sdates else []
-                state = sgames[0].get("status", {}).get("abstractGameState", "") if sgames else ""
-                if state != "Final":
+                finales = [
+                    g for d in sdates for g in d.get("games", [])
+                    if g.get("gamePk") == row["game_pk"]
+                    and g.get("status", {}).get("detailedState") == "Final"
+                ]
+                if not finales:
+                    continue
+
+                _ls = (finales[-1].get("linescore") or {}).get("teams", {})
+                home_runs = _ls.get("home", {}).get("runs")
+                away_runs = _ls.get("away", {}).get("runs")
+                if home_runs is None or away_runs is None:
                     continue
 
                 if self.update_outcome(row["game_pk"], int(home_runs), int(away_runs)):
@@ -774,6 +790,22 @@ class LearningEngine:
         added for defensive consistency with every other learning function
         in this file.
         """
+        # Un empate no es una derrota del local: en MLB no existe un final
+        # empatado, así que un 5–5 significa que lo que llegó acá NO es un
+        # marcador final (juego suspendido, o leído en curso). Escribirlo
+        # silenciosamente como `home_won=0` es peor que rechazarlo, porque la
+        # guarda de idempotencia de abajo lo vuelve permanente y queda como
+        # verdad de terreno en el entrenamiento. Caso real: game_pk=824490,
+        # guardado 5–5 el 2026-07-27 (final verdadero 6–5).
+        if actual_home_runs == actual_away_runs:
+            logger.warning(
+                "[learning] game %s: marcador empatado %s–%s — en MLB no hay "
+                "finales empatados, así que esto no es un final. NO se escribe; "
+                "se reintentará en la próxima barrida.",
+                game_pk, actual_away_runs, actual_home_runs,
+            )
+            return False
+
         home_won = 1 if actual_home_runs > actual_away_runs else 0
 
         with self._get_conn() as conn:
