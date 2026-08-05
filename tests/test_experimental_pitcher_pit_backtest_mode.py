@@ -3,7 +3,6 @@ import inspect
 from backtest_and_retrain import (
     LEAGUE_AVG_ERA,
     _experimental_pitcher_pit_cutoff_for_row,
-    _prediction_cutoff_for_row,
     apply_experimental_pitcher_pit_mode,
     build_game_data,
 )
@@ -377,14 +376,9 @@ def test_adapted_pitcher_dict_reaches_adjust_for_pitchers_without_keyerror(tmp_p
     assert metadata["pitcher_away"]["quality_mult"] > 0
 
 
-def test_prediction_cutoff_prefers_explicit_cutoff():
-    assert (
-        _prediction_cutoff_for_row(
-            {"game_date": "2024-04-02", "prediction_cutoff_utc": "2024-04-01T18:00:00Z"}
-        )
-        == "2024-04-01T18:00:00Z"
-    )
-    assert _prediction_cutoff_for_row({"game_date": "2024-04-02"}) == "2024-04-02T23:59:59Z"
+# test_prediction_cutoff_prefers_explicit_cutoff se borró el 2026-08-04 junto
+# con _prediction_cutoff_for_row. La misma preferencia por un cutoff explícito
+# la fija el test de abajo, sobre la función que sí corre en producción.
 
 
 def test_experimental_pitcher_pit_cutoff_defaults_to_previous_day():

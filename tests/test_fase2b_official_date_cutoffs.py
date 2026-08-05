@@ -20,7 +20,6 @@ import pytest
 
 from backtest_and_retrain import (
     _official_day_for_row,
-    _prediction_cutoff_for_row,
     _team_tte_pit_cutoff_for_row,
     _defense_pit_cutoff_for_row,
     _bullpen_pit_cutoff_for_row,
@@ -78,13 +77,11 @@ class TestCutoffFunctionsUseOfficialDate:
     def test_day_game_cutoff_unaffected(self, cutoff_fn):
         assert cutoff_fn(self.DAY_ROW) == "2024-09-28T23:59:59Z"
 
-    def test_prediction_cutoff_is_end_of_official_date_itself(self):
-        # _prediction_cutoff_for_row is NOT a "day-before" walk-forward
-        # cutoff like the other 4 (it never subtracted a day, pre- or
-        # post-B2 — only the date SOURCE changed here, from game_date to
-        # official_date, preserving this function's original semantic).
-        assert _prediction_cutoff_for_row(self.NIGHT_ROW) == "2024-09-18T23:59:59Z"
-        assert _prediction_cutoff_for_row(self.DAY_ROW) == "2024-09-29T23:59:59Z"
+    # test_prediction_cutoff_is_end_of_official_date_itself vivía acá y fijaba
+    # que _prediction_cutoff_for_row devolvía el fin del día DEL JUEGO. Se
+    # borró junto con la función el 2026-08-04: no tenía llamadores de
+    # producción, y un test que fija el comportamiento de código muerto lo
+    # hace parecer una decisión vigente.
 
     def test_experimental_pitcher_pit_cutoff_night_game(self):
         assert _experimental_pitcher_pit_cutoff_for_row(self.NIGHT_ROW) == "2024-09-17T23:59:59Z"
@@ -92,9 +89,10 @@ class TestCutoffFunctionsUseOfficialDate:
     def test_experimental_pitcher_pit_cutoff_day_game(self):
         assert _experimental_pitcher_pit_cutoff_for_row(self.DAY_ROW) == "2024-09-28T23:59:59Z"
 
-    def test_prediction_cutoff_prefers_explicit_cutoff_field_over_dates(self):
-        row = {**self.NIGHT_ROW, "prediction_cutoff_utc": "2024-09-16T12:00:00Z"}
-        assert _prediction_cutoff_for_row(row) == "2024-09-16T12:00:00Z"
+    # La preferencia por un campo de cutoff explícito en la fila sigue
+    # cubierta, sobre la función que SÍ está en producción:
+    # tests/test_experimental_pitcher_pit_backtest_mode.py
+    # ::test_experimental_pitcher_pit_cutoff_defaults_to_previous_day
 
 
 @pytest.mark.skipif(

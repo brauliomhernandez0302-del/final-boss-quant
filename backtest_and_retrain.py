@@ -710,13 +710,16 @@ def _official_day_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
     return str(official) if official else str(row["game_date"])[:10]
 
 
-def _prediction_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
-    """Return the PIT cutoff for a historical game row."""
-    keys = row.keys() if hasattr(row, "keys") else row
-    for field in ("prediction_cutoff_utc", "prediction_cutoff", "as_of_date"):
-        if field in keys and row[field]:
-            return str(row[field])
-    return f"{_official_day_for_row(row)}T23:59:59Z"
+# _prediction_cutoff_for_row() vivió acá hasta el 2026-08-04. Devolvía el FIN
+# DEL DÍA DEL JUEGO (`{official_day}T23:59:59Z`), no el día anterior como las
+# cuatro de abajo, y no tenía un solo llamador de producción — solo tres tests
+# que la ejercitaban contra sí misma. Se borró porque era un arma cargada:
+# se llamaba "el cutoff de predicción", vivía pegada a las correctas, y
+# combinada con el `<=` inclusivo de PITCache.get_latest() reintroduce
+# exactamente el leak que la Fase 2B remedió (audit_20260714/fase2b/) apenas
+# alguien la conecte. Si vuelve a hacer falta un cutoff de fin-de-día-del-juego
+# para algo que NO alimenta una predicción, que se escriba con un nombre que lo
+# diga y un test que fije por qué es seguro ahí.
 
 
 def _experimental_pitcher_pit_cutoff_for_row(row: sqlite3.Row | Dict[str, Any]) -> str:
