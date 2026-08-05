@@ -28,7 +28,7 @@ def _event(event_id="evt1", *, h2h_home=1.80, h2h_away=2.10,
     return {
         "id": event_id,
         "sport_key": "baseball_mlb",
-        "commence_time": "2026-08-04T23:05:00Z",
+        "commence_time": "2099-08-04T23:05:00Z",
         "home_team": "Los Angeles Dodgers",
         "away_team": "San Diego Padres",
         "bookmakers": [{
@@ -225,3 +225,46 @@ def test_el_libro_es_parte_del_dato(store):
     store.record_board([_event(book="pinnacle")])
     fila = store.latest_before("evt1", "h2h", "home", "2099-01-01")
     assert fila["book"] == "pinnacle"
+
+
+# ── Pre-juego vs en vivo ─────────────────────────────────────────────────
+
+
+def _event_en_vivo(**kw):
+    """Mismo evento, pero la captura ocurre DESPUÉS del primer lanzamiento."""
+    return _event(**kw)
+
+
+def test_las_cotizaciones_en_vivo_no_se_mezclan_con_las_pre_juego(store):
+    """El proveedor sigue devolviendo el evento después del primer
+    lanzamiento, con precios EN VIVO. Sobre la captura real del 2026-08-04 el
+    31.5% de las cotizaciones de MLB eran post-inicio, con moneylines de hasta
+    150.0 a dos horas y media del comienzo. Mezclarlas produce pares con
+    overround negativo que parecen arbitraje y son dos mercados distintos.
+    """
+    # commence_time del fixture: 2099-08-04T23:05:00Z
+    store.record_board([_event(h2h_home=1.80)], captured_at="2099-08-04T22:00:00+00:00")
+    store.record_board([_event(h2h_home=9.50)], captured_at="2099-08-05T01:00:00+00:00")
+
+    pre = store.latest_before("evt1", "h2h", "home", "2099-12-31")
+    assert pre["price_dec"] == 1.80
+
+    con_vivo = store.latest_before("evt1", "h2h", "home", "2099-12-31",
+                                   solo_pregame=False)
+    assert con_vivo["price_dec"] == 9.50
+
+
+def test_la_serie_pre_juego_excluye_lo_posterior_al_inicio(store):
+    store.record_board([_event(h2h_home=1.80)], captured_at="2099-08-04T21:00:00+00:00")
+    store.record_board([_event(h2h_home=1.95)], captured_at="2099-08-04T22:00:00+00:00")
+    store.record_board([_event(h2h_home=9.50)], captured_at="2099-08-05T01:00:00+00:00")
+    assert [r["price_dec"] for r in store.trajectory("evt1", "h2h", "home")] == [1.80, 1.95]
+    assert len(store.trajectory("evt1", "h2h", "home", solo_pregame=False)) == 3
+
+
+def test_el_precio_en_vivo_no_se_borra_solo_se_pide_aparte(store):
+    """Un precio en vivo es un dato legítimo de otro producto."""
+    store.record_board([_event(h2h_home=9.50)], captured_at="2099-08-05T01:00:00+00:00")
+    assert store.latest_before("evt1", "h2h", "home", "2099-12-31") is None
+    assert store.latest_before("evt1", "h2h", "home", "2099-12-31",
+                               solo_pregame=False) is not None

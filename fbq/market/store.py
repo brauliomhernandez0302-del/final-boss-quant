@@ -295,16 +295,30 @@ class MarketStore:
         before: str,
         *,
         book: Optional[str] = None,
+        solo_pregame: bool = True,
     ) -> Optional[sqlite3.Row]:
         """La última cotización observada estrictamente ANTES de `before`.
 
         `before` es un corte explícito y obligatorio: no existe "el precio de
         este evento" sin decir a qué momento. Es el mismo contrato de tiempo
         que el resto del proyecto aplica a los datos de juego.
+
+        `solo_pregame=True` por defecto, y no es un detalle. El proveedor sigue
+        devolviendo el evento después del primer lanzamiento, con precios EN
+        VIVO: sobre la captura del 2026-08-04, el 31.5% de las cotizaciones de
+        MLB eran post-inicio, con moneylines de hasta 150.0 a dos horas y media
+        del comienzo. Mezclarlas con las pre-juego produce pares con overround
+        negativo que parecen arbitraje y son sólo dos mercados distintos —
+        pasó tres veces seguidas al analizar esta misma tabla.
+
+        No se borran: un precio en vivo es un dato legítimo de otro producto.
+        Se pide explícitamente con `solo_pregame=False`.
         """
         sql = ("SELECT * FROM odds_snapshot WHERE event_id=? AND market=? "
                "AND side=? AND captured_at < ?")
         params: List[Any] = [event_id, market, side, before]
+        if solo_pregame:
+            sql += " AND captured_at < commence_time"
         if book:
             sql += " AND book=?"
             params.append(book)
@@ -320,6 +334,7 @@ class MarketStore:
         before: str,
         *,
         book: str = "pinnacle",
+        solo_pregame: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """El par de precios de UN mismo libro para desvigorizar `side`.
 
@@ -335,8 +350,10 @@ class MarketStore:
         opposite = _opposite_side(market, side)
         if opposite is None:
             return None
-        a = self.latest_before(event_id, market, side, before, book=book)
-        b = self.latest_before(event_id, market, opposite, before, book=book)
+        a = self.latest_before(event_id, market, side, before, book=book,
+                               solo_pregame=solo_pregame)
+        b = self.latest_before(event_id, market, opposite, before, book=book,
+                               solo_pregame=solo_pregame)
         if a is None or b is None:
             return None
         if market in ("totals", "spreads"):
@@ -360,11 +377,14 @@ class MarketStore:
         side: str,
         *,
         book: Optional[str] = None,
+        solo_pregame: bool = True,
     ) -> List[sqlite3.Row]:
         """Toda la serie observada de una cotización, en orden."""
         sql = ("SELECT * FROM odds_snapshot WHERE event_id=? AND market=? "
                "AND side=?")
         params: List[Any] = [event_id, market, side]
+        if solo_pregame:
+            sql += " AND captured_at < commence_time"
         if book:
             sql += " AND book=?"
             params.append(book)
