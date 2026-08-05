@@ -12,7 +12,7 @@ sorpresa seis meses después.
 | 1 | `market/` | Precios, append-only, con trayectoria | ✅ |
 | 2 | `results/` | Los hechos: quién ganó | ✅ |
 | 3-4 | `evaluator/` | La balanza, y v0 = el mercado | ✅ |
-| 5-6 | `features/` | Señales con contrato as-of | vacío |
+| 5-6 | `features/` | Señales + el portón que decide qué entra | ✅ (3 medidas, 0 cruzan) |
 | 7-8 | `model/` | Probabilidad y detección de valor | vacío |
 | 9 | `stake/` | Sizing | vacío |
 | 10-11 | `ledger/` | Publicación y reconciliación | vacío |

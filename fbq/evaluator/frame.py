@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
-DB_PATH = Path(__file__).parent.parent / "data" / "predictions_history.db"
+DB_PATH = Path(__file__).parent.parent.parent / "data" / "predictions_history.db"
 
 
 @dataclass

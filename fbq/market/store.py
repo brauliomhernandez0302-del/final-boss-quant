@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
 
-DB_PATH = Path(__file__).parent.parent / "data" / "market.db"
+DB_PATH = Path(__file__).parent.parent.parent / "data" / "market.db"
 
 # Mercados que se guardan, con el nombre que usa The Odds API. Se guarda el
 # nombre crudo del proveedor a propósito: traducirlo acá obligaría a mantener
