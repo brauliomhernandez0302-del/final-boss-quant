@@ -2,6 +2,84 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🔴 MODO RECONSTRUCCIÓN — vigente desde el 2026-08-05
+
+**Esta sección gobierna sobre TODO lo demás de este archivo. Ante cualquier
+contradicción con lo que sigue más abajo, manda esta sección.**
+
+El proyecto entra en reconstrucción y reordenamiento **estricto, paso a paso, en
+el orden en que se debió construir desde el principio**. No es una refactorización
+ni una auditoría: es empezar de cero con la libertad de borrar, mover o reordenar
+cualquier cosa que estorbe.
+
+### Qué NO tiene validez
+
+Nada de lo anterior es estado vigente. En concreto, y sin excepciones:
+
+- **Ningún backtest.** Ninguna cifra de Brier, accuracy o ROI de ninguna corrida.
+  El "baseline vigente" que este documento declara más abajo **no es vigente**.
+- **Ningún motor de predicción.** Ni el pipeline de λ, ni sus nueve etapas, ni el
+  simulador, ni la detección de valor, ni el sizing tal como están construidos.
+- **Ninguna calibración.** Platt, Kalman, sesgo de equipo, descenso de gradiente:
+  ninguno de sus estados guardados vale.
+- **Ninguna conclusión sobre rentabilidad**, en ningún mercado.
+
+Todo eso se conserva en el disco y en este archivo **como referencia histórica y
+como catálogo de modos de falla**, no como estado. Se puede borrar en cualquier
+momento sin pedir permiso.
+
+### Qué sí sobrevive, y por qué
+
+Sólo dos cosas, y ninguna es una afirmación sobre el modelo:
+
+1. **Los HECHOS**: marcadores reales verificados contra el schedule oficial, y
+   precios de mercado observados. Un hecho no deja de ser cierto porque el
+   modelo que lo rodeaba fuera malo.
+2. **El catálogo de modos de falla**: los bugs concretos, con su mecanismo. No
+   dicen nada sobre si el sistema predice; dicen cómo esta clase de sistema se
+   rompe. Repetirlos sería el único desperdicio real de lo hecho hasta acá.
+
+### Qué se está construyendo
+
+Un **software de predicciones deportivas con inteligencia artificial**. En una
+segunda fase, un **proceso agéntico** que tome decisiones sobre esas
+predicciones y opere el negocio.
+
+Es un proyecto ambicioso y del que depende el futuro de su dueño. Eso no cambia
+los criterios técnicos —al contrario, los endurece— pero sí cambia el estándar:
+nada entra "por ahora", nada queda "para arreglar después".
+
+### Cómo se trabaja
+
+- **Por secciones, en orden.** Una sección se cierra sólo cuando **deja el camino
+  listo para la siguiente**. Antes de cerrar hay que poder decir qué necesita la
+  sección siguiente y verificar que ya está disponible.
+- **Cada paso se evalúa minuciosamente en busca de fallas** antes de darse por
+  cerrado. Un paso "terminado" sin haber buscado activamente cómo está mal es un
+  paso no terminado.
+- **Se lleva constancia escrita** de cada sección: qué se construyó, qué se
+  midió, qué se decidió y qué queda abierto. Esa constancia es lo que permite
+  retomar en otra sesión sin reconstruir el contexto de memoria.
+- **Mejores prácticas, sin atajos.** Las reglas que importan las impone el
+  mecanismo (esquema, tipos, tests), nunca la disciplina de quien llama.
+- **Sin barreras de datos.** Cualquier dato necesario se consigue, sea gratuito
+  o de pago. Si una fuente de pago es la correcta, se dice y se justifica en vez
+  de conformarse con una peor porque es gratis.
+- **Toda práctica necesaria se implementa.** Si hace falta infraestructura,
+  versionado de datos, CI o un instrumento de medición, se construye; no se
+  omite por costo de tiempo.
+
+### Estado de la reconstrucción
+
+| Sección | Estado |
+|---|---|
+| — | sin arrancar |
+
+La primera tarea es **definir las secciones y su orden** antes de escribir
+código. Nada se construye hasta que exista ese plan y esté acordado.
+
+---
+
 ## What this project is
 
 **FINAL BOSS QUANT G8+** — a quantitative sports betting prediction system. It analyzes MLB, NBA, and UFC games and identifies positive-EV betting opportunities using Monte Carlo simulation, Poisson modeling, Kelly criterion sizing, and odds API integration.
