@@ -98,3 +98,54 @@ def test_sin_bloque_inputs_no_falla(tmp_path):
 def test_db_ausente_sale_con_codigo_2(tmp_path):
     r = _correr(tmp_path / "no-existe.db")
     assert r.returncode == 2
+
+
+# ── El caso que el agregado histórico tapa ───────────────────────────────
+
+
+def _db_con_fechas(tmp_path: Path, por_fecha: dict[str, list[dict]]) -> Path:
+    """Como `_db_con_picks` pero controlando la fecha de cada pick."""
+    db = tmp_path / "track_record.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE picks (game_date TEXT, pipeline_json TEXT)")
+    for fecha, picks in sorted(por_fecha.items()):
+        for inputs in picks:
+            con.execute("INSERT INTO picks VALUES (?, ?)",
+                        (fecha, json.dumps({"inputs": inputs})))
+    con.commit()
+    con.close()
+    return db
+
+
+def test_dispara_con_un_campo_que_dejo_de_llegar(tmp_path):
+    """El caso PELIGROSO: llegaba y dejó de llegar.
+
+    Sobre el agregado histórico sale ~75% y pasa limpio el chequeo de "ningún
+    campo en 0%", que es justamente la alarma. La ausencia hay que juzgarla
+    sobre las corridas recientes.
+    """
+    db = _db_con_fechas(tmp_path, {
+        "2026-08-01": [{"a": 1, "roto": "live"}] * 10,
+        "2026-08-02": [{"a": 1, "roto": "live"}] * 10,
+        "2026-08-03": [{"a": 1, "roto": "live"}] * 10,
+        "2026-08-04": [{"a": 1, "roto": None}] * 10,
+    })
+    r = _correr(db)
+    assert r.returncode == 1, r.stdout
+    assert "dejó de llegar" in r.stdout
+    assert "roto" in r.stdout
+
+
+def test_un_campo_ya_arreglado_no_dispara_pero_se_reporta(tmp_path):
+    """El caso inverso, real: `weather_source` salía 55.9% agregado y estaba
+    al 100% desde que aterrizó su arreglo. No es alarma, pero tiene que verse
+    para que nadie persiga un fantasma."""
+    db = _db_con_fechas(tmp_path, {
+        "2026-08-01": [{"a": 1, "arreglado": None}] * 10,
+        "2026-08-02": [{"a": 1, "arreglado": None}] * 10,
+        "2026-08-03": [{"a": 1, "arreglado": "live"}] * 10,
+        "2026-08-04": [{"a": 1, "arreglado": "live"}] * 10,
+    })
+    r = _correr(db)
+    assert r.returncode == 0, r.stdout
+    assert "se ARREGLÓ" in r.stdout

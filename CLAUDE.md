@@ -931,3 +931,48 @@ pregunta abierta del proyecto sigue abierta, y ahora con instrumento para respon
 
 Tests: 3 más en `tests/test_evaluator.py` (13 en total), con control positivo — si una señal
 plantada no aparece en la mezcla fuera de muestra, el instrumento no serviría para aceptar ninguna.
+
+#### Paso 5 — Datos de entrada PIT (2026-08-04)
+
+Dos preguntas de CONEXIÓN que el paso 0 había dejado sospechadas, y las dos salieron mejor de lo
+temido:
+
+**1. ¿Vivo y backtest corren motores distintos? NO — los motores son compartidos.** Ambos importan
+y llaman las MISMAS funciones (`adjust_for_pitchers`, `adjust_for_bullpen`, `adjust_for_defense`,
+`adjust_for_context`, `get_adjusted_lambdas`, `monte_carlo_advanced`). Lo que difiere es sólo la
+FUENTE de datos: el vivo arma `game_data` con `MLBDataIntegrator` (acumulado de temporada al
+momento de correr, que en producción es point-in-time por construcción — no existe el futuro), y
+el backtest superpone las instantáneas PIT sobre el mismo dict vía `_merge_pit_*`. `PITCache` no
+tiene una sola referencia en `modules/baseball_module/core|offense|context_engine|hfa` — es
+backtest-only, confirmado.
+
+Eso NO es un leak, pero sí acota qué transfiere el backtest a producción: transfiere en la medida
+en que las dos fuentes llenen las mismas claves. El riesgo real es de FORMA, no de tiempo — si el
+camino PIT deja vacía una clave que el vivo puebla, el motor compartido cae a su fallback y el
+backtest mide el fallback. Es exactamente la clase de deriva que ya ocurrió una vez (la constante
+de barrel% arreglada en el motor vivo y no en la copia PIT, 2026-07-11) y que `tte_formula.py`
+unificó para ofensa.
+
+**2. ¿La cobertura PIT se volvió a cortar a mitad de temporada? NO.** Los seis namespaces rolling
+tienen 186-187 días por temporada, sin huecos, cubriendo marzo→septiembre completo en 2024 y 2025.
+El bug #9 del 2026-07-11 —`savant.team_offense.rolling` congelado a mitad de temporada, usado en
+silencio por el 59% de los juegos del backtest insignia— no volvió.
+
+**Lo que sí se encontró, en el instrumento de cobertura**: `scripts/inputs_coverage.py` promediaba
+sobre toda la historia, y la ventana cruza los arreglos. `weather_source` salía **55.9%** y
+`home_injured_pa_share` **69.5%**, y los dos estaban al **100% desde el día en que aterrizó su
+arreglo** (`092cefd` y `4f6b4c6`) — el agregado mezclaba el antes y el después.
+
+Cosmético en un campo ya arreglado; **grave al revés**: un campo que se rompiera ayer aparecería al
+90% y pasaría limpio el chequeo de "ningún campo en 0%", que es justamente la alarma que el script
+existe para dar. Ahora compara el último día contra los previos y reporta el rumbo. El umbral de
+alarma es "venía ≥50% y hoy no llegó ni una vez" — no basta con "vacío hoy", porque
+`lineup_confirmed` al 3.8% es la realidad del mercado y está vacío muchos días sueltos. Ese matiz
+lo impuso un test existente que el primer intento rompió.
+
+Tests: 2 más en `tests/test_inputs_coverage_detector.py` (8 en total), uno por cada dirección —
+el campo que dejó de llegar (alarma) y el campo ya arreglado (se reporta, no alarma).
+
+**Residual del paso 5**: no existe una verificación automática de que el camino PIT y el vivo
+llenen las mismas claves de `game_data` para el mismo juego. Hoy la única defensa es que los
+motores sean compartidos, que detecta una divergencia de CÓDIGO pero no una de DATOS.

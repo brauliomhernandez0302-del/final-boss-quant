@@ -117,6 +117,53 @@ def main() -> int:
         marca = "  ⚠" if con_valor == 0 else ""
         print(f"  {c:26s} {con_valor:5d}/{n:<5d} {pct:6.1f}%  {muestra[:44]}{marca}")
 
+    # ── El agregado miente cuando la ventana cruza un arreglo ────────────
+    #
+    # Encontrado el 2026-08-04 recorriendo el paso 5: `weather_source` salía
+    # 55.9% y `home_injured_pa_share` 69.5%, y los dos estaban al 100% desde
+    # que aterrizó su arreglo (092cefd y 4f6b4c6). El promedio sobre toda la
+    # historia mezcla el antes y el después.
+    #
+    # Eso es cosmético en un campo YA arreglado, pero es grave al revés: un
+    # campo que se rompió AYER aparece al 90% y pasa limpio el chequeo de
+    # "ningún campo en 0%", que es justamente la alarma que este script
+    # existe para dar. La ausencia hay que juzgarla sobre las corridas
+    # RECIENTES, no sobre el promedio histórico.
+    # El umbral del 50% previo no es cosmético: separa "dejó de llegar" de
+    # "es escaso por naturaleza". `lineup_confirmed` al 3.8% está vacío en
+    # muchos días sueltos —las alineaciones salen después del cron— y no es un
+    # fallo. Sólo alarma un campo que VENÍA llegando de forma sostenida y hoy
+    # no llegó ni una vez.
+    ultima = picks[-1]["fecha"]
+    recientes = [p for p in picks if p["fecha"] == ultima]
+    previos = [p for p in picks if p["fecha"] != ultima]
+    nuevos = []
+    if previos:
+        for c in campos:
+            vacio_hoy = all(p["inputs"].get(c) is None for p in recientes)
+            cobertura_previa = (
+                sum(1 for p in previos if p["inputs"].get(c) is not None) / len(previos)
+            )
+            if vacio_hoy and cobertura_previa >= 0.50 and c not in mudos:
+                nuevos.append(c)
+
+    print(f"\n  Último día con datos: {ultima} ({len(recientes)} picks)")
+    for c in campos:
+        con_hoy = sum(1 for p in recientes if p["inputs"].get(c) is not None)
+        pct_hist = 100.0 * sum(1 for p in picks if p["inputs"].get(c) is not None) / n
+        pct_hoy = 100.0 * con_hoy / len(recientes)
+        if abs(pct_hoy - pct_hist) >= 20.0:
+            rumbo = "se ARREGLÓ" if pct_hoy > pct_hist else "se ROMPIÓ"
+            print(f"    {c:26s} histórico {pct_hist:5.1f}%  →  hoy {pct_hoy:5.1f}%   {rumbo}")
+
+    if nuevos:
+        print("\n⚠ VACÍOS HOY PERO NO SIEMPRE — un campo que dejó de llegar")
+        for c in nuevos:
+            print(f"    {c}")
+        print("\n  Éste es el caso peligroso: el agregado histórico lo tapa. Si el campo")
+        print("  llegaba y dejó de llegar, el productor cambió o la clave se renombró.")
+        return 1
+
     print()
     if mudos:
         print("⚠ CAMPOS SIEMPRE VACÍOS — revisar si la clave que se lee existe de verdad")
