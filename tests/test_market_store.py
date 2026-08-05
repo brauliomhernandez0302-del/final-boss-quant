@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from market.store import MarketStore
+from fbq.market.store import MarketStore
 
 
 def _event(event_id="evt1", *, h2h_home=1.80, h2h_away=2.10,

@@ -15,8 +15,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from evaluator.frame import EvalFrame, _devig_multiplicativo
-from evaluator.score import (brier, calibracion, evaluate, log_loss,
+from fbq.evaluator.frame import EvalFrame, _devig_multiplicativo
+from fbq.evaluator.score import (brier, calibracion, evaluate, log_loss,
                              roi_por_umbral, ventaja_sobre_azar)
 
 
@@ -141,7 +141,7 @@ def test_la_mezcla_no_ayuda_cuando_el_candidato_es_ruido():
     En muestra siempre encontraría un peso que no daña — por eso la pregunta
     del paso 4 sólo tiene sentido fuera de muestra.
     """
-    from evaluator.score import mezcla_fuera_de_muestra
+    from fbq.evaluator.score import mezcla_fuera_de_muestra
 
     f = _frame(n=1200, seed=5)
     f.season = np.where(np.arange(len(f)) < 600, 2024, 2025)
@@ -154,7 +154,7 @@ def test_la_mezcla_no_ayuda_cuando_el_candidato_es_ruido():
 def test_la_mezcla_si_ayuda_con_un_candidato_que_aporta():
     """Control positivo del paso 4: si una señal real no aparece acá, el
     instrumento no serviría para aceptar ninguna."""
-    from evaluator.score import mezcla_fuera_de_muestra
+    from fbq.evaluator.score import mezcla_fuera_de_muestra
 
     f = _frame(n=1200, seed=6)
     f.season = np.where(np.arange(len(f)) < 600, 2024, 2025)
@@ -167,7 +167,7 @@ def test_la_mezcla_si_ayuda_con_un_candidato_que_aporta():
 def test_los_pliegues_son_temporadas_enteras_no_filas_al_azar():
     """Un corte aleatorio pondría juegos del mismo día a ambos lados y el
     ajuste aprendería del futuro por la puerta de al lado."""
-    from evaluator.score import mezcla_fuera_de_muestra
+    from fbq.evaluator.score import mezcla_fuera_de_muestra
 
     f = _frame(n=800)
     f.season = np.where(np.arange(len(f)) < 400, 2024, 2025)

@@ -1,8 +1,8 @@
 """CLI del evaluador. Solo lectura.
 
-    python3 -m evaluator --seasons 2024 2025 --candidato backtest
-    python3 -m evaluator --seasons 2026 --candidato live
-    python3 -m evaluator --seasons 2024 2025 --candidato mercado   # autoprueba
+    python3 -m fbq.evaluator --seasons 2024 2025 --candidato backtest
+    python3 -m fbq.evaluator --seasons 2026 --candidato live
+    python3 -m fbq.evaluator --seasons 2024 2025 --candidato mercado   # autoprueba
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from evaluator.frame import load_candidate, load_frame
-from evaluator.score import Report, evaluate
+from fbq.evaluator.frame import load_candidate, load_frame
+from fbq.evaluator.score import Report, evaluate
 
 # La corrida canónica del backtest. Sin esto se mezclarían tres corridas
 # distintas, una de ellas anterior a la remediación de CHRON-001.

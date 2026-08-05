@@ -31,7 +31,7 @@ from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Uni
 
 import numpy as np
 
-from evaluator.frame import EvalFrame
+from fbq.evaluator.frame import EvalFrame
 
 Candidato = Union[Mapping[int, float], Callable[[int], float], np.ndarray]
 

@@ -10,6 +10,6 @@ no esté apostado ese juego, porque la decisión de qué juegos importan se toma
 después y no puede reescribir el pasado.
 """
 
-from market.store import MarketStore, DB_PATH
+from fbq.market.store import MarketStore, DB_PATH
 
 __all__ = ["MarketStore", "DB_PATH"]

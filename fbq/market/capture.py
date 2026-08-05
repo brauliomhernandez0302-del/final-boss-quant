@@ -17,9 +17,9 @@ cero llamadas nuevas: la data ya se estaba trayendo doce veces al día y
 tirando once.
 
 Uso:
-    python3 -m market.capture
-    python3 -m market.capture --sport-keys baseball_mlb
-    python3 -m market.capture --dry-run
+    python3 -m fbq.market.capture
+    python3 -m fbq.market.capture --sport-keys baseball_mlb
+    python3 -m fbq.market.capture --dry-run
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from market.store import MarketStore
+from fbq.market.store import MarketStore
 
 log = logging.getLogger(__name__)
 

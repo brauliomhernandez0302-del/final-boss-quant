@@ -34,19 +34,19 @@ Tests: `tests/test_market_store.py` (16).
 
 ```bash
 # Barrida del board completo (cron, a los :51 — cache hit, cero cuota extra)
-python3 -m market.capture
+python3 -m fbq.market.capture
 
 # Identidad evento↔game_pk (cron, una vez al día)
-python3 -m market.link_events
+python3 -m fbq.market.link_events
 
 # Estado del almacén
-python3 -c "from market import MarketStore; print(MarketStore().summary())"
+python3 -c "from fbq.market import MarketStore; print(MarketStore().summary())"
 ```
 
 Lectura desde código:
 
 ```python
-from market import MarketStore
+from fbq.market import MarketStore
 s = MarketStore()
 
 # El par de Pinnacle vigente en un momento dado, listo para desvigorizar

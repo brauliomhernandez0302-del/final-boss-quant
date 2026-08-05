@@ -19,7 +19,7 @@ medición.
 Solo lectura: nada de este módulo escribe en ninguna base.
 """
 
-from evaluator.frame import EvalFrame, load_frame
-from evaluator.score import evaluate, Report
+from fbq.evaluator.frame import EvalFrame, load_frame
+from fbq.evaluator.score import evaluate, Report
 
 __all__ = ["EvalFrame", "load_frame", "evaluate", "Report"]

@@ -19,8 +19,8 @@ enlace errado mete los precios de un juego en el otro y no deja rastro.
 cae un día adelante, y ese desfase ya costó un leak entero en el camino PIT.
 
 Uso:
-    python3 -m market.link_events
-    python3 -m market.link_events --dry-run
+    python3 -m fbq.market.link_events
+    python3 -m fbq.market.link_events --dry-run
 """
 
 from __future__ import annotations
@@ -34,7 +34,8 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from market.store import MarketStore
+from fbq.core.identity import elegir_unico, mismo_equipo
+from fbq.market.store import MarketStore
 
 log = logging.getLogger(__name__)
 
@@ -51,15 +52,8 @@ def _parse_utc(value: str) -> Optional[datetime]:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def _teams_match(a: str, b: str) -> bool:
-    """Misma regla de contención que usa el emparejador de odds vigente.
-
-    No es fuzzy matching: es contención de cadenas en minúsculas, que resuelve
-    "Athletics" vs "Oakland Athletics" sin abrir la puerta a que dos equipos
-    distintos se parezcan lo suficiente.
-    """
-    a, b = (a or "").lower(), (b or "").lower()
-    return bool(a) and bool(b) and (a in b or b in a)
+def _equipo(juego: dict, lado: str) -> str:
+    return (((juego.get("teams") or {}).get(lado) or {}).get("team") or {}).get("name", "")
 
 
 def link_events(
@@ -69,10 +63,7 @@ def link_events(
     max_days_back: int = 14,
 ) -> Dict[str, int]:
     """Resuelve `game_pk`/`official_date` para los eventos aún sin enlazar."""
-    from data_fetchers import MLBStatsAPI
-    from odds_fetcher import _ODDS_MATCH_WINDOW, _ODDS_MATCH_MIN_MARGIN
-
-    api = MLBStatsAPI()
+    from fbq.sources import mlb_stats
     pending = store.unlinked_events(sport_key=_SPORT)
     summary = {"pending": len(pending), "linked": 0, "ambiguous": 0,
                "no_candidate": 0, "unparseable": 0}
@@ -87,7 +78,7 @@ def link_events(
     def schedule_for(day: str) -> List[dict]:
         if day not in schedule_cache:
             try:
-                schedule_cache[day] = api.get_todays_games(date=day) or []
+                schedule_cache[day] = mlb_stats.schedule(fecha=day) or []
             except Exception as exc:
                 log.warning("Fallo al pedir el schedule de %s: %s", day, exc)
                 schedule_cache[day] = []
@@ -110,58 +101,52 @@ def link_events(
         days = {(target - timedelta(days=1)).date().isoformat(),
                 target.date().isoformat()}
 
-        candidates = []
-        for day in sorted(days):
-            for game in schedule_for(day):
-                if not (_teams_match(ev["home_team"], game.get("home_team", ""))
-                        and _teams_match(ev["away_team"], game.get("away_team", ""))):
-                    continue
-                start = _parse_utc(game.get("game_date", ""))
-                if start is None:
-                    continue
-                delta = abs(start - target)
-                if delta <= _ODDS_MATCH_WINDOW:
-                    candidates.append((delta, game))
+        # Mismo par de equipos, en cualquiera de los dos días candidatos.
+        # La desambiguación por hora la hace `elegir_unico`, que se ABSTIENE
+        # ante dos candidatos casi igual de cerca — ver fbq/core/identity.py.
+        candidatos = [
+            g for day in sorted(days) for g in schedule_for(day)
+            if mismo_equipo(ev["home_team"], _equipo(g, "home"))
+            and mismo_equipo(ev["away_team"], _equipo(g, "away"))
+        ]
+        game, motivo = elegir_unico(
+            candidatos, ev["commence_time"],
+            inicio_de=lambda g: g.get("gameDate", ""),
+        )
 
-        if not candidates:
-            log.info("Sin candidato para event_id=%s (%s @ %s, %s)",
-                     ev["event_id"], ev["away_team"], ev["home_team"],
-                     ev["commence_time"])
-            summary["no_candidate"] += 1
-            continue
-
-        candidates.sort(key=lambda c: c[0])
-        if (len(candidates) > 1
-                and (candidates[1][0] - candidates[0][0]) < _ODDS_MATCH_MIN_MARGIN):
-            log.warning(
-                "Ambiguo para event_id=%s (%s @ %s): dos juegos casi igual de "
-                "cerca (%s y %s) — no se adivina",
-                ev["event_id"], ev["away_team"], ev["home_team"],
-                candidates[0][0], candidates[1][0],
-            )
-            summary["ambiguous"] += 1
-            if not dry_run:
-                # Se deja constancia del intento fallido: sin esto, un evento
-                # ambiguo se re-intenta para siempre sin que nadie sepa por qué
-                # nunca se enlaza.
-                store.link_event(
-                    ev["event_id"], sport_key=_SPORT, game_pk=None,
-                    official_date=None, commence_time=ev["commence_time"],
-                    home_team=ev["home_team"], away_team=ev["away_team"],
-                    method="ambiguous",
-                )
+        if game is None:
+            if motivo == "ambiguo":
+                log.warning(
+                    "Ambiguo para event_id=%s (%s @ %s) — dos juegos casi igual "
+                    "de cerca del inicio; no se adivina",
+                    ev["event_id"], ev["away_team"], ev["home_team"])
+                summary["ambiguous"] += 1
+                if not dry_run:
+                    # Se deja constancia del intento fallido: sin esto, un
+                    # evento ambiguo se re-intenta para siempre sin que nadie
+                    # sepa por qué nunca se enlaza.
+                    store.link_event(
+                        ev["event_id"], sport_key=_SPORT, game_pk=None,
+                        official_date=None, commence_time=ev["commence_time"],
+                        home_team=ev["home_team"], away_team=ev["away_team"],
+                        method="ambiguous")
+            else:
+                log.info("Sin candidato para event_id=%s (%s @ %s, %s)",
+                         ev["event_id"], ev["away_team"], ev["home_team"],
+                         ev["commence_time"])
+                summary["no_candidate"] += 1
             continue
 
         game = candidates[0][1]
         if dry_run:
             log.info("[dry-run] %s (%s @ %s) → game_pk=%s official_date=%s",
                      ev["event_id"], ev["away_team"], ev["home_team"],
-                     game.get("game_pk"), game.get("official_date"))
+                     game.get("gamePk"), game.get("officialDate"))
         else:
             store.link_event(
                 ev["event_id"], sport_key=_SPORT,
-                game_pk=game.get("game_pk"),
-                official_date=game.get("official_date"),
+                game_pk=game.get("gamePk"),
+                official_date=game.get("officialDate"),
                 commence_time=ev["commence_time"],
                 home_team=ev["home_team"], away_team=ev["away_team"],
                 method="schedule_match",
