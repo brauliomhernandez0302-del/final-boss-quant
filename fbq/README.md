@@ -8,7 +8,7 @@ sorpresa seis meses después.
 | | Paquete | Qué establece | Estado |
 |---|---|---|---|
 | 0 | `core/` | El contrato de tiempo e identidad | ✅ |
-| — | `sources/` | Los fetchers: hablan con el exterior, devuelven crudo | parcial (MLB) |
+| — | `sources/` | Los fetchers: hablan con el exterior, devuelven crudo | MLB + odds |
 | 1 | `market/` | Precios, append-only, con trayectoria | ✅ |
 | 2 | `results/` | Los hechos: quién ganó | ✅ |
 | 3-4 | `evaluator/` | La balanza, y v0 = el mercado | ✅ |
@@ -45,6 +45,26 @@ Cada almacén rechaza por esquema lo que no debe entrar:
 - `market.pair_before()` devuelve `None` con medio par o con puntos que no
   coinciden. No hay forma de desvigorizar dos lados de mercados distintos.
 - `core.elegir_unico()` **se abstiene** ante dos candidatos casi igual de cerca.
+
+## Cuota
+
+`fbq/` es **autónomo**: no importa nada del sistema anterior. Eso tiene un costo
+que antes no existía — la captura de precios ya no comparte caché con el
+fetcher viejo, así que sus llamadas se pagan.
+
+Cada deporte pedido cuesta `mercados × regiones` = **6 créditos por barrida**.
+Con las 12 barridas diarias:
+
+| alcance | por barrida | por día |
+|---|---|---|
+| sólo `baseball_mlb` (default) | 6 | 72 |
+| los 9 deportes | 54 | 648 |
+
+Por eso el default es MLB. Se amplía con `--sport-keys` cuando haya un
+consumidor real para otro deporte; capturar precios de deportes que nadie
+analiza gasta la cuota que MLB necesita.
+
+`fbq.sources.odds_api.cuota_restante()` la consulta sin gastar créditos.
 
 ## Correr
 

@@ -4,17 +4,22 @@ Corre en cron, tan seguido como la cuota lo permita. No recibe picks, no
 consulta el ledger y no le importa si el juego está apostado: captura todo lo
 que el proveedor devuelva.
 
-Por qué el board completo y no solo los juegos con pick: cuál es el
+Por qué el board completo del DEPORTE y no sólo los juegos con pick: cuál es el
 subconjunto interesante es una decisión del modelo, y el modelo cambia. Los
-precios no se pueden volver a comprar. Filtrar en la captura es tomar hoy una
-decisión irreversible en nombre del criterio de mañana.
+precios no se pueden volver a comprar. Filtrar por juego en la captura es tomar
+hoy una decisión irreversible en nombre del criterio de mañana.
 
-Cuota: reutiliza `odds_fetcher._get_raw_events()`, la misma función y la misma
-caché de 10 minutos que ya usan `run_daily_picks` y la barrida de cierre. Una
-corrida de este script pegada a una de esas no gasta una llamada extra — sirve
-la misma respuesta desde la caché. El costo real de agregar esta captura es
-cero llamadas nuevas: la data ya se estaba trayendo doce veces al día y
-tirando once.
+Por qué sólo MLB por defecto, en cambio, SÍ es una decisión de cuota: cada
+deporte pedido cuesta (mercados × regiones) = 6 créditos por barrida, así que
+los nueve deportes salen 54 por barrida y 648 por día. MLB solo sale 72. Se
+amplía con `--sport-keys` cuando haya un consumidor real para otro deporte;
+capturar precios de deportes que nadie analiza es gastar la cuota que MLB
+necesita.
+
+Cuota: `fbq.sources.odds_api.board()` cachea en archivo durante 10 minutos, así
+que dos corridas dentro de esa ventana gastan una sola llamada. Es la misma
+razón por la que el cron corre a los :51, justo después de la barrida de cierre
+del sistema anterior: cae dentro de su ventana y no gasta nada nuevo.
 
 Uso:
     python3 -m fbq.market.capture
@@ -45,14 +50,14 @@ def capture(
     note: str | None = None,
 ) -> dict:
     """Trae el board y lo guarda. Devuelve el resumen de la barrida."""
-    # `_get_raw_events` es privada a propósito en odds_fetcher (nadie más
-    # necesita los eventos crudos), pero es exactamente lo que hace falta acá:
-    # la versión pública, `get_odds_data()`, ya viene normalizada y aplanada,
-    # y normalizar antes de guardar es cómo se perdieron los precios de los
-    # derivados hasta el 2026-07-26.
-    from odds_fetcher import _get_raw_events
+    from fbq.sources import odds_api
 
-    events = _get_raw_events()
+    try:
+        events = odds_api.board(deportes=tuple(sport_keys or odds_api.DEPORTES))
+    except odds_api.SinClave as exc:
+        log.error("%s — sin clave no hay board que capturar", exc)
+        return {"events": 0, "rows_new": 0, "unchanged": 0, "skipped": 0,
+                "empty_board": True}
     if not events:
         # Falla ruidosa: una barrida vacía es indistinguible de "no había
         # juegos" si no se grita, y el cron la ocultaría para siempre.
@@ -77,8 +82,9 @@ def capture(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sport-keys", nargs="*", default=None,
-                        help="Filtrar deportes (default: todos los del board)")
+    parser.add_argument("--sport-keys", nargs="*", default=["baseball_mlb"],
+                        help="Deportes a capturar (default: sólo baseball_mlb — "
+                             "cada deporte extra cuesta 6 créditos por barrida)")
     parser.add_argument("--no-dedupe", action="store_true",
                         help="Guardar toda cotización aunque no se haya movido")
     parser.add_argument("--dry-run", action="store_true")
