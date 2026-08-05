@@ -673,3 +673,168 @@ las 822 unidades arriesgadas —el 61.8% del capital— estaban en picks con edg
 medio 13.04 u contra 3.82 u del resto. **El track record en vivo anterior al 07-31 no mide el
 modelo**: mide el modelo más un error de emparejamiento que sobredimensionaba las apuestas justo
 donde más se equivocaba.
+
+### Actualización 2026-08-04 — recorrido desde cero (pasos 0..2 de 12)
+
+**Baseline sin cambios** (Brier 0.24624 / accuracy 54.84%, reporte canónico
+`audit_20260714/paso10/backtest_canonico_kalman0.json`). Nada de lo que sigue toca un motor de
+predicción ni ninguna λ: es identidad, precio de mercado y verdad de terreno.
+
+**Qué es este recorrido, y en qué se diferencia de la auditoría paso-a-paso.** La auditoría de
+`audit_20260714/` recorre el PIPELINE (pasos 0..39: datos base, abridores, lineup, platoon...).
+Esto es otra cosa y corre en paralelo: recorrer el proyecto **en el orden en que se construiría
+desde cero**, capa por capa, preguntando en cada una "¿qué exigiría este paso si lo escribiera
+hoy?" ANTES de mirar el código —si no, el código define el criterio y siempre aprueba— y después
+midiendo la brecha. Doce pasos:
+
+| # | Paso | # | Paso |
+|---|---|---|---|
+| 0 | Identidad y tiempo | 6 | La primera feature |
+| 1 | Precios | 7 | Distribución / simulador |
+| 2 | Resultados | 8 | Detección de valor |
+| 3 | Evaluador | 9 | Sizing |
+| 4 | Modelo v0 = el mercado | 10 | Publicación |
+| 5 | Datos de entrada PIT | 11 | Reconciliación y CLV |
+| | | 12 | Producto |
+
+**El hallazgo del mapa, antes de tocar nada**: el proyecto está construido **invertido**. Los pasos
+5, 7, 8, 9, 10 y 12 —la maquinaria— están maduros. Los pasos 2, 3, 4 y 6 —la columna de medición—
+son los débiles. Eso explica estructuralmente los siete baselines en tres meses: todos cayeron por
+defectos de MEDICIÓN, no de modelado. Y explica que el hallazgo más caro del proyecto (el modelo no
+le gana al precio: 0.24620 contra 0.24052 de Pinnacle, coeficiente NEGATIVO en la regresión
+conjunta, mezcla óptima w=0.00) apareciera recién el 2026-07-30 en un script suelto de 130 líneas
+—`audit_20260714/estrategia/a1_descomposicion.py`, que ES el paso 3— y llegara décimo.
+
+#### Paso 0 — Identidad y tiempo: 4 de 6
+
+Los DATOS están bien (`official_date` 5.721/5.721, `game_pk` estable, doubleheaders distinguibles).
+Lo que falta es que las reglas las imponga el MECANISMO y no la disciplina del llamador.
+
+- **Borrada `_prediction_cutoff_for_row()`** de `backtest_and_retrain.py`. Devolvía el fin del día
+  DEL JUEGO (`{official_day}T23:59:59Z`) mientras sus cuatro hermanas devuelven día_del_juego − 1s.
+  Cero llamadores de producción; sólo 3 tests que la ejercitaban contra sí misma, borrados con ella.
+  Era un arma cargada: combinada con el `<=` inclusivo de `PITCache.get_latest()` reintroduce el
+  leak de la Fase 2B apenas alguien la conecte.
+- **Residual anotado**: `PITCache.get_latest()` sigue comparando con `<=`. Hoy es seguro sólo
+  porque los cuatro cutoffs restan un segundo a mano.
+- **Residual anotado**: dos convenciones de etiqueta conviven en `pit_metric_cache` —
+  `savant.batter.rolling` y `savant.team_offense.rolling` guardan `DT00:00:00`, defensa/bullpen y
+  los tres `prior_baseline` guardan `DT23:59:59`— y el builder de ofensa etiqueta `T00:00:00Z` un
+  snapshot cuyo `source_window_end_date` es el FIN de ese día. Hoy ambas resuelven al mismo
+  snapshot de D−1: es correcto **por aritmética, no por convención compartida**. Mordería con
+  cualquier corte a media jornada; está dormido porque el camino en vivo no usa el cache PIT
+  (`modules/baseball_module/core/` no tiene una sola referencia a él).
+
+#### Paso 1 — Precios: `market/`, almacén append-only
+
+**Nuevo módulo `market/`** (`data/market.db`, independiente de `picks` y `game_outcomes`). Cinco
+reglas, cada una nacida de un defecto que este proyecto ya pagó, y **ninguna impuesta por
+convención**:
+
+| Regla | Quién la impone |
+|---|---|
+| Append-only | Dos triggers de SQLite abortan `UPDATE` y `DELETE` |
+| Los dos lados, siempre | `pair_before()` devuelve `None` con medio par |
+| Punto FIRMADO pegado a su lado | Una fila por lado, con su propio `point` |
+| `event_id` explícito | `NOT NULL`; sin id del proveedor no se guarda |
+| El libro es parte del dato | `book NOT NULL` |
+
+El motivo: `track_record/capture_closing_lines.py` pide el board **doce veces por día** y hace
+`UPDATE picks SET closing_* = ...` en cada barrida — se pagan doce capturas y se guarda una. El
+docstring lo describía como feature ("last pre-start capture wins"), que es exactamente por qué
+nadie lo cuestionó. `historical_odds` tiene el mismo problema por esquema (`game_pk UNIQUE`, una
+fila por juego, siempre a las 17:00Z: no es el cierre, es una foto de la mañana).
+
+Cron a los `:51` de 8 a 19h, **un minuto después** de la barrida de cierre: esa barrida deja el
+board en la caché de 10 min de `odds_fetcher`, así que es cache hit y **cuesta CERO llamadas
+nuevas**. `market.link_events` una vez al día (el enlace es recuperable, el precio no). Primera
+barrida real: 156 eventos, 34 libros, 12.535 cotizaciones, 0 saltadas; segunda barrida 0 filas
+nuevas y 12.535 sin movimiento, con la barrida igual registrada en `sweep` para que "el mercado no
+se movió" se distinga de "no miramos". 25/25 juegos de MLB enlazados, 0 ambiguos, 6/25 (24%) con
+`official_date != date(commence_time)` — consistente con el 22,2% de la Fase 2B.
+
+Tres arreglos sobre lo que ya existía:
+
+1. **Cobertura 2026: 0% → 90.4%** (779/862). Antes la temporada en curso no tenía UN SOLO precio
+   histórico: era immedible contra el mercado. Costo 5.160 créditos, de los cuales **2.580 se
+   desperdiciaron**: `--dry-run` en `fetch_historical_odds.py` significa "fetch and parse, do not
+   write" — SÍ llama a la API.
+2. **Los "team name mismatch" eran todos Athletics.** `_MLB_TO_ODDS_NAME` traducía en un solo
+   sentido (`"athletics" → "oakland athletics"`) y sólo del lado de MLB; cuando la Odds API pasó a
+   decir "Athletics", la traducción llevaba el nombre LEJOS del de la API en vez de acercarlo.
+   Ahora `_TEAM_ALIASES` canoniza AMBOS lados. Costo medido del bug: 162 juegos de 2025 y 114 de
+   2026 sin precio, atribuidos a "mismatch" sin que nadie mirara cuál.
+3. **La línea justa de los derivados salía de un par sintético.** Runline y total desvigorizaban
+   `{mejor over, mejor under}` — dos máximos a través de 32 casas, potencialmente de casas
+   distintas, un par que no cotiza nadie — mientras el moneyline sí usaba el par propio de
+   Pinnacle. Y `true_implied` no es cosmético: alimenta `edge`, que alimenta `composite_score`,
+   `classify_value_tier` y el guard de implausibilidad. Nuevo `_fair_two_way()`, que además
+   **descarta el par de Pinnacle si cotiza otro punto**. Efecto medido sobre el board real,
+   controlando por punto firmado: media −0.06pp en totales y −0.17pp en runline, máximo ~1pp — es
+   una asimetría real y gratuita de corregir, **no una fuente grande de error**, y no debe citarse
+   como si lo fuera.
+
+   **Lo que enseñó el arreglo**: `tests/test_odds_seam_contract.py` falló y tenía razón. Arreglarlo
+   sólo en el camino de cron habría dejado la UI preciando contra el par sintético — la forma
+   EXACTA del segundo agujero de PURP-1, un arreglo que alcanza una sola de las dos rutas hacia
+   `GameOdds`. Fue en las cinco capas: `_normalize_event` (ya calculaba los valores y no los
+   emitía), `build_game_selector` (con `_safe_signed_float` para los puntos), `MARKET_ODDS_FIELD_MAP`,
+   `GameOdds` y los dos analizadores.
+
+#### Paso 2 — Resultados: 2024/2025 limpios, tres defectos en vivo
+
+Barrido completo de las 5.721 filas de `game_outcomes` contra el schedule real de MLB (API gratis).
+
+**2024 y 2025 salieron 100% limpias** — 4.859 juegos, 0 marcadores discrepantes, 0 fechas
+discrepantes. El dato con el que se entrena y se hace backtest es sólido; los defectos están
+confinados al camino en vivo.
+
+Tres defectos en 2026, con una causa común que los vuelve caros: `update_outcome()` es idempotente
+a propósito (`WHERE actual_home_runs IS NULL`), así que **la guarda que evita re-aprender el mismo
+juego vuelve PERMANENTE cualquier marcador equivocado que entre una vez**.
+
+1. **Un pospuesto guardado como empate.** `game_pk=824490` (Guardians @ Reds): DB `5-5` con
+   `home_won=0`, final real `6-5`. El guard de `c527594` no lo atrapó por dos agujeros simultáneos:
+   `abstractGameState` vale **"Final" también para un juego POSPUESTO** (el que distingue es
+   `detailedState`), y `/schedule?gamePk=` devuelve **DOS bloques de fecha con el mismo gamePk**
+   cuando un juego se pospone y se rejuega — leer `dates[0]` agarraba el cascarón pospuesto.
+2. **Un marcador congelado en pleno juego.** `game_pk=822958`: DB `3-1`, final real `5-1`, 9
+   innings, sin postergación. Predata el guard.
+3. **`home_won = 1 if home > away else 0`** convertía un empate en derrota del local, en silencio.
+
+Corregidos los tres, más una carrera que quedaba: el estado Y el marcador salen ahora de la MISMA
+respuesta (antes el marcador venía de una llamada previa a `/linescore`; si el juego terminaba entre
+las dos, se escribía el parcial). De paso, una llamada menos por juego. Un empate se rechaza y se
+loguea, dejando la fila pendiente. Tests: `tests/test_outcome_finality.py` (4), uno reproduciendo la
+forma exacta de la respuesta de 824490.
+
+**Datos reparados** (backup previo, valores verificados contra la API antes de escribir): 5 filas
+(2 marcadores + 4 fechas oficiales, con solape) y **34 juegos ya jugados sin marcador desde mayo**,
+que quedaban fuera de la ventana de 7 días de `fetch_pending_outcomes` y nunca se iban a recoger.
+Post-reparación: 2026 con 0 discrepancias, 832/862 con resultado (los 30 restantes son de hoy y
+mañana).
+
+**Salvedad que no se borra**: los dos marcadores equivocados ya habían alimentado Kalman y descenso
+de gradiente cuando se escribieron. Se corrigió la verdad de terreno, **no se rebobinó el
+aprendizaje** — fabricar una historia de aprendizaje que no ocurrió sería peor que documentarlo. Los
+34 rellenados tampoco dispararon aprendizaje, por la misma razón: aprenderlos hoy en lote no es lo
+mismo que haberlos aprendido en orden.
+
+**Veredicto del paso**: requisitos 1 y 4 (cobertura, finalidad) cerrados. Los requisitos 2 y 3
+quedan abiertos y son cambios de esquema: `game_outcomes` **mezcla el hecho con la opinión** (el
+marcador real vive junto a λ, `p_home` y las columnas `backtest_*`, que es la misma mezcla que
+permitió CHRON-001), y hay **dos reconciliadores independientes** — la ironía útil es que esa
+duplicación fue lo que DELATÓ el error, porque `picks` tenía el `6-5` correcto mientras
+`game_outcomes` tenía el `5-5`.
+
+#### Residuales de estos tres pasos, por decisión y no por olvido
+
+| # | Residual | Por qué se dejó |
+|---|---|---|
+| 0 | `PITCache.get_latest()` con `<=` inclusivo | La seguridad vive en 4 llamadores, no en el mecanismo |
+| 0 | Dos convenciones de etiqueta en `pit_metric_cache` | Hoy inocuo por aritmética, no por convención |
+| 1 | 276 juegos (Athletics) sin precio | Ya se emparejarían bien; recuperarlos cuesta ~2.580 (2026) y ~7.380 (2025) créditos. Quedaban 4.486 |
+| 2 | `game_outcomes` mezcla hechos con predicciones | Cambio de esquema en la tabla que usa el backtest |
+
+Ninguno bloquea el paso 3, que es el evaluador — donde el mercado deja de ser un dato y pasa a ser
+la barra contra la que compite todo lo demás.
