@@ -205,6 +205,17 @@ def build_game_selector(
             # Pasarlo por el helper de precios lo anulaba en silencio y dejaba
             # este arreglo sin efecto justo donde más importa.
             runline_home_point = _safe_signed_float(row.get("runline_home_point")),
+            # Par propio de Pinnacle para los derivados: es contra lo que se
+            # desvigoriza para obtener la línea justa, igual que pin_home/
+            # pin_away en el moneyline. Los PUNTOS van por `_safe_signed_float`
+            # por la misma razón que runline_home_point — el del local favorito
+            # es −1.5 y `_safe_float` lo anularía.
+            pin_total_over  = _safe_float(row.get("pin_total_over")),
+            pin_total_under = _safe_float(row.get("pin_total_under")),
+            pin_total_point = _safe_signed_float(row.get("pin_total_point")),
+            pin_runline_home = _safe_float(row.get("pin_runline_home")),
+            pin_runline_away = _safe_float(row.get("pin_runline_away")),
+            pin_runline_home_point = _safe_signed_float(row.get("pin_runline_home_point")),
             # odds_fetcher.py::_normalize_event()'s own F5 naming scheme
             # (f5_home_odds/f5_over_odds/f5_under_odds) is a THIRD,
             # independent convention from GameOdds' f5_ml_home/f5_total_over

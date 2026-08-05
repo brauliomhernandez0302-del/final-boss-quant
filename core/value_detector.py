@@ -88,6 +88,18 @@ class GameOdds:
     total_over: Optional[float] = None
     total_under: Optional[float] = None
 
+    # Par propio de Pinnacle para el total, con su punto. Existe por la misma
+    # razón que pin_home/pin_away: la línea justa se obtiene desvigorizando
+    # los DOS lados de UN MISMO libro. total_over/total_under son el MEJOR
+    # precio de cada lado a través de todas las casas, así que su par puede
+    # venir de dos casas distintas y no cotiza ninguna — su overround sale
+    # sistemáticamente bajo (medido el 2026-08-04 sobre el board real: 2.03%
+    # sintético contra 2.90% de Pinnacle) y con él el `edge` que alimenta el
+    # tier y el guard de implausibilidad.
+    pin_total_over: Optional[float] = None
+    pin_total_under: Optional[float] = None
+    pin_total_point: Optional[float] = None
+
     # Run Line (±1.5)
     # `runline_line` es MAGNITUD (el fetcher la construye con abs()). Se conserva
     # para las etiquetas y por compatibilidad, pero la probabilidad de cobertura
@@ -99,6 +111,11 @@ class GameOdds:
     # Punto FIRMADO del lado local: −1.5 si el local es favorito, +1.5 si es
     # underdog. Es el que gobierna el umbral de cobertura de AMBOS lados.
     runline_home_point: Optional[float] = None
+    # Par propio de Pinnacle para el runline — misma razón que pin_total_*.
+    # Medido el 2026-08-04: overround sintético 0.99% contra 2.52% de Pinnacle.
+    pin_runline_home: Optional[float] = None
+    pin_runline_away: Optional[float] = None
+    pin_runline_home_point: Optional[float] = None
 
     # First 5 Innings Moneyline
     f5_ml_home: Optional[float] = None
@@ -144,6 +161,59 @@ def _pinnacle_fair_probs(pin_home: float, pin_away: float) -> Tuple[float, float
     """
     fair = remove_vig_multiplicative([pin_home, pin_away])
     return fair[0], fair[1]
+
+
+def _fair_two_way(
+    side_price: float,
+    opposite_price: float,
+    *,
+    pin_side: Optional[float] = None,
+    pin_opposite: Optional[float] = None,
+    pin_point: Optional[float] = None,
+    target_point: Optional[float] = None,
+    vig_method: str = "multiplicative",
+    market_name: str = "",
+) -> Tuple[float, float, str]:
+    """Línea justa de un mercado de dos lados. Devuelve (justo_lado, justo_opuesto, fuente).
+
+    Prefiere el par propio de Pinnacle, exactamente por la misma razón por la
+    que el moneyline lo hace desde siempre: desvigorizar exige los DOS lados de
+    UN MISMO libro. `side_price`/`opposite_price` son el MEJOR precio de cada
+    lado a través de todas las casas — line shopping, que es lo correcto para
+    APOSTAR — pero como par no cotizan en ningún sitio: su overround sale
+    sistemáticamente bajo (medido el 2026-08-04 sobre el board real: totales
+    2.03% contra 2.90% de Pinnacle; runline 0.99% contra 2.52%), y con él sale
+    corrido el `edge` que alimenta el tier y el guard de implausibilidad.
+
+    El efecto medido es chico —media −0.06pp en totales, −0.17pp en runline,
+    máximo ~1pp— así que esto no corrige un error grande; corrige una asimetría
+    entre mercados que no tiene por qué existir, con datos que el fetcher ya
+    trae.
+
+    `target_point` es el punto que se está preciando. Si Pinnacle cotiza OTRO
+    punto, su par se descarta: un total de 8.5 y uno de 9.0 no son dos lados
+    del mismo mercado, y usar el precio de uno como referencia justa del otro
+    es la misma clase de error de emparejamiento que PURP-1.
+    """
+    if pin_side and pin_opposite:
+        punto_ok = (
+            target_point is None
+            or pin_point is None
+            or abs(float(pin_point) - float(target_point)) < 1e-9
+        )
+        if punto_ok:
+            fair = remove_vig_multiplicative([pin_side, pin_opposite])
+            return fair[0], fair[1], "pinnacle"
+        logger.info(
+            "%s: Pinnacle cotiza el punto %+.1f y se está preciando %+.1f — "
+            "su par no sirve de referencia justa acá, se cae al par tomado",
+            market_name, float(pin_point), float(target_point),
+        )
+
+    ajustado = adjust_for_vig(
+        {"side": side_price, "opposite": opposite_price}, method=vig_method
+    )
+    return ajustado["side"], ajustado["opposite"], vig_method
 
 
 def adjust_for_vig(odds_dict: Dict[str, float], method: str = 'multiplicative') -> Dict[str, float]:
@@ -637,6 +707,9 @@ def analyze_runline(
     bootstrap_ci: bool,
     confidence: float,
     runline_home_point: Optional[float] = None,
+    pin_runline_home: Optional[float] = None,
+    pin_runline_away: Optional[float] = None,
+    pin_runline_home_point: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Analiza el run line usando el PUNTO FIRMADO del lado que se precia.
 
@@ -741,20 +814,28 @@ def analyze_runline(
         home_ci = (max(0.0, p_home_cover - 1.96 * se_home), min(1.0, p_home_cover + 1.96 * se_home))
         away_ci = (max(0.0, p_away_cover - 1.96 * se_away), min(1.0, p_away_cover + 1.96 * se_away))
     
-    # Ajuste vig
-    odds_dict = {'home': runline_home, 'away': runline_away}
-    true_implied = adjust_for_vig(odds_dict, method=vig_method)
+    # Línea justa: el par propio de Pinnacle en el punto que se está preciando,
+    # con caída al par tomado. El punto local que se precia es -_L (si el local
+    # cubre con diff > _L, su línea es -_L).
+    fair_home, fair_away, fair_source = _fair_two_way(
+        runline_home, runline_away,
+        pin_side=pin_runline_home, pin_opposite=pin_runline_away,
+        pin_point=pin_runline_home_point, target_point=-_L,
+        vig_method=vig_method, market_name="RUNLINE",
+    )
+    # El overround que se reporta es el del par TOMADO — es el margen que se
+    # paga realmente al apostar, distinto del que se usa para la línea justa.
     overround = (1/runline_home + 1/runline_away - 1) * 100
-    
+
     # Análisis
     home_analysis = analyze_market_generic(
         p_home_cover, runline_home, home_ci, overround,
-        true_implied['home'], fractional_kelly, f"RUNLINE HOME {_etq_home}", confidence
+        fair_home, fractional_kelly, f"RUNLINE HOME {_etq_home}", confidence
     )
 
     away_analysis = analyze_market_generic(
         p_away_cover, runline_away, away_ci, overround,
-        true_implied['away'], fractional_kelly, f"RUNLINE AWAY {_etq_away}", confidence
+        fair_away, fractional_kelly, f"RUNLINE AWAY {_etq_away}", confidence
     )
     
     # Mejor pick
@@ -1106,19 +1187,23 @@ def evaluate_value_ultra(
             over_ci = (max(0.0, p_over - margin), min(1.0, p_over + margin))
             under_ci = (max(0.0, p_under - margin), min(1.0, p_under + margin))
         
-        odds_dict = {'over': odds.total_over, 'under': odds.total_under}
-        true_implied = adjust_for_vig(odds_dict, method=vig_method)
+        fair_over, fair_under, _fuente_total = _fair_two_way(
+            odds.total_over, odds.total_under,
+            pin_side=odds.pin_total_over, pin_opposite=odds.pin_total_under,
+            pin_point=odds.pin_total_point, target_point=odds.total_line,
+            vig_method=vig_method, market_name=f"TOTAL {odds.total_line}",
+        )
         overround = (1/odds.total_over + 1/odds.total_under - 1) * 100
-        
+
         over_total = analyze_market_generic(
             p_over, odds.total_over, over_ci, overround,
-            true_implied['over'], fractional_kelly, f"OVER {odds.total_line}", confidence,
+            fair_over, fractional_kelly, f"OVER {odds.total_line}", confidence,
             push_prob=p_push,
         )
 
         under_total = analyze_market_generic(
             p_under, odds.total_under, under_ci, overround,
-            true_implied['under'], fractional_kelly, f"UNDER {odds.total_line}", confidence,
+            fair_under, fractional_kelly, f"UNDER {odds.total_line}", confidence,
             push_prob=p_push,
         )
         
@@ -1138,6 +1223,9 @@ def evaluate_value_ultra(
             mc_result, odds.runline_home, odds.runline_away, odds.runline_line,
             home_samples, away_samples, n_sims, fractional_kelly, vig_method, bootstrap_ci,
             confidence, runline_home_point=odds.runline_home_point,
+            pin_runline_home=odds.pin_runline_home,
+            pin_runline_away=odds.pin_runline_away,
+            pin_runline_home_point=odds.pin_runline_home_point,
         )
         
         all_markets['runline'] = runline_result

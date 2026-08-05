@@ -1143,8 +1143,19 @@ def run_module(
                 total_line=_fetched_odds.get('total_line'),
                 total_over=_fetched_odds.get('total_over'),
                 total_under=_fetched_odds.get('total_under'),
+                # Par propio de Pinnacle para el total. El fetcher lo extrae
+                # desde b629f55 (2026-07-26) pero hasta el 2026-08-04 no
+                # llegaba al dataclass, así que `value_detector` desvigorizaba
+                # el par sintético "mejor over + mejor under" —dos casas
+                # distintas— mientras el moneyline sí usaba el par de un libro.
+                pin_total_over=_fetched_odds.get('pin_total_over'),
+                pin_total_under=_fetched_odds.get('pin_total_under'),
+                pin_total_point=_fetched_odds.get('pin_total_point'),
                 runline_home=_fetched_odds.get('runline_home'),
                 runline_away=_fetched_odds.get('runline_away'),
+                pin_runline_home=_fetched_odds.get('pin_runline_home'),
+                pin_runline_away=_fetched_odds.get('pin_runline_away'),
+                pin_runline_home_point=_fetched_odds.get('pin_runline_home_point'),
                 # Real consensus line when the fetcher determined one;
                 # falls back to GameOdds' own 1.5 default otherwise (e.g.
                 # odds came from a caller-supplied dict predating this

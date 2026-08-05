@@ -63,6 +63,12 @@ def _fila_cruda() -> dict:
         "home_odds": 2.02, "away_odds": 1.96,
         "pin_home": 1.98, "pin_away": 1.93,
         "total_line": 8.5, "over_odds": 1.94, "under_odds": 1.98,
+        # Par propio de Pinnacle de cada derivado: es contra lo que se
+        # desvigoriza para la línea justa. El punto del runline va NEGATIVO
+        # a propósito, que es el caso que un helper de precios anula.
+        "pin_total_over": 1.91, "pin_total_under": 1.95, "pin_total_point": 8.5,
+        "pin_runline_home": 1.62, "pin_runline_away": 2.46,
+        "pin_runline_home_point": -1.5,
         "runline_home": 1.64, "runline_away": 2.51,
         "runline_line": 1.5, "runline_home_point": 1.5,
         "f5_home_odds": 1.90, "f5_away_odds": 1.95,

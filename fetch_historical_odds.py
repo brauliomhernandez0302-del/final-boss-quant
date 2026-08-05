@@ -85,8 +85,22 @@ DEFAULT_SEASONS = [2024, 2025, 2026]
 _PINNACLE_KEYS = {"pinnacle"}
 
 # MLB Stats API team names → Odds API team names (where they differ)
-_MLB_TO_ODDS_NAME: Dict[str, str] = {
-    "athletics": "oakland athletics",   # 2025: moved to Sacramento but Odds API kept "Oakland Athletics"
+# Alias → nombre canónico, aplicado a AMBOS lados del emparejamiento.
+#
+# Antes esto era un mapa MLB→Odds de un solo sentido (`"athletics" →
+# "oakland athletics"`) aplicado sólo al lado de MLB. Funcionó mientras la
+# Odds API dijo "Oakland Athletics", y se rompió en silencio cuando pasó a
+# decir "Athletics": la traducción llevaba el nombre de MLB LEJOS del de la
+# API en vez de acercarlo. Costo medido el 2026-08-04: 162 juegos de 2025 y
+# 114 de 2026 sin precio, todos de este equipo, atribuidos a "team name
+# mismatch" sin que nadie mirara cuál.
+#
+# Canonizar los dos lados es inmune a que cualquiera de las dos fuentes cambie
+# el nombre: alcanza con agregar el alias nuevo acá.
+_TEAM_ALIASES: Dict[str, str] = {
+    "oakland athletics":    "athletics",
+    "sacramento athletics": "athletics",
+    "las vegas athletics":  "athletics",
 }
 
 
@@ -345,8 +359,8 @@ def match_games(
     Returns list of (odds_game, game_pk) pairs.
     """
     def _norm(name: str) -> str:
-        low = name.lower()
-        return _MLB_TO_ODDS_NAME.get(low, low)
+        low = name.strip().lower()
+        return _TEAM_ALIASES.get(low, low)
 
     # Index date_games by normalised (home, away)
     db_by_matchup: Dict[Tuple[str, str], List[int]] = defaultdict(list)
@@ -359,7 +373,10 @@ def match_games(
     # Index odds games by normalised (home, away)
     odds_by_matchup: Dict[Tuple[str, str], List[dict]] = defaultdict(list)
     for og in odds_games:
-        key = (og["home_team"].lower(), og["away_team"].lower())
+        # _norm en AMBOS lados — ver la nota de _TEAM_ALIASES. Antes acá iba
+        # un .lower() suelto, así que la canonización del lado de MLB no tenía
+        # con qué encontrarse.
+        key = (_norm(og["home_team"]), _norm(og["away_team"]))
         odds_by_matchup[key].append(og)
     for key in odds_by_matchup:
         odds_by_matchup[key].sort(key=lambda g: g["commence_time"])

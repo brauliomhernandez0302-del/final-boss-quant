@@ -524,6 +524,20 @@ def _normalize_event(event: Dict) -> Dict:
     result["f5_under_odds"] = f5_under_price
     result["f5_rl_home"]    = f5_rl_home_price
     result["f5_rl_away"]    = f5_rl_away_price
+    # Par propio de Pinnacle para los derivados, con su punto. Se calculaban
+    # acá arriba desde b629f55 y no se emitían, así que el camino del SELECTOR
+    # de la UI no tenía con qué construir una línea justa coherente y quedaba
+    # desvigorizando el par sintético "mejor de cada lado" — dos casas
+    # distintas. El camino de cron sí los tenía (get_best_odds_for_teams los
+    # devuelve), de modo que los dos entrypoints preciaban distinto el mismo
+    # mercado. Es la misma forma del segundo agujero de PURP-1: un arreglo que
+    # sólo alcanzó a una de las dos rutas hacia `GameOdds`.
+    result["pin_total_over"]        = pin_total_over
+    result["pin_total_under"]       = pin_total_under
+    result["pin_total_point"]       = pin_total_point
+    result["pin_runline_home"]      = pin_rl_home_price
+    result["pin_runline_away"]      = pin_rl_away_price
+    result["pin_runline_home_point"] = pin_rl_home_point
     return result
 
 
