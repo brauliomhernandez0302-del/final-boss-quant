@@ -1025,3 +1025,39 @@ encuentra defectos de plomería reales —el recorrido ya encontró varios— pe
 veredicto. La única puerta que sigue abierta con evidencia a favor son los mercados DERIVADOS,
 donde el fix del simulador sí corrigió un sesgo medido (VAL-1.3: 11.58pp → 3.05pp) y donde nunca se
 midió rentabilidad por falta de líneas históricas.
+
+##### Paso 6 hecho como BUILD, no como auditoría: `l0` es la primera feature
+
+`a8` pasó los nueve motores YA CONSTRUIDOS por el portón del paso 6 — eso es auditoría, no build.
+El paso 6 de verdad construye UNA feature y la somete al portón. De lo que existe, el equivalente
+es **`l0` (la TTE de ofensa)**, y no por gusto: los otros siete motores son MULTIPLICADORES sobre
+`l0` (`pitcher`, `bullpen`, `defense`, `park`, `hfa`, `context`, `bias`). Desde cero no se puede
+empezar por el ajuste de abridor porque no hay λ que ajustar todavía. `l0` es lo único que se
+sostiene solo, y es además lo más sofisticado del proyecto.
+
+`a9_l0_como_primera_feature.py` (solo lectura, repetible) la convierte a P(gana el local) con
+Skellam —sin simulador, que no hace falta para moneyline— y la pasa por el evaluador completo:
+
+```
+  Brier l0 solo    0.24755  (ventaja sobre azar +0.979%)
+  Brier mercado    0.24052  (ventaja sobre azar +3.792%)
+  b_candidato      -0.4067   IC95 [-0.8576, -0.0035]   P(b>0)=2.0%
+  ROI  2%: -0.29%   4%: -1.41%   6%: -1.73%   8%: -3.19%   10%: -4.69%
+  mezcla fuera de muestra: gana v0 SOLO en los dos pliegues
+```
+
+**El IC excluye el cero POR ABAJO**, y eso es más fuerte que "no aporta": condicionado al precio,
+la predicción de `l0` EMPEORA. Donde `l0` discrepa del mercado, el mercado tiene razón de forma
+sistemática — lo que queda de `l0` tras descontar lo que el precio ya sabe es, sobre todo, su
+sesgo.
+
+**El matiz que corresponde a los otros ocho motores**: `l0` sola da 0.24755 y el pipeline completo
+da 0.24620, contra 0.24052 del mercado. O sea que **los ocho ajustes SÍ mejoran sobre su propia
+base — cierran el 19% de la distancia entre `l0` y el mercado — y ahí se detienen.** No es que los
+motores no hagan nada; es que la base desde la que parten está demasiado lejos.
+
+**Convergencia de los dos marcos**: un build desde cero, aplicando su propia regla en el paso 6, no
+habría conservado ninguna de las nueve señales que este proyecto construyó. No porque estén mal
+programadas —varias están muy bien hechas— sino porque ninguna se midió contra el precio mientras
+se construía. Eso no lo descubrió el paso 6: lo causó que la balanza (paso 3) llegara décima en vez
+de tercera.
