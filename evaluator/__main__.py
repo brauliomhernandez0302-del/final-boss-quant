@@ -54,6 +54,15 @@ def _imprimir(rep: Report) -> None:
         roi = f"{r['roi_pct']:+.2f}%" if r["roi_pct"] is not None else "  n/a"
         print(f"    {100*r['umbral']:6.0f}% {r['n']:9d} {r['pnl_u']:10.2f} {roi:>9}")
 
+    if rep.mezcla:
+        print("\n  MEZCLA FUERA DE MUESTRA (¿le gana algo a v0 = el mercado?)")
+        print(f"    {'pliegue':>8} {'n_test':>7} {'v0':>9} {'v0 recal':>9} {'mezcla':>9} {'b_cand':>8}")
+        for r in rep.mezcla:
+            print(f"    {str(r['pliegue']):>8} {r['n_test']:7d} {r['brier_v0']:9.5f} "
+                  f"{r['brier_v0_recalibrado']:9.5f} {r['brier_mezcla']:9.5f} "
+                  f"{r['b_candidato_ajustado']:+8.4f}"
+                  f"   {'mezcla gana' if r['brier_mezcla'] < r['brier_v0'] else 'v0 SOLO gana'}")
+
     print("\n  CALIBRACIÓN POR DECIL")
     print(f"    {'n':>5} {'candidato: pred':>16} {'real':>7}   |{'mercado: pred':>16} {'real':>7}")
     for a, b in zip(rep.calib_candidato, rep.calib_mercado):

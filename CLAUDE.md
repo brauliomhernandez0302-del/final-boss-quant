@@ -895,3 +895,39 @@ plantada tampoco detectaría una real.
   sigue sin medirse — la única herramienta para esos mercados sigue siendo
   `audit_20260714/val_audit/derived_eval/`, y mide CALIBRACIÓN, no rentabilidad.
 - Los cinco scripts que consumen `_data.npz` de a1 no se migraron; a1 sigue en pie.
+
+#### Paso 4 — El modelo v0 = el mercado (2026-08-04)
+
+v0 = `devig(par de Pinnacle)`, ya ejecutable como candidato de primera clase del evaluador. Lo que
+tenía contenido en este paso era la pregunta que v0 obliga a hacer: **¿existe alguna mezcla de v0
+con el modelo que le gane a v0 SOLO?** `a1_descomposicion.py` la respondió sólo EN MUESTRA (barrido
+de pesos sobre los mismos datos, óptimo w=0.00). Fuera de muestra es otra pregunta.
+
+Nuevo `mezcla_fuera_de_muestra()`: ajusta `y ~ logit(v0) + logit(candidato)` en un pliegue y lo
+aplica al otro, comparando contra el v0 evaluado en ESE MISMO pliegue de prueba. Los pliegues son
+temporadas enteras y no filas al azar a propósito — un corte aleatorio pondría juegos del mismo día
+a ambos lados y el ajuste aprendería del futuro por la puerta de al lado.
+
+```
+ pliegue  n_test         v0   v0 recal     mezcla    b_cand    veredicto
+    2024    2391    0.24042    0.24102    0.24098   -0.0650    v0 SOLO gana
+    2025    2232    0.24063    0.24106    0.24131   -0.2129    v0 SOLO gana
+```
+
+**Ninguna mezcla le gana a v0, en ninguna dirección del corte**, y el coeficiente ajustado del
+candidato es NEGATIVO en los dos pliegues — consistente con la regresión conjunta.
+
+**El detalle que dice más que el veredicto**: `v0 recalibrado` (0.24102 / 0.24106) es PEOR que `v0`
+crudo (0.24042 / 0.24063) en los dos pliegues. Ajustarle una logística al precio desvigorizado de
+Pinnacle lo empeora: está tan bien calibrado que cualquier corrección le agrega ruido. Eso acota
+cuánto se puede esperar de recalibrar contra el mercado — la respuesta es nada.
+
+**Lectura honesta del estado, que no debe suavizarse**: sobre moneyline, con 4.623 juegos de
+2024-2025, el modelo no aporta información sobre el precio (IC95 del coeficiente conjunto incluye
+el cero, P(b>0)=14.2%), ninguna mezcla lo rescata fuera de muestra, y el ROI empeora al subir el
+umbral de edge. Eso NO significa "usar el mercado para apostar" —un modelo que ES el mercado tiene
+edge cero por construcción— sino que **hoy no hay apuesta demostrada que hacer en moneyline**. La
+pregunta abierta del proyecto sigue abierta, y ahora con instrumento para responderla.
+
+Tests: 3 más en `tests/test_evaluator.py` (13 en total), con control positivo — si una señal
+plantada no aparece en la mezcla fuera de muestra, el instrumento no serviría para aceptar ninguna.

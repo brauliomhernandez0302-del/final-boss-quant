@@ -130,3 +130,47 @@ def test_la_calibracion_parte_en_grupos_de_igual_tamano():
     assert sum(g["n"] for g in grupos) == 100
     predichos = [g["predicho"] for g in grupos]
     assert predichos == sorted(predichos)
+
+
+# ── Paso 4: v0 = el mercado, y la mezcla fuera de muestra ────────────────
+
+
+def test_la_mezcla_no_ayuda_cuando_el_candidato_es_ruido():
+    """Fuera de muestra, un candidato sin señal no mejora a v0.
+
+    En muestra siempre encontraría un peso que no daña — por eso la pregunta
+    del paso 4 sólo tiene sentido fuera de muestra.
+    """
+    from evaluator.score import mezcla_fuera_de_muestra
+
+    f = _frame(n=1200, seed=5)
+    f.season = np.where(np.arange(len(f)) < 600, 2024, 2025)
+    ruido = np.random.default_rng(2).uniform(0.3, 0.7, len(f))
+    pliegues = mezcla_fuera_de_muestra(f, ruido)
+    assert len(pliegues) == 2
+    assert all(r["brier_mezcla"] >= r["brier_v0"] - 1e-4 for r in pliegues)
+
+
+def test_la_mezcla_si_ayuda_con_un_candidato_que_aporta():
+    """Control positivo del paso 4: si una señal real no aparece acá, el
+    instrumento no serviría para aceptar ninguna."""
+    from evaluator.score import mezcla_fuera_de_muestra
+
+    f = _frame(n=1200, seed=6)
+    f.season = np.where(np.arange(len(f)) < 600, 2024, 2025)
+    util = np.clip(f.p_market + 0.20 * (f.y - 0.5), 0.02, 0.98)
+    pliegues = mezcla_fuera_de_muestra(f, util)
+    assert all(r["brier_mezcla"] < r["brier_v0"] for r in pliegues)
+    assert all(r["b_candidato_ajustado"] > 0 for r in pliegues)
+
+
+def test_los_pliegues_son_temporadas_enteras_no_filas_al_azar():
+    """Un corte aleatorio pondría juegos del mismo día a ambos lados y el
+    ajuste aprendería del futuro por la puerta de al lado."""
+    from evaluator.score import mezcla_fuera_de_muestra
+
+    f = _frame(n=800)
+    f.season = np.where(np.arange(len(f)) < 400, 2024, 2025)
+    pliegues = mezcla_fuera_de_muestra(f, f.p_market.copy())
+    assert [r["pliegue"] for r in pliegues] == [2024, 2025]
+    assert all(r["n_test"] == 400 for r in pliegues)

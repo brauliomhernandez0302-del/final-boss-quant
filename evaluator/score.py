@@ -121,6 +121,52 @@ def roi_por_umbral(
     return out
 
 
+def mezcla_fuera_de_muestra(
+    frame: EvalFrame,
+    p: np.ndarray,
+    *,
+    particion: str = "season",
+) -> List[dict]:
+    """¿Alguna mezcla de v0 con el candidato le gana a v0 SOLO, fuera de muestra?
+
+    Ésta es la pregunta del paso 4, y sólo tiene sentido fuera de muestra. Un
+    barrido de pesos sobre los mismos datos siempre encuentra un peso que ayuda
+    o, en el mejor caso, uno que no daña: no distingue señal de sobreajuste.
+
+    Se ajusta `y ~ logit(v0) + logit(candidato)` en un pliegue y se aplica al
+    otro. La comparación es contra `v0` evaluado en ESE MISMO pliegue de prueba,
+    nunca contra el `v0` global — si no, se compararían dos muestras distintas.
+
+    Los pliegues son temporadas enteras y no filas al azar, a propósito: un
+    corte aleatorio pondría juegos del mismo día a ambos lados y el ajuste
+    aprendería del futuro por la puerta de al lado.
+    """
+    Lm, Lc = _logit(frame.p_market), _logit(p)
+    pliegues = np.unique(getattr(frame, particion))
+    if len(pliegues) < 2:
+        return []
+
+    out = []
+    for prueba in pliegues:
+        test = getattr(frame, particion) == prueba
+        train = ~test
+        if train.sum() < 50 or test.sum() < 50:
+            continue
+        b = _fit_logistica(np.column_stack([Lm[train], Lc[train]]), frame.y[train])
+        p_mezcla = 1 / (1 + np.exp(-(b[0] + b[1] * Lm[test] + b[2] * Lc[test])))
+        b_v0 = _fit_logistica(Lm[train][:, None], frame.y[train])
+        p_v0_cal = 1 / (1 + np.exp(-(b_v0[0] + b_v0[1] * Lm[test])))
+        out.append({
+            "pliegue": (prueba.item() if hasattr(prueba, "item") else prueba),
+            "n_test": int(test.sum()),
+            "brier_v0": brier(frame.p_market[test], frame.y[test]),
+            "brier_v0_recalibrado": brier(p_v0_cal, frame.y[test]),
+            "brier_mezcla": brier(p_mezcla, frame.y[test]),
+            "b_candidato_ajustado": float(b[2]),
+        })
+    return out
+
+
 @dataclass
 class Report:
     nombre: str
@@ -139,6 +185,7 @@ class Report:
     p_b_candidato_positivo: float
     n_bootstrap: int
     roi: List[dict] = field(default_factory=list)
+    mezcla: List[dict] = field(default_factory=list)
     calib_candidato: List[dict] = field(default_factory=list)
     calib_mercado: List[dict] = field(default_factory=list)
 
@@ -222,6 +269,7 @@ def evaluate(
         p_b_candidato_positivo=p_pos,
         n_bootstrap=len(coefs),
         roi=roi_por_umbral(p, f),
+        mezcla=mezcla_fuera_de_muestra(f, p),
         calib_candidato=calibracion(p, f.y),
         calib_mercado=calibracion(f.p_market, f.y),
     )
