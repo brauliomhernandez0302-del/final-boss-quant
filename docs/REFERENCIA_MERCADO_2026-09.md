@@ -45,12 +45,22 @@ python3 -m fbq.evaluator --seasons 2024 2025 2026 --candidato mercado --almacen 
 | marco | n | Brier | tasa local | overround |
 |---|---|---|---|---|
 | legado (`predictions_history.db`) | 5.429 | 0,241560 | 0,5349 | 2,098% |
-| propio, sin excluir en vivo | 6.245 | 0,241333 | 0,5331 | 2,103% |
-| **propio, excluyendo en vivo** | **6.106** | **0,242124** | **0,5341** | **2,048%** |
+| propio, sin filtro temporal | 6.245 | 0,241333 | 0,5331 | 2,103% |
+| **propio, excluyendo en vivo — la referencia** | **6.106** | **0,242124** | **0,5341** | **2,048%** |
 
 El Brier **sube** 0,00056 al pasar del legado a la referencia nueva. No es un
 empeoramiento del mercado: son dos correcciones que iban en esa dirección y una
 muestra más grande. Ver abajo.
+
+> ⚠️ **La fila "sin filtro temporal" NO es la referencia con los 139 juegos
+> devueltos, y las tres cifras no forman una partición.** La primera versión de
+> este documento las publicó de forma que invitaba a esa lectura, y la media
+> ponderada de los dos grupos da 0,241809, no 0,241333. La causa está en las
+> cohortes, no en los datos ni en la aritmética: 25 juegos aparecen en las dos
+> filas **con precios distintos**. La conciliación completa, con el detalle
+> juego por juego, está en `docs/CONCILIACION_BRIER_2026-09-06.md`. **La
+> referencia —6.106 juegos, 0,242124— no cambia**: se calcula sólo con precios
+> prepartido y no estaba afectada.
 
 ## Control positivo — los dos almacenes dan el MISMO número
 
@@ -82,18 +92,27 @@ La foto histórica se pidió siempre a las **17:00Z del día del juego**, y para
 los partidos que empiezan antes de esa hora la "cotización" es en realidad un
 precio **en vivo**.
 
-| temporada | juegos excluidos |
-|---|---|
-| 2024 | 48 |
-| 2025 | 53 |
-| 2026 | 38 |
-| **total** | **139** — 2,23% de 6.245 |
+En el universo sin filtrar (6.245 juegos), **164 usan un precio posterior al
+primer lanzamiento**. Se reparten en dos grupos que hacen cosas distintas:
 
-**Por qué importa, medido**: el Brier del mercado sobre los 139 excluidos es
-**0,227976**, contra 0,242124 sobre los que quedan. Un precio en vivo sabe
-cosas que un modelo pre-juego no puede saber; dejarlo dentro hacía parecer al
-nulo mejor de lo que es, y cualquier candidato se habría medido contra un rival
-que ya había visto parte del partido.
+| grupo | n | qué pasa al filtrar |
+|---|---|---|
+| tienen **sólo** precio en vivo | **139** | **salen del marco**: sin precio prepartido no hay nulo |
+| tienen también precio prepartido | **25** | **se quedan**, con su precio prepartido en vez del de en vivo |
+| usan precio prepartido desde el vamos | 6.081 | no cambian |
+
+6.081 + 139 + 25 = 6.245 · 6.081 + 25 = **6.106**, el marco de referencia.
+
+Los 139 son de la foto histórica de las 17:00Z (48 en 2024, 53 en 2025, 38 en
+2026). Los 25 son de la captura propia en vivo del 2026-08-04 al 08-07, la
+única ventana con trayectoria real.
+
+**Por qué importa, medido**: el Brier del mercado sobre los 139 es **0,227976**
+contra 0,242124 sobre el marco de referencia; y sobre los 25, el mismo juego
+pasa de **0,234231** con su precio prepartido a **0,115213** con el de en vivo.
+Un precio en vivo sabe cosas que un modelo pre-juego no puede saber; dejarlo
+dentro hacía parecer al nulo mejor de lo que es, y cualquier candidato se
+habría medido contra un rival que ya había visto parte del partido.
 
 No se borran del almacén: un precio en vivo es un dato legítimo de otro
 producto. Se excluyen al leer, con `solo_pregame=True`, que es el default.
