@@ -28,9 +28,9 @@ from fbq.model.candidato import CONFIG, construir, evaluar_expansivo
 
 CAMPOS = [
     "game_pk", "official_date", "season", "home_team", "away_team",
-    "corte", "inicio_utc", *F.NOMBRES, "n_previos_local", "n_previos_visita",
-    "p_v1", "p_tasa_base", "p_mercado", "resultado_local",
-    "brier_v1", "brier_tasa_base", "brier_mercado",
+    "corte", "inicio_utc", *F.TODAS, "n_previos_local", "n_previos_visita",
+    "p_v12", "p_v13", "delta_p", "p_tasa_base", "p_mercado", "resultado_local",
+    "brier_v12", "brier_v13", "delta_brier", "brier_tasa_base", "brier_mercado",
 ]
 
 
@@ -74,7 +74,14 @@ def main() -> None:
     args = ap.parse_args()
 
     filas, excl = construir(args.seasons)
-    candidatos = evaluar_expansivo(filas, args.evaluar)
+    # Las dos versiones sobre las MISMAS filas y los MISMOS cortes: lo único
+    # que cambia entre ellas es qué columnas entran al ajuste.
+    por_version = {
+        "v1.2": evaluar_expansivo(filas, args.evaluar, nombres=F.NOMBRES),
+        "v1.3": evaluar_expansivo(filas, args.evaluar, nombres=F.NOMBRES_V13),
+    }
+    candidatos = por_version["v1.3"]
+    base = {c.temporada: c for c in por_version["v1.2"]}
 
     detalle: List[Dict[str, Any]] = []
     resumen: Dict[str, Any] = {
@@ -95,20 +102,26 @@ def main() -> None:
     }
 
     for c in candidatos:
+        b = base[c.temporada]
+        assert [f.game_pk for f in b.filas] == [f.game_pk for f in c.filas], \
+            "las dos versiones tienen que evaluarse sobre las MISMAS filas"
         for i, f in enumerate(c.filas):
+            y = int(c.y[i])
+            p12, p13 = float(b.p_v1[i]), float(c.p_v1[i])
             detalle.append({
                 "game_pk": f.game_pk, "official_date": f.official_date,
                 "season": f.season, "home_team": f.home_team,
                 "away_team": f.away_team, "corte": f.corte,
                 "inicio_utc": f.inicio_utc,
-                **dict(zip(F.NOMBRES, f.x)),
+                **dict(zip(F.TODAS, f.x)),
                 "n_previos_local": f.extra.get("n_local"),
                 "n_previos_visita": f.extra.get("n_visita"),
-                "p_v1": float(c.p_v1[i]),
+                "p_v12": p12, "p_v13": p13, "delta_p": p13 - p12,
                 "p_tasa_base": float(c.p_tasa_base[i]),
                 "p_mercado": float(c.p_mercado[i]),
-                "resultado_local": int(c.y[i]),
-                "brier_v1": float((c.p_v1[i] - c.y[i]) ** 2),
+                "resultado_local": y,
+                "brier_v12": (p12 - y) ** 2, "brier_v13": (p13 - y) ** 2,
+                "delta_brier": (p13 - y) ** 2 - (p12 - y) ** 2,
                 "brier_tasa_base": float((c.p_tasa_base[i] - c.y[i]) ** 2),
                 "brier_mercado": float((c.p_mercado[i] - c.y[i]) ** 2),
             })
@@ -139,9 +152,19 @@ def main() -> None:
             "lambda_l2": c.modelo.lambda_l2,
             "metricas": {
                 nom: {"brier": brier(p, c.y), "log_loss": log_loss(p, c.y)}
-                for nom, p in (("v1", c.p_v1), ("tasa_base", c.p_tasa_base),
+                for nom, p in (("v1.3", c.p_v1), ("v1.2", b.p_v1),
+                               ("tasa_base", c.p_tasa_base),
                                ("mercado_interseccion", c.p_mercado))
             },
+            "aporte_del_componente": {
+                "delta_brier": brier(c.p_v1, c.y) - brier(b.p_v1, c.y),
+                "delta_log_loss": log_loss(c.p_v1, c.y) - log_loss(b.p_v1, c.y),
+                "coef_b2b_visita": c.modelo.coeficientes["b2b_visita"],
+                "juegos_con_prediccion_distinta": int(
+                    sum(1 for i in range(len(c.y))
+                        if abs(float(c.p_v1[i]) - float(b.p_v1[i])) > 1e-12)),
+            },
+            "coeficientes_v12": b.modelo.coeficientes,
             "brier_mercado_marco_completo": brier(marco.p_market, marco.y),
             "veredicto_evaluador": {
                 "n": rep.n,

@@ -1,0 +1,289 @@
+{
+  "config": {
+    "preregistro": "docs/PREREGISTRO_MODELO_V1_2026-09-06.md",
+    "variables": [
+      "dif_pitagorica",
+      "dif_descanso"
+    ],
+    "ventana": 162,
+    "min_juegos_previos": 30,
+    "k_regresion": 67,
+    "exponente_pitagorico": 1.83,
+    "tope_descanso": 5,
+    "lambda_l2": 1.0,
+    "corte": "captured_at del precio de referencia (último par de Pinnacle pre-juego)",
+    "evaluacion": "HISTÓRICA — 2025 y 2026 ya fueron explorados por el proyecto"
+  },
+  "advertencia": "Evaluación HISTÓRICA, no fuera de muestra: 2025 y 2026 ya fueron explorados por este proyecto. El diseño temporal impide que el modelo vea el futuro, no que lo haya visto quien eligió las variables.",
+  "cobertura": {
+    "filas_predecibles": 5736,
+    "por_temporada": {
+      "2024": 1988,
+      "2025": 2191,
+      "2026": 1557
+    },
+    "exclusiones": {
+      "sin_precio_pinnacle_pre_juego": 1558,
+      "historial_insuficiente": 370
+    }
+  },
+  "temporadas": {
+    "2025": {
+      "entrenamiento": {
+        "temporadas": [
+          2024
+        ],
+        "n": 1988,
+        "tasa_base": 0.5306841046277666
+      },
+      "n_evaluables": 2191,
+      "n_marco_completo": 2191,
+      "coeficientes": {
+        "intercepto": 0.12560044235854106,
+        "dif_pitagorica": 0.2947384860643712,
+        "dif_descanso": -0.08684596071551683,
+        "b2b_visita": 0.04700259370577906
+      },
+      "lambda_l2": 1.0,
+      "metricas": {
+        "v1.3": {
+          "brier": 0.2432790892671511,
+          "log_loss": 0.6794834551132259
+        },
+        "v1.2": {
+          "brier": 0.24323816735192993,
+          "log_loss": 0.6794033099476613
+        },
+        "tasa_base": {
+          "brier": 0.2479585319464954,
+          "log_loss": 0.6890602928203333
+        },
+        "mercado_interseccion": {
+          "brier": 0.2414173130137386,
+          "log_loss": 0.6754167225609204
+        }
+      },
+      "aporte_del_componente": {
+        "delta_brier": 4.092191522117594e-05,
+        "delta_log_loss": 8.014516556464901e-05,
+        "coef_b2b_visita": 0.04700259370577906,
+        "juegos_con_prediccion_distinta": 2191
+      },
+      "coeficientes_v12": {
+        "intercepto": 0.1256346680072203,
+        "dif_pitagorica": 0.2946444468708946,
+        "dif_descanso": -0.0799962995693291
+      },
+      "brier_mercado_marco_completo": 0.2414173130137386,
+      "veredicto_evaluador": {
+        "n": 2191,
+        "brier_candidato": 0.2432790892671511,
+        "brier_mercado": 0.2414173130137386,
+        "brecha": 0.0018617762534125226,
+        "b_candidato": 0.20204595018302854,
+        "ic95": [
+          -0.23913593230956098,
+          0.6241467631888461
+        ],
+        "p_b_positivo": 0.7925,
+        "aporta_sobre_el_precio": false,
+        "roi": [
+          {
+            "umbral": 0.02,
+            "n": 1632,
+            "pnl_u": 41.53,
+            "roi_pct": 2.545,
+            "ic95_roi_pct": [
+              -2.283,
+              7.361
+            ],
+            "p_roi_positivo": 0.848
+          },
+          {
+            "umbral": 0.04,
+            "n": 1124,
+            "pnl_u": 52.96,
+            "roi_pct": 4.712,
+            "ic95_roi_pct": [
+              -2.312,
+              11.406
+            ],
+            "p_roi_positivo": 0.875
+          },
+          {
+            "umbral": 0.06,
+            "n": 675,
+            "pnl_u": 34.62,
+            "roi_pct": 5.129,
+            "ic95_roi_pct": [
+              -3.689,
+              15.216
+            ],
+            "p_roi_positivo": 0.838
+          },
+          {
+            "umbral": 0.08,
+            "n": 389,
+            "pnl_u": 19.2,
+            "roi_pct": 4.936,
+            "ic95_roi_pct": [
+              -5.466,
+              17.182
+            ],
+            "p_roi_positivo": 0.79
+          },
+          {
+            "umbral": 0.1,
+            "n": 214,
+            "pnl_u": -0.11,
+            "roi_pct": -0.051,
+            "ic95_roi_pct": [
+              -14.701,
+              16.087
+            ],
+            "p_roi_positivo": 0.468
+          }
+        ],
+        "mezcla_fuera_de_muestra": []
+      }
+    },
+    "2026": {
+      "entrenamiento": {
+        "temporadas": [
+          2024,
+          2025
+        ],
+        "n": 4179,
+        "tasa_base": 0.5400813591768365
+      },
+      "n_evaluables": 1557,
+      "n_marco_completo": 1557,
+      "coeficientes": {
+        "intercepto": 0.16417691603431755,
+        "dif_pitagorica": 0.2969289480240814,
+        "dif_descanso": -0.03545883594577028,
+        "b2b_visita": 0.03177437971299314
+      },
+      "lambda_l2": 1.0,
+      "metricas": {
+        "v1.3": {
+          "brier": 0.24836828475421677,
+          "log_loss": 0.6899892299714574
+        },
+        "v1.2": {
+          "brier": 0.24819311665153698,
+          "log_loss": 0.6896158577347427
+        },
+        "tasa_base": {
+          "brier": 0.2494698725713962,
+          "log_loss": 0.6920881047894925
+        },
+        "mercado_interseccion": {
+          "brier": 0.2464108196142687,
+          "log_loss": 0.6859831502207325
+        }
+      },
+      "aporte_del_componente": {
+        "delta_brier": 0.00017516810267978467,
+        "delta_log_loss": 0.00037337223671474185,
+        "coef_b2b_visita": 0.03177437971299314,
+        "juegos_con_prediccion_distinta": 1557
+      },
+      "coeficientes_v12": {
+        "intercepto": 0.16413931993892214,
+        "dif_pitagorica": 0.29648673149411,
+        "dif_descanso": -0.031198164734696547
+      },
+      "brier_mercado_marco_completo": 0.2464108196142687,
+      "veredicto_evaluador": {
+        "n": 1557,
+        "brier_candidato": 0.24836828475421677,
+        "brier_mercado": 0.2464108196142687,
+        "brecha": 0.0019574651399480725,
+        "b_candidato": 0.04755106242401422,
+        "ic95": [
+          -0.5374878037148422,
+          0.5314103068361685
+        ],
+        "p_b_positivo": 0.555,
+        "aporta_sobre_el_precio": false,
+        "roi": [
+          {
+            "umbral": 0.02,
+            "n": 1109,
+            "pnl_u": 8.88,
+            "roi_pct": 0.801,
+            "ic95_roi_pct": [
+              -5.55,
+              6.616
+            ],
+            "p_roi_positivo": 0.59
+          },
+          {
+            "umbral": 0.04,
+            "n": 709,
+            "pnl_u": 27.04,
+            "roi_pct": 3.814,
+            "ic95_roi_pct": [
+              -4.695,
+              12.212
+            ],
+            "p_roi_positivo": 0.812
+          },
+          {
+            "umbral": 0.06,
+            "n": 443,
+            "pnl_u": 30.84,
+            "roi_pct": 6.962,
+            "ic95_roi_pct": [
+              -3.217,
+              17.366
+            ],
+            "p_roi_positivo": 0.92
+          },
+          {
+            "umbral": 0.08,
+            "n": 248,
+            "pnl_u": 15.71,
+            "roi_pct": 6.335,
+            "ic95_roi_pct": [
+              -7.548,
+              20.693
+            ],
+            "p_roi_positivo": 0.823
+          },
+          {
+            "umbral": 0.1,
+            "n": 136,
+            "pnl_u": 5.17,
+            "roi_pct": 3.801,
+            "ic95_roi_pct": [
+              -17.747,
+              29.337
+            ],
+            "p_roi_positivo": 0.623
+          }
+        ],
+        "mezcla_fuera_de_muestra": []
+      }
+    }
+  },
+  "version_codigo": {
+    "commit": "5684d323c459698932507f7a62f3268d64d39745",
+    "rama": "recuperacion/fbq",
+    "arbol_limpio": false
+  },
+  "version_datos": {
+    "market.db": {
+      "filas": 143899,
+      "primera_captura": "2024-03-20T17:00:00+00:00",
+      "ultima_captura": "2026-08-07T23:37:57.009995+00:00",
+      "eventos_enlazados": 6295
+    },
+    "results.db": {
+      "juegos": 7664,
+      "primer_dia": "2024-03-20",
+      "ultimo_dia": "2026-08-06"
+    }
+  }
+}

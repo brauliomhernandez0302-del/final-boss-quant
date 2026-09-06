@@ -139,11 +139,12 @@ def _perturbar(db: Path, game_pks: Sequence[int]) -> Dict[int, Tuple[int, int]]:
         con.close()
 
 
-def _modelo_fijo(filas: Sequence[Fila], temporada: int) -> Logistica:
+def _modelo_fijo(filas: Sequence[Fila], temporada: int,
+                 nombres: Sequence[str] = F.NOMBRES) -> Logistica:
     """El modelo entrenado con las temporadas anteriores, que no se perturban."""
     tr = [f for f in filas if f.season < temporada]
-    X, y = _matriz(tr)
-    return ajustar(X, y, F.NOMBRES)
+    X, y = _matriz(tr, nombres)
+    return ajustar(X, y, tuple(nombres))
 
 
 def verificar(
@@ -155,6 +156,7 @@ def verificar(
     db_resultados: Path = DB_RESULTADOS,
     tmp: Optional[Path] = None,
     constructor: Optional[Callable] = None,
+    nombres: Sequence[str] = F.NOMBRES,
 ) -> Informe:
     """Corre las pruebas 1 y 2 sobre los partidos de `dias`.
 
@@ -170,7 +172,7 @@ def verificar(
                                          db_resultados=tmp)
         base, _ = construir(seasons, db_mercado=db_mercado, db_resultados=tmp,
                             precios=precios, constructor=constructor)
-        modelo = _modelo_fijo(base, temporada)
+        modelo = _modelo_fijo(base, temporada, nombres)
         b_por_pk = {f.game_pk: f for f in base}
 
         objetivo = [f.game_pk for f in base
@@ -202,8 +204,9 @@ def verificar(
             if a.x != b.x:
                 movidas += 1
                 detalle.append({"game_pk": pk, "x_antes": a.x, "x_despues": b.x})
-            pa = float(modelo.predecir(np.array([a.x]))[0])
-            pb = float(modelo.predecir(np.array([b.x]))[0])
+            idx = [F.TODAS.index(n) for n in nombres]
+            pa = float(modelo.predecir(np.array([[a.x[i] for i in idx]]))[0])
+            pb = float(modelo.predecir(np.array([[b.x[i] for i in idx]]))[0])
             if pa != pb:
                 predicciones += 1
                 detalle.append({"game_pk": pk, "p_antes": pa, "p_despues": pb})

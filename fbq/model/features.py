@@ -28,6 +28,7 @@ from datetime import date
 from typing import Dict, List, Optional, Sequence
 
 from fbq.model.pit import Partido, VentanaPIT
+from fbq.model.recuperado import en_back_to_back
 
 # ── Constantes del preregistro §9 ────────────────────────────────────────
 VENTANA = 162
@@ -36,7 +37,20 @@ K_REGRESION = 67
 EXPONENTE_PITAGORICO = 1.83
 TOPE_DESCANSO = 5
 
+# Las dos variables de la v1.2, congeladas.
 NOMBRES = ("dif_pitagorica", "dif_descanso")
+
+# La v1.3 agrega el componente recuperado. Los nombres van por separado para que
+# la v1.2 se siga pudiendo reproducir exactamente sobre las MISMAS filas: lo que
+# cambia entre versiones es qué columnas usa el ajuste, no cómo se arma la fila.
+NOMBRES_V13 = NOMBRES + ("b2b_visita",)
+
+# Se calcula siempre pero NO entra a ningún modelo: es el diagnóstico que dice
+# si la neutralización del lado local que hizo el sistema anterior se sostiene
+# sobre datos propios.
+DIAGNOSTICOS = ("b2b_local",)
+
+TODAS = NOMBRES_V13 + DIAGNOSTICOS
 
 
 def regress(observed: float, mean: float, n: float, k: float) -> float:
@@ -145,6 +159,7 @@ def construir_fila(
     juego: Partido,
     corte: str,
     indice_liga: Optional["IndiceLiga"] = None,
+    inicios: Optional[Dict[int, str]] = None,
 ) -> Dict[str, object]:
     """Las variables de un juego, al corte de su precio de referencia.
 
@@ -164,10 +179,23 @@ def construir_fila(
     if dl is None or dv is None:
         return {"ok": False, "motivo": "sin_descanso_calculable"}
 
+    # Componente recuperado (v1.3). El partido anterior es el último DISPONIBLE
+    # al corte, no el último del calendario.
+    inicios = inicios or {}
+    inicio_juego = inicios.get(juego.game_pk)
+    b2b_v = en_back_to_back(ventana.de_equipo(juego.away_team, corte, ventana=VENTANA),
+                            inicio_juego, inicios)
+    b2b_l = en_back_to_back(ventana.de_equipo(juego.home_team, corte, ventana=VENTANA),
+                            inicio_juego, inicios)
+    if b2b_v is None or b2b_l is None:
+        return {"ok": False, "motivo": "sin_b2b_calculable"}
+
     return {
         "ok": True,
         "dif_pitagorica": pitagorica(pl, media) - pitagorica(pv, media),
         "dif_descanso": dl - dv,
+        "b2b_visita": b2b_v,
+        "b2b_local": b2b_l,
         "n_local": pl.n, "n_visita": pv.n,
         "media_carreras_liga": media,
     }

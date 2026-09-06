@@ -347,3 +347,82 @@ def test_descargar_no_rompe_cuando_un_partido_falla(tmp_path, monkeypatch):
     guardado = _json.loads(cache.read_text(encoding="utf-8"))
     assert guardado["juegos"] == {} and len(guardado["fallos"]) == r["fallos"]
     assert guardado["campo"].startswith("liveData.plays.currentPlay")
+
+
+# ── Componente recuperado del sistema anterior (v1.3) ────────────────────
+
+def test_el_umbral_de_b2b_es_el_del_sistema_anterior():
+    """`hours_between < 30`, copiado literal de `data_fetchers.py:1275`. No es
+    un parámetro aprendido: es la definición de back-to-back que ese sistema
+    usaba, y cambiarla sería medir otra cosa."""
+    from fbq.model.recuperado import HORAS_B2B
+    assert HORAS_B2B == 30.0
+
+
+def test_b2b_se_decide_por_horas_entre_inicios_no_por_dias_de_calendario():
+    from fbq.model.pit import Partido
+    from fbq.model.recuperado import en_back_to_back
+    prev = Partido(1, "2024-04-23", 2024, "A", "B", 5, 3, "2024-04-24T02:00:00+00:00")
+    inicios = {1: "2024-04-23T23:00:00+00:00"}
+    # 24 h después → back-to-back
+    assert en_back_to_back([prev], "2024-04-24T23:00:00+00:00", inicios) == 1.0
+    # 48 h después → un día libre, no es b2b
+    assert en_back_to_back([prev], "2024-04-25T23:00:00+00:00", inicios) == 0.0
+    # justo en el umbral: 30 h exactas NO es b2b (`<`, estricto)
+    assert en_back_to_back([prev], "2024-04-25T05:00:00+00:00", inicios) == 0.0
+
+
+def test_sin_dato_devuelve_None_y_no_un_cero():
+    """"No sé si venía en b2b" y "no venía en b2b" son cosas distintas. El
+    sistema anterior ya pagó caro confundir un dato ausente con uno neutro."""
+    from fbq.model.pit import Partido
+    from fbq.model.recuperado import en_back_to_back
+    prev = Partido(1, "2024-04-23", 2024, "A", "B", 5, 3, "2024-04-24T02:00:00+00:00")
+    assert en_back_to_back([], "2024-04-24T23:00:00+00:00", {1: "x"}) is None
+    assert en_back_to_back([prev], None, {1: "x"}) is None
+    assert en_back_to_back([prev], "2024-04-24T23:00:00+00:00", {}) is None
+
+
+def test_la_magnitud_del_sistema_anterior_NO_se_reutiliza():
+    """`_B2B_MULT_AWAY = 0.960` se calibró sobre datos que incluyen 2024-2025,
+    los años de evaluación. Traerlo metería el futuro por la puerta de al lado:
+    el peso lo aprende la logística sólo con el pliegue de entrenamiento."""
+    import ast
+    from pathlib import Path
+    import fbq.model.recuperado as rec
+
+    arbol = ast.parse(Path(rec.__file__).read_text(encoding="utf-8"))
+    # Se mira el CÓDIGO, no los comentarios: la nota del módulo sí cita el 0.960
+    # para explicar por qué no se reutiliza, y eso es documentación, no uso.
+    constantes = [n.value for n in ast.walk(arbol)
+                  if isinstance(n, ast.Constant) and isinstance(n.value, (int, float))
+                  and not isinstance(n.value, bool)]
+    nombres = [n.id for n in ast.walk(arbol) if isinstance(n, ast.Name)]
+    assert 0.96 not in constantes, "la magnitud del sistema anterior no se reutiliza"
+    assert not any("B2B_MULT" in n for n in nombres)
+
+
+def test_las_dos_versiones_se_evaluan_sobre_las_mismas_columnas_de_las_mismas_filas():
+    """v1.2 y v1.3 comparten fila; lo único que cambia es qué columnas entran
+    al ajuste. Si no, la comparación mediría dos muestras distintas — el error
+    que tiró siete baselines de este proyecto."""
+    from fbq.model import features as FF
+    assert FF.NOMBRES == ("dif_pitagorica", "dif_descanso")
+    assert FF.NOMBRES_V13 == FF.NOMBRES + ("b2b_visita",)
+    assert FF.TODAS == FF.NOMBRES_V13 + FF.DIAGNOSTICOS
+    assert "b2b_local" in FF.DIAGNOSTICOS and "b2b_local" not in FF.NOMBRES_V13
+
+
+def test_el_diagnostico_del_lado_local_no_entra_a_ninguna_prediccion():
+    """El componente recuperado neutralizó el lado local tras medirlo. Se
+    calcula para poder verificar esa neutralización sobre datos propios, pero
+    no puede colarse a la predicción."""
+    import numpy as np
+    from fbq.model import features as FF
+    from fbq.model.candidato import Fila, _matriz
+    f = Fila(game_pk=1, official_date="2025-05-01", season=2025, home_team="A",
+             away_team="B", corte="2025-05-01T17:00:00+00:00",
+             inicio_utc="2025-05-01T22:00:00+00:00", y=1, p_mercado=0.5,
+             x=(0.1, 1.0, 1.0, 999.0))          # b2b_local = 999, imposible
+    X, _ = _matriz([f], FF.NOMBRES_V13)
+    assert X.shape == (1, 3) and 999.0 not in X.flatten()

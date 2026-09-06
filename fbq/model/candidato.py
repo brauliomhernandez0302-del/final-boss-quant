@@ -25,7 +25,9 @@ from fbq.evaluator.frame import (CONSENSO, DB_MERCADO, DB_RESULTADOS,
 from fbq.model import features as F
 from fbq.model.detector import verificar_plausibilidad
 from fbq.model.logistica import LAMBDA_L2, Logistica, ajustar
-from fbq.model.pit import VentanaPIT, cargar_partidos
+from fbq.core.clock import normalizar_utc
+from fbq.model.pit import VentanaPIT, cargar_partidos, _inicios
+from fbq.results import fines as _fines
 
 CONFIG = {
     "preregistro": "docs/PREREGISTRO_MODELO_V1_2026-09-06.md",
@@ -132,6 +134,20 @@ def construir(
                                          db_resultados=db_resultados)
     construir_fila = constructor or F.construir_fila
     indice_liga = F.IndiceLiga(partidos)
+    # El inicio de cada partido, para el componente recuperado.
+    #
+    # La fuente primaria es la caché de FINES, que trae `inicio` para los 7.664
+    # partidos de `results.db`. La caché del schedule se armó con el rango de
+    # `historical_odds`, que termina el 2026-08-03, así que le faltan los 25
+    # juegos de la captura propia en vivo — usarla sola los excluía.
+    #
+    # Para un suspendido se toma la REANUDACIÓN, igual que en todo el resto del
+    # contrato temporal: un partido no empezó por última vez antes de reanudarse.
+    inicios: Dict[int, str] = {pk: max(v) for pk, v in _inicios().items()}
+    for pk, m in _fines.cargar().items():
+        cuando = m.get("reanudacion") or m.get("inicio")
+        if cuando:
+            inicios[int(pk)] = normalizar_utc(cuando)
 
     filas: List[Fila] = []
     excl: Counter = Counter()
@@ -141,7 +157,7 @@ def construir(
             excl["sin_precio_pinnacle_pre_juego"] += 1
             continue
         corte = ref["corte"]
-        v = construir_fila(ventana, partidos, juego, corte, indice_liga)
+        v = construir_fila(ventana, partidos, juego, corte, indice_liga, inicios)
         if not v.get("ok"):
             excl[str(v.get("motivo", "desconocido"))] += 1
             continue
@@ -150,14 +166,22 @@ def construir(
             season=juego.season, home_team=juego.home_team,
             away_team=juego.away_team, corte=corte, inicio_utc=ref["inicio"],
             y=juego.home_won, p_mercado=ref["p_mercado"],
-            x=tuple(float(v[n]) for n in F.NOMBRES),
+            x=tuple(float(v[n]) for n in F.TODAS),
             extra={k: v[k] for k in ("n_local", "n_visita", "media_carreras_liga")
                    if k in v}))
     return filas, excl
 
 
-def _matriz(filas: Sequence[Fila]) -> Tuple[np.ndarray, np.ndarray]:
-    return (np.array([f.x for f in filas], float),
+def _matriz(filas: Sequence[Fila],
+            nombres: Sequence[str] = F.NOMBRES) -> Tuple[np.ndarray, np.ndarray]:
+    """Las columnas que pide `nombres`, en ese orden.
+
+    Las filas llevan SIEMPRE todas las variables; la versión del modelo decide
+    cuáles usa. Así v1.2 y v1.3 se comparan sobre filas idénticas y la única
+    diferencia entre las dos es qué columnas entran al ajuste.
+    """
+    idx = [F.TODAS.index(n) for n in nombres]
+    return (np.array([[f.x[i] for i in idx] for f in filas], float),
             np.array([f.y for f in filas], float))
 
 
@@ -178,6 +202,7 @@ class Candidato:
 
 def evaluar_expansivo(
     filas: Sequence[Fila], temporadas_evaluacion: Sequence[int] = (2025, 2026),
+    nombres: Sequence[str] = F.NOMBRES,
 ) -> List[Candidato]:
     """Entrena con las temporadas ANTERIORES y evalúa cada una por separado.
 
@@ -195,13 +220,13 @@ def evaluar_expansivo(
         # estrictamente anterior. Se verifica, no se asume.
         assert max(f.season for f in tr) < temporada
 
-        Xtr, ytr = _matriz(tr)
-        Xte, yte = _matriz(te)
-        modelo = ajustar(Xtr, ytr, F.NOMBRES)
+        Xtr, ytr = _matriz(tr, nombres)
+        Xte, yte = _matriz(te, nombres)
+        modelo = ajustar(Xtr, ytr, tuple(nombres))
         p = modelo.predecir(Xte)
 
         # El detector estadístico corre SIEMPRE, no sólo cuando se sospecha.
-        verificar_plausibilidad(p, yte, nombre=f"v1 {temporada}")
+        verificar_plausibilidad(p, yte, nombre=f"modelo {temporada}")
 
         tasa = float(ytr.mean())
         salida.append(Candidato(
