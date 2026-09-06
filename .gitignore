@@ -86,3 +86,6 @@ data/importacion_historica_pendientes.csv
 
 # Fines de partido medidos: caché generada por `python3 -m fbq.results.fines`.
 data/fines_de_juego.json
+
+# Almacén de anuncios: se genera con `python3 -m fbq.anuncios.capturar`.
+data/anuncios.db

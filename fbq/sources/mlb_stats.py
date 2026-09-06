@@ -159,3 +159,34 @@ def fin_de_juego(game_pk: int) -> Dict[str, Any]:
         "duracion": duracion,
         "estado": ((d.get("gameData") or {}).get("status") or {}).get("detailedState"),
     }
+
+
+def probables(fecha: str) -> List[Dict[str, Any]]:
+    """Los abridores ANUNCIADOS para una fecha, tal como se publican HOY.
+
+    Gratis, sin clave. Devuelve una fila por juego con el id del probable de
+    cada lado, o `None` cuando todavía no hay anuncio — que es información, no
+    un hueco a rellenar.
+
+    ⚠️ **Sirve sólo mirando hacia adelante.** Para un juego ya jugado, este
+    campo trae al abridor que efectivamente abrió: medido sobre 400 juegos al
+    azar (800 equipo-juego), el probable coincide con el abridor real en 799 y
+    **difiere en 0**. Los abridores sí se cancelan en la vida real, así que una
+    tasa de discrepancia de 0,00% no es que nunca fallen: es que el campo se
+    rellena con lo que pasó. Usarlo retrospectivamente metería en la predicción
+    la identidad que sólo se supo al empezar el partido.
+    """
+    juegos = schedule(fecha=fecha, hidratar="probablePitcher")
+    filas = []
+    for g in juegos:
+        equipos = g.get("teams") or {}
+        fila = {"game_pk": int(g["gamePk"]),
+                "official_date": g.get("officialDate"),
+                "commence_time": g.get("gameDate"),
+                "estado": (g.get("status") or {}).get("detailedState")}
+        for lado in ("home", "away"):
+            pp = ((equipos.get(lado) or {}).get("probablePitcher") or {})
+            fila[f"{lado}_pitcher_id"] = pp.get("id")
+            fila[f"{lado}_pitcher"] = pp.get("fullName")
+        filas.append(fila)
+    return filas

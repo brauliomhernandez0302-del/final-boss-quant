@@ -1,5 +1,11 @@
 # Primer componente recuperado — resultado (v1.3)
 
+> 📌 **CERRADO** el 2026-09-06 como experimento sin mejora demostrada. La v1.2
+> sigue siendo la referencia. Ver `docs/CIERRE_V1_3_2026-09-06.md`, que además
+> separa la asociación observada de la explicación causal por viaje o fatiga:
+> el 91,7 % de los visitantes "con día libre" cambiaron de rival, o sea que su
+> día libre fue el día de viaje.
+
 **Preregistro**: `docs/PREREGISTRO_COMPONENTE_RECUPERADO_2026-09-06.md`, commit
 `5684d32`, escrito **antes** de medir. Nada de lo preregistrado se cambió
 después de ver los números.
