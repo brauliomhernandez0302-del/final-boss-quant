@@ -3,6 +3,16 @@
     python3 -m fbq.evaluator --seasons 2024 2025 --candidato backtest
     python3 -m fbq.evaluator --seasons 2026 --candidato live
     python3 -m fbq.evaluator --seasons 2024 2025 --candidato mercado   # autoprueba
+    python3 -m fbq.evaluator --seasons 2024 2025 2026 --almacen propio --candidato mercado
+
+`--almacen` elige de dónde salen los hechos y los precios:
+
+    propio  (default)  `market.db` + `results.db` — sólo almacenes de fbq
+    legado             `predictions_history.db` — el sistema anterior
+
+El legado se conserva para poder comparar los dos sobre las mismas claves. Los
+candidatos guardados (`--candidato backtest|live`) sólo existen en el legado,
+porque son salida de un modelo y el almacén propio no guarda opinión.
 """
 
 from __future__ import annotations
@@ -13,7 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fbq.evaluator.frame import load_candidate, load_frame
+from fbq.evaluator.frame import (load_candidate, load_frame,
+                                 load_frame_propio)
 from fbq.evaluator.score import Report, evaluate
 
 # La corrida canónica del backtest. Sin esto se mezclarían tres corridas
@@ -83,13 +94,31 @@ def main() -> None:
     ap.add_argument("--bootstrap", type=int, default=400)
     ap.add_argument("--cluster-por", default="home_team",
                     choices=["home_team", "away_team", "season"])
+    ap.add_argument("--almacen", default="propio", choices=["propio", "legado"],
+                    help="de dónde salen hechos y precios (default: propio)")
+    ap.add_argument("--incluir-en-vivo", action="store_true",
+                    help="NO excluye las cotizaciones posteriores al primer "
+                         "lanzamiento. Sólo para comparar contra el legado, que "
+                         "las incluía sin saberlo.")
     args = ap.parse_args()
 
-    frame = load_frame(args.seasons)
+    if args.almacen == "propio":
+        frame = load_frame_propio(args.seasons,
+                                  solo_pregame=not args.incluir_en_vivo)
+    else:
+        if args.incluir_en_vivo:
+            ap.error("--incluir-en-vivo sólo aplica al almacén propio: el "
+                     "legado no sabe a qué hora empezó cada juego")
+        frame = load_frame(args.seasons)
 
     if args.candidato == "mercado":
-        rep = evaluate(frame, frame.p_market.copy(), nombre="MERCADO (autoprueba)",
+        rep = evaluate(frame, frame.p_market.copy(),
+                       nombre=f"MERCADO (autoprueba, {args.almacen})",
                        n_bootstrap=args.bootstrap, cluster_por=args.cluster_por)
+    elif args.almacen == "propio":
+        ap.error(f"--candidato {args.candidato} vive en el almacén legado: es "
+                 f"salida de un modelo, y el almacén propio no guarda opinión. "
+                 f"Usá --almacen legado, o esperá al candidato de fbq/model/.")
     elif args.candidato == "live":
         rep = evaluate(frame, load_candidate("p_home", args.seasons),
                        nombre="MODELO (live)", n_bootstrap=args.bootstrap,
