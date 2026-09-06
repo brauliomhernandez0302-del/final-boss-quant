@@ -121,6 +121,51 @@ def roi_por_umbral(
     return out
 
 
+def roi_con_ic(
+    p: np.ndarray, frame: EvalFrame, *,
+    umbrales: Sequence[float] = UMBRALES_EDGE,
+    n_bootstrap: int = 400, cluster_por: str = "home_team", seed: int = 7,
+) -> List[dict]:
+    """El ROI por umbral, con intervalo de confianza por bootstrap AGRUPADO.
+
+    Existe porque un ROI sin intervalo es una invitación a creerle. El propio
+    curso del proyecto lo dimensiona: a n=500 apuestas con cuota ~2 el error
+    estándar del ROI ronda el **4,5%**, así que un +5% no distingue una señal de
+    nada — y este proyecto ya tomó por buena una ventaja que era el vig.
+
+    Se remuestrean CLÚSTERES enteros (equipos), no filas: las apuestas de un
+    mismo equipo se repiten decenas de veces y los errores iid sobre ellas
+    inflan los t entre 5x y 21x sobre este tipo de dato. Son 30 unidades, o sea
+    poco, y el intervalo sale ancho a propósito: esa anchura es la información
+    honesta sobre cuánta evidencia independiente hay.
+    """
+    grupos = getattr(frame, cluster_por)
+    unicos = np.unique(grupos)
+    indices = {g: np.where(grupos == g)[0] for g in unicos}
+    rng = np.random.default_rng(seed)
+
+    muestras: List[List[Optional[float]]] = []
+    for _ in range(n_bootstrap):
+        elegidos = rng.choice(unicos, len(unicos), replace=True)
+        idx = np.concatenate([indices[g] for g in elegidos])
+        muestras.append([r["roi_pct"] for r in
+                         roi_por_umbral(p[idx], frame.subset(idx), umbrales)])
+
+    salida = []
+    for i, base in enumerate(roi_por_umbral(p, frame, umbrales)):
+        vals = [m[i] for m in muestras if m[i] is not None]
+        fila = dict(base)
+        if vals:
+            lo, hi = np.percentile(vals, [2.5, 97.5])
+            fila["ic95_roi_pct"] = [round(float(lo), 3), round(float(hi), 3)]
+            fila["p_roi_positivo"] = round(float(np.mean(np.array(vals) > 0)), 3)
+        else:
+            fila["ic95_roi_pct"] = None
+            fila["p_roi_positivo"] = None
+        salida.append(fila)
+    return salida
+
+
 def mezcla_fuera_de_muestra(
     frame: EvalFrame,
     p: np.ndarray,
