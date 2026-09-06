@@ -754,3 +754,55 @@ cd /home/raulio && git status --porcelain | awk '{print $1}' | sort | uniq -c
 
 *Informe de inspección. No se modificó ningún archivo de código, ninguna base de
 datos ni ninguna automatización de `~/anterior` ni de `~/beisbol`.*
+
+---
+
+# Addendum — 2026-09-06, después de la recuperación
+
+Este addendum no reescribe nada de arriba: corrige lo que quedó incompleto y
+registra lo que cambió. El informe original se conserva tal como se emitió.
+
+## Corrección a §6.2 — la comparación era en una sola dirección
+
+§6.2 verificó que los 442 archivos de HEAD estuvieran íntegros en `anterior/`
+(440 idénticos, 0 modificados, 2 no movidos) y concluyó **"no se perdió
+trabajo"**. Esa comparación iba de HEAD hacia el disco y por eso no podía ver lo
+contrario: archivos que estaban en el disco y **nunca habían entrado a git**.
+
+Los había:
+
+| archivo | qué era |
+|---|---|
+| `fbq/market/importar_historico.py` | 179 líneas — el script que corta la dependencia de datos con el sistema anterior |
+| `crontab.anterior.txt` | las ocho automatizaciones archivadas |
+| `RESUMEN_PROYECTO_ANTERIOR.md` | este informe |
+| `tatus` | basura: la salida de un `git status` mal tipeado. No se recupera |
+
+Un clon limpio no los habría tenido. Recuperados a git en el commit `d2966e4`.
+
+## Estado de los errores de §6.5
+
+| # | error | estado |
+|---|---|---|
+| 1 | El movimiento no está commiteado; CI apunta a la raíz vacía | **resuelto en la rama `recuperacion/fbq`**: el worktree tiene el proyecto en la raíz, con `.gitignore` y `ci.yml` recuperados desde git. El árbol de `~/anterior` queda como estaba |
+| 2 | `importar_historico.py` haría invisible todo lo que importe | **corregido** (`83824f2`) y verificado con la importación real |
+| 3 | 126 juegos con precio en vivo en el marco | **corregido** (`15e1d81`). El conteo definitivo sobre el marco propio es **139 de 6.245** |
+| 4 | `evaluator/` lee del almacén del sistema anterior | **corregido** (`15e1d81`): `--almacen propio` es el default; el legado se conserva para comparar |
+| 5 | 805 filas de `historical_odds` sin juego asociado | **recuperadas**: la importación ya no depende de `game_outcomes` para fechar |
+| 6 | El test de `.gitignore` falla | **pasa** en la rama de recuperación |
+| 7, 8, 9 | `persist=False`, parity de clima, `engine_commit` inalcanzable | **sin tocar** — son del sistema A, invalidado |
+
+## Hallazgo nuevo durante la recuperación
+
+`mlb_stats.schedule()` con un rango de más de un año **se truncaba en
+silencio**: 2024-03-20 → 2026-08-03 devolvía 3.023 juegos, cortados en
+2025-03-20, con HTTP 200 y sin aviso. En tramos devuelve 7.816. Corregido en
+`df3aefd`. Es el mismo modo de fallo que el tope de filas de Savant, y aparece
+en §5 del curso como "el proveedor entrega las primeras N y calla".
+
+## Referencia vigente
+
+La barra del mercado ya no sale del sistema anterior:
+**n=6.106, Brier 0,242124**, sobre `market.db` + `results.db`.
+Detalle completo, con la referencia anterior al lado y el control positivo que
+autoriza el cambio, en `docs/REFERENCIA_MERCADO_2026-09.md`.
