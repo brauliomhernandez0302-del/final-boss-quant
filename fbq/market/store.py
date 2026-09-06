@@ -413,8 +413,32 @@ class MarketStore:
         el timestamp UTC cae un día calendario adelante, y ese desfase ya costó
         un leak completo en el camino PIT (Fase 2B).
         """
+        self.link_events([{
+            "event_id": event_id, "sport_key": sport_key, "game_pk": game_pk,
+            "official_date": official_date, "commence_time": commence_time,
+            "home_team": home_team, "away_team": away_team, "method": method,
+        }])
+
+    def link_events(self, enlaces: Iterable[Dict[str, Any]]) -> int:
+        """Fija muchas identidades en una sola transacción. Idempotente.
+
+        Existe por una razón de costo, no de estilo: la importación del
+        histórico enlaza ~6.000 eventos de una vez, y hacerlo con una conexión
+        y un `COMMIT` por evento convierte segundos en minutos. El SQL vive acá
+        una sola vez y `link_event()` delega, para que no haya dos sentencias
+        que puedan divergir.
+        """
+        filas = [
+            (e["event_id"], e["sport_key"], e.get("game_pk"),
+             e.get("official_date"), e.get("commence_time"),
+             e.get("home_team"), e.get("away_team"),
+             e.get("method", "manual"), _utc_now())
+            for e in enlaces
+        ]
+        if not filas:
+            return 0
         with self._conn() as conn:
-            conn.execute(
+            conn.executemany(
                 """INSERT INTO event_link
                    (event_id, sport_key, game_pk, official_date, commence_time,
                     home_team, away_team, method, linked_at)
@@ -424,9 +448,9 @@ class MarketStore:
                        official_date = COALESCE(excluded.official_date, event_link.official_date),
                        method        = excluded.method,
                        linked_at     = excluded.linked_at""",
-                (event_id, sport_key, game_pk, official_date, commence_time,
-                 home_team, away_team, method, _utc_now()),
+                filas,
             )
+        return len(filas)
 
     def event_for_game(self, game_pk: int) -> Optional[sqlite3.Row]:
         with self._conn() as conn:
