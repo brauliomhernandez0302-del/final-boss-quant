@@ -30,7 +30,7 @@ from typing import Dict, List, Sequence
 
 import numpy as np
 
-from fbq.evaluator.frame import EvalFrame, load_frame
+from fbq.evaluator.frame import EvalFrame, load_frame, load_frame_propio
 from fbq.evaluator.score import _fit_logistica, _logit, brier
 from fbq.features.base import Feature
 
@@ -71,8 +71,22 @@ class Resultado:
                    for p in util for r in p["roi"] if r["n"] >= self.MIN_APUESTAS)
 
     @property
+    def medible(self) -> bool:
+        """¿Hubo pliegues con muestra suficiente para decir algo?
+
+        "No cruza" y "no se pudo medir" son cosas distintas y confundirlas es
+        cómo una feature queda archivada como refutada sin que nadie la haya
+        refutado. `profundidad_mercado` cae acá desde que las features leen del
+        almacén propio: `n_bookmakers` no existe ahí, y contar los libros
+        guardados del histórico daría un artefacto de qué conservó el sistema
+        anterior, no la profundidad del mercado.
+        """
+        return len(self.pliegues) > 1
+
+    @property
     def cruza(self) -> bool:
-        return self.signo_estable and self.mejora_brier and self.roi_no_empeora
+        return (self.medible and self.signo_estable and self.mejora_brier
+                and self.roi_no_empeora)
 
 
 def evaluar(
@@ -80,8 +94,21 @@ def evaluar(
     *,
     seasons: Sequence[int] = (2024, 2025, 2026),
     frame: EvalFrame | None = None,
+    almacen: str = "propio",
 ) -> Resultado:
-    f = frame if frame is not None else load_frame(seasons)
+    """`almacen` decide de dónde sale el nulo cuando no se pasa un `frame`.
+
+    Default `propio` desde el 2026-09-06: `market.db` + `results.db`, con las
+    cotizaciones posteriores al primer lanzamiento excluidas. `legado` se
+    conserva para poder reproducir los veredictos v1 contra su referencia
+    original — un veredicto viejo comparado contra un nulo nuevo no dice nada.
+    """
+    if frame is not None:
+        f = frame
+    elif almacen == "propio":
+        f = load_frame_propio(seasons)
+    else:
+        f = load_frame(seasons)
     valores = feature.calcular([int(pk) for pk in f.game_pk])
     s = np.array([valores.get(int(pk), np.nan) for pk in f.game_pk], float)
 
@@ -146,6 +173,10 @@ def imprimir(r: Resultado) -> None:
             if x["roi_pct"] is not None else f"{100*x['umbral']:.1f}%:  n/a"
             for x in p["roi"])
         print(f"    {p['pliegue']}  {celdas}")
+    if not r.medible:
+        print(f"\n  → NO MEDIBLE — {len(r.pliegues)} pliegue(s) con muestra "
+              f"suficiente sobre n={r.n}. No es un veredicto sobre la señal.\n")
+        return
     print(f"\n  signo estable        {'sí' if r.signo_estable else 'NO'}")
     print(f"  mejora el Brier      {'sí' if r.mejora_brier else 'NO'}")
     print(f"  ROI positivo         {'sí' if r.roi_no_empeora else 'NO'}")

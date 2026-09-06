@@ -27,6 +27,31 @@ from typing import Callable, Dict, List, Optional, Sequence
 Calculo = Callable[[Sequence[int]], Dict[int, float]]
 
 
+@dataclass(frozen=True)
+class Veredicto:
+    """Un veredicto medido, con la referencia contra la que se midió.
+
+    La referencia es parte del veredicto, no un pie de página. Un "NO CRUZA"
+    sin decir sobre qué muestra y contra qué nulo se midió no se puede ni
+    reproducir ni comparar con el siguiente — y este proyecto ya tiró siete
+    baselines por comparar números de muestras distintas creyendo que eran la
+    misma.
+
+    Los veredictos NO se pisan: se apilan. Cuando el nulo cambia, la medición
+    vieja sigue siendo cierta sobre su propia referencia.
+    """
+
+    version: str          # v1, v2, ...
+    fecha: str            # cuándo se midió
+    almacen: str          # "legado" | "propio"
+    referencia: str       # la barra exacta: n y Brier del nulo
+    resultado: str        # "CRUZA" | "NO CRUZA" | "NO MEDIBLE"
+    nota: str = ""
+    # El commit del que salió la medición. Sin esto, "reproducir el v1" es una
+    # invitación a correr el código de hoy y creer que se reprodujo el de ayer.
+    codigo: str = ""
+
+
 @dataclass
 class Feature:
     nombre: str
@@ -36,9 +61,18 @@ class Feature:
     # de medir es la parte que evita el sobreajuste narrativo: si la única razón
     # que se puede dar es "salió significativo", no hay razón.
     hipotesis: str = ""
-    # Veredicto medido, cuando ya pasó por el portón.
-    veredicto: Optional[str] = None
-    nota: str = ""
+    # Historial de veredictos, del más viejo al más nuevo. Nunca se reemplaza
+    # uno: se agrega el siguiente.
+    veredictos: List[Veredicto] = field(default_factory=list)
+
+    @property
+    def veredicto(self) -> Optional[str]:
+        """El resultado vigente: el del último veredicto medido."""
+        return self.veredictos[-1].resultado if self.veredictos else None
+
+    @property
+    def vigente(self) -> Optional[Veredicto]:
+        return self.veredictos[-1] if self.veredictos else None
 
 
 _REGISTRO: Dict[str, Feature] = {}

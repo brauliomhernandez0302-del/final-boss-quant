@@ -98,3 +98,53 @@ def test_las_features_del_sistema_estan_registradas_con_veredicto():
 def test_no_se_puede_registrar_dos_veces_el_mismo_nombre():
     with pytest.raises(ValueError):
         registrar(_feature("desacuerdo_cons_pin", lambda pks: {}))
+
+
+# ── Veredictos versionados (2026-09-06) ──────────────────────────────────
+
+def test_cada_feature_conserva_su_veredicto_v1_con_su_referencia_original():
+    """Un veredicto sin la referencia contra la que se midió no se puede ni
+    reproducir ni comparar con el siguiente. Y los veredictos no se pisan: la
+    v1 se midió contra otro nulo y sigue siendo cierta sobre esa referencia."""
+    from fbq.features import todas
+    for f in todas():
+        versiones = [v.version for v in f.veredictos]
+        assert versiones == ["v1", "v2"], f"{f.nombre}: {versiones}"
+        v1, v2 = f.veredictos
+        assert v1.almacen == "legado" and v1.fecha == "2026-08-04"
+        assert v1.referencia == "n=5.429, Brier del nulo 0,241560"
+        assert v1.codigo, f"{f.nombre}: la v1 no dice de qué commit salió"
+        assert v2.almacen == "propio" and v2.fecha == "2026-09-06"
+        assert v2.referencia == "n=6.106, Brier del nulo 0,242124"
+        # el vigente es el último, no el primero
+        assert f.veredicto == v2.resultado
+
+
+def test_profundidad_queda_como_no_medible_y_no_como_refutada():
+    """"No cruza" y "no se pudo medir" son cosas distintas: confundirlas
+    archiva como refutada una señal que nadie refutó. `n_bookmakers` no existe
+    en el almacén propio y no se inventa."""
+    from fbq.features import obtener
+    f = obtener("profundidad_mercado")
+    assert f.veredictos[0].resultado == "NO CRUZA"      # v1, sobre la señal
+    assert f.veredictos[-1].resultado == "NO MEDIBLE"   # v2, sobre el dato
+
+
+def test_el_porton_distingue_no_medible_de_no_cruza():
+    from fbq.features.gate import Resultado
+    vacio = Resultado(feature="x", n=25, pliegues=[])
+    assert vacio.medible is False and vacio.cruza is False
+    uno = Resultado(feature="x", n=900, pliegues=[
+        {"coef": 0.1, "mejora": 0.001, "roi": [{"n": 600, "roi_pct": 1.0}]}])
+    assert uno.medible is False, "un solo pliegue no permite hablar de estabilidad"
+
+
+def test_las_features_ya_no_leen_el_almacen_del_sistema_anterior():
+    """La migración, fijada como test: ningún módulo de `features/` abre
+    `predictions_history.db`."""
+    from pathlib import Path
+    raiz = Path(__file__).parent.parent / "fbq" / "features"
+    for py in raiz.glob("*.py"):
+        codigo = "\n".join(l for l in py.read_text(encoding="utf-8").splitlines()
+                           if not l.strip().startswith("#"))
+        assert "predictions_history" not in codigo, py.name

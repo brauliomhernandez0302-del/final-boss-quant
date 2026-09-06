@@ -10,9 +10,10 @@ su veredicto: borrarlas garantizaría que alguien las reintente sin saber que ya
 se midieron.
 """
 
-from fbq.features.base import Feature, obtener, registrar, todas
+from fbq.features.base import (Feature, Veredicto, obtener, registrar,
+                               todas)
 from fbq.features.gate import Resultado, evaluar, imprimir
 from fbq.features import market_shape  # noqa: F401  — registra sus features
 
-__all__ = ["Feature", "obtener", "registrar", "todas",
+__all__ = ["Feature", "Veredicto", "obtener", "registrar", "todas",
            "Resultado", "evaluar", "imprimir"]
