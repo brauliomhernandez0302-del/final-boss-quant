@@ -30,13 +30,13 @@ from pathlib import Path
 from typing import Dict, Generator, Iterable, List, Optional, Sequence
 
 from fbq.core.clock import ahora
+from fbq.core.identity import ESTADOS_FINALES
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "results.db"
 
-# Estados que cuentan como juego terminado. Es una lista de permitidos y no de
-# prohibidos a propósito: un estado nuevo del proveedor entra como "no final"
-# y se reintenta, en vez de colarse como final por no estar en la lista negra.
-ESTADOS_FINALES = frozenset({"Final", "Completed Early", "Game Over"})
+# `ESTADOS_FINALES` se re-exporta desde `core.identity`, donde vive: la misma
+# regla decide qué entrada del schedule es el partido cuando un juego se
+# pospone y se rejuega, y eso lo necesitan tanto este almacén como `market/`.
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS observacion (

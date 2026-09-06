@@ -13,12 +13,14 @@ Acá las reglas son funciones, no disciplina.
 """
 
 from fbq.core.clock import (AsOf, cutoff_para_dia, dia_oficial,
-                            instantanea_vigente, es_anterior)
-from fbq.core.identity import (MARGEN_MINIMO, VENTANA_EMPAREJAMIENTO,
-                               elegir_unico, mismo_equipo)
+                            instantanea_vigente, es_anterior,
+                            normalizar_utc, tiene_hora)
+from fbq.core.identity import (ESTADOS_FINALES, MARGEN_MINIMO,
+                               VENTANA_EMPAREJAMIENTO, elegir_unico,
+                               mismo_equipo)
 
 __all__ = [
     "AsOf", "cutoff_para_dia", "dia_oficial", "instantanea_vigente",
-    "es_anterior", "MARGEN_MINIMO", "VENTANA_EMPAREJAMIENTO",
+    "es_anterior", "normalizar_utc", "tiene_hora", "ESTADOS_FINALES", "MARGEN_MINIMO", "VENTANA_EMPAREJAMIENTO",
     "elegir_unico", "mismo_equipo",
 ]

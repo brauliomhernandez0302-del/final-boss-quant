@@ -145,3 +145,49 @@ def test_los_tres_motivos_de_no_elegir_son_distinguibles():
                         inicio_de=lambda g: g["gameDate"])[1] == "sin_inicio"
     assert elegir_unico([_juego("2026-01-01T00:00:00Z")], "2026-08-04T23:05:00Z",
                         inicio_de=lambda g: g["gameDate"])[1] == "sin_candidato"
+
+
+# ── Normalización de instantes (2026-09-06) ──────────────────────────────
+
+def test_normalizar_utc_da_una_sola_forma_canonica():
+    """El almacén compara instantes como CADENAS dentro de SQL. Dos formas del
+    mismo instante ordenan distinto, así que la frontera tiene que dejar una."""
+    from fbq.core.clock import normalizar_utc
+    esperado = "2024-04-24T22:05:00+00:00"
+    assert normalizar_utc("2024-04-24T22:05:00Z") == esperado
+    assert normalizar_utc("2024-04-24T22:05:00+00:00") == esperado
+    assert normalizar_utc("2024-04-24T18:05:00-04:00") == esperado
+
+
+def test_normalizar_utc_rechaza_una_fecha_sin_hora():
+    """Completarla con medianoche convertiría "no sé a qué hora empezó" en
+    "empezó a la medianoche", que es falso y encima creíble. Es exactamente lo
+    que hacía `importar_historico` al tomar `game_outcomes.game_date`."""
+    import pytest
+    from fbq.core.clock import normalizar_utc, tiene_hora
+    assert tiene_hora("2024-04-24T22:05:00Z") is True
+    assert tiene_hora("2024-04-24") is False
+    with pytest.raises(ValueError, match="fecha sin hora"):
+        normalizar_utc("2024-04-24")
+
+
+def test_la_forma_canonica_hace_correcta_la_comparacion_de_cadenas():
+    """La prueba de que la normalización sirve para lo que existe: el filtro
+    pre-juego del almacén es `captured_at < commence_time` en SQL puro."""
+    from fbq.core.clock import normalizar_utc
+    captura = normalizar_utc("2024-04-24T17:00:00Z")
+    inicio = normalizar_utc("2024-04-24T22:05:00Z")
+    assert captura < inicio                      # pre-juego
+    assert not (normalizar_utc("2024-04-24T23:00:00Z") < inicio)   # en vivo
+
+
+def test_estados_finales_vive_en_core_y_es_la_misma_en_todo_el_sistema():
+    """La regla que distingue el cascarón pospuesto del partido jugado la usan
+    `results/` (para no escribir un cascarón como hecho) y `market/` (para no
+    fechar una cotización con la hora del partido suspendido). Duplicarla sería
+    garantizar que algún día digan cosas distintas."""
+    from fbq.core.identity import ESTADOS_FINALES
+    from fbq.results.store import ESTADOS_FINALES as desde_results
+    from fbq.results.fetch import ESTADOS_FINALES as desde_fetch
+    assert ESTADOS_FINALES is desde_results is desde_fetch
+    assert "Postponed" not in ESTADOS_FINALES

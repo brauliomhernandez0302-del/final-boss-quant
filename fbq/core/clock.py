@@ -90,6 +90,47 @@ def _a_instante(valor: str) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def tiene_hora(valor: str) -> bool:
+    """¿Este valor trae hora del día, o es sólo una fecha?
+
+    Existe porque la diferencia no es cosmética y ya costó un defecto silencioso.
+    `importar_historico.py` tomaba `game_outcomes.game_date` como "el timestamp
+    UTC de inicio"; las 5.762 filas de esa columna miden 10 caracteres, o sea que
+    son fechas sin hora. Escrita como `commence_time`, el filtro pre-juego del
+    almacén —que compara cadenas en SQL— evaluaba
+    `'2024-04-24T17:00:00Z' < '2024-04-24'` como FALSO, y todo lo importado
+    quedaba invisible para cualquier lectura por defecto.
+
+    Quien necesite un instante y reciba una fecha tiene que ENTERARSE, no
+    completarla con medianoche.
+    """
+    texto = str(valor or "").strip()
+    return "T" in texto or " " in texto.strip()
+
+
+def normalizar_utc(valor: str) -> AsOf:
+    """Un instante en la única forma canónica del proyecto: ISO-8601 con
+    desplazamiento explícito `+00:00`.
+
+    El almacén compara instantes como CADENAS dentro de SQL (`captured_at <
+    commence_time`), así que dos formas del mismo instante —`...Z` y
+    `...+00:00`— ordenan distinto aunque signifiquen lo mismo. Normalizar en la
+    frontera es lo que hace que esa comparación de cadenas sea correcta en vez
+    de afortunada.
+
+    Una fecha sin hora se rechaza en vez de completarse con medianoche: inventar
+    las 00:00 convierte "no sé a qué hora empezó" en "empezó a la medianoche",
+    que es una afirmación falsa y encima creíble.
+    """
+    if not tiene_hora(valor):
+        raise ValueError(
+            f"{valor!r} es una fecha sin hora, no un instante. Completarla con "
+            f"medianoche sería inventar un dato: consegui la hora real o "
+            f"registrá la fila como pendiente."
+        )
+    return _a_instante(valor).astimezone(timezone.utc).isoformat()
+
+
 def instantanea_vigente(
     candidatas: Iterable[Tuple[str, T]], corte: AsOf,
 ) -> Optional[T]:

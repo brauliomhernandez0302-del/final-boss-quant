@@ -37,6 +37,22 @@ VENTANA_EMPAREJAMIENTO = timedelta(hours=6)
 # identificado. Ver la nota del módulo sobre de dónde sale el número.
 MARGEN_MINIMO = timedelta(minutes=90)
 
+# Estados de schedule que significan "este juego se jugó y terminó".
+#
+# Vive en `core/` y no en `results/` porque no es una regla del almacén de
+# hechos: es una regla de IDENTIDAD. Cuando un juego se pospone y se rejuega,
+# el schedule devuelve DOS entradas con el mismo `gamePk` y el mismo
+# `officialDate` —una `Postponed`, el cascarón, y otra terminada— y hay que
+# saber cuál de las dos es el partido. `results/` la necesita para no escribir
+# un cascarón como hecho; `market/` la necesita para no fechar una cotización
+# con la hora del partido que se suspendió. Duplicarla en los dos sitios sería
+# garantizar que algún día digan cosas distintas.
+#
+# Es una lista de PERMITIDOS y no de prohibidos a propósito: un estado nuevo
+# del proveedor entra como "no final" y se reintenta, en vez de colarse como
+# final por no estar en la lista negra.
+ESTADOS_FINALES = frozenset({"Final", "Completed Early", "Game Over"})
+
 # Alias de equipos → nombre canónico, aplicado a AMBOS lados de cualquier
 # comparación. Un mapa de un solo sentido lleva un nombre LEJOS del otro en
 # cuanto una de las dos fuentes cambia: los Athletics cambiaron de ciudad dos

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -151,3 +152,32 @@ def test_el_bom_no_rompe_la_primera_columna(monkeypatch):
     monkeypatch.setattr(statcast._SESION, "get",
                         lambda *a, **k: _Respuesta("﻿" + _fila_csv(n=1)))
     assert statcast.eventos("2026-08-01")[0]["game_date"] == "2026-08-01"
+
+
+# ── Rangos del schedule (2026-09-06) ─────────────────────────────────────
+
+def test_un_rango_largo_se_parte_en_tramos_que_el_proveedor_devuelve_enteros():
+    """Medido: `startDate`/`endDate` de 2024-03-20 a 2026-08-03 devuelve 3.023
+    juegos y se corta en 2025-03-20 —un año exacto— con HTTP 200 y sin aviso.
+    En tres tramos devuelve 7.816."""
+    from fbq.sources.mlb_stats import MAX_DIAS_POR_LLAMADA, _tramos
+    tramos = _tramos("2024-03-20", "2026-08-03")
+    assert len(tramos) == 3
+    assert tramos[0][0] == "2024-03-20" and tramos[-1][1] == "2026-08-03"
+    for desde, hasta in tramos:
+        assert (date.fromisoformat(hasta) - date.fromisoformat(desde)).days < MAX_DIAS_POR_LLAMADA
+    # los tramos son contiguos y no se pisan
+    for (_, fin), (ini, _) in zip(tramos, tramos[1:]):
+        assert date.fromisoformat(ini) - date.fromisoformat(fin) == timedelta(days=1)
+
+
+def test_un_rango_de_un_solo_dia_es_un_solo_tramo():
+    from fbq.sources.mlb_stats import _tramos
+    assert _tramos("2024-04-24", "2024-04-24") == [("2024-04-24", "2024-04-24")]
+
+
+def test_medio_rango_se_rechaza_en_vez_de_devolver_el_schedule_entero():
+    import pytest
+    from fbq.sources import mlb_stats
+    with pytest.raises(ValueError, match="medio rango"):
+        mlb_stats.schedule(desde="2024-04-01")

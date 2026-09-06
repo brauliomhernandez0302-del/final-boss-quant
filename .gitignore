@@ -76,3 +76,10 @@ data/.g8_autorun_once
 
 # Worktree aislado de la recuperación de fbq/ (no es parte del proyecto)
 /fbq-recuperacion/
+
+# Artefactos generados por la importación del histórico: se rehacen corriendo
+# `python3 -m fbq.market.importar_historico`. La caché del schedule sale de una
+# API gratis; el informe de pendientes se regenera en cada corrida y su contenido
+# vigente queda escrito en docs/REFERENCIA_MERCADO_2026-09.md.
+data/schedule_inicios.json
+data/importacion_historica_pendientes.csv
