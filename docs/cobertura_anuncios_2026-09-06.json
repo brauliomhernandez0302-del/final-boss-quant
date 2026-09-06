@@ -1,0 +1,417 @@
+{
+  "fuentes": [
+    "track_record.pipeline_json (sistema anterior, commit 127bac6) — `published_at` es el instante real de observación",
+    "fbq.anuncios.capturar — schedule de MLB con hydrate=probablePitcher, `observado_en` sellado al momento de la barrida"
+  ],
+  "almacen": {
+    "anuncios": 235,
+    "juegos": 115,
+    "barridas": 226,
+    "primera": "2026-08-01T20:01:05.815578+00:00",
+    "ultima": "2026-09-06T22:24:28.972676+00:00"
+  },
+  "marco_evaluable_por_temporada": {
+    "2024": 2358,
+    "2025": 2191,
+    "2026": 1557
+  },
+  "por_temporada": {
+    "2026": {
+      "registrados": 63,
+      "sin_observacion_previa_al_corte": 2,
+      "ambos_conocidos_antes_del_corte": 42,
+      "anunciado_pero_vacio": 3,
+      "sin_precio_de_referencia": 16
+    },
+    "sin_resultado": {
+      "registrados": 52,
+      "sin_precio_de_referencia": 52
+    }
+  },
+  "exclusiones": {
+    "sin_observacion_previa_al_corte": 2,
+    "anunciado_pero_vacio": 3,
+    "sin_precio_de_referencia": 68
+  },
+  "utilizables": 42,
+  "detalle": [
+    {
+      "game_pk": 824807,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 680694,
+      "away_pitcher_id": 554430,
+      "observado_home": "2026-08-01T20:01:28.980689+00:00",
+      "observado_away": "2026-08-01T20:01:28.980689+00:00"
+    },
+    {
+      "game_pk": 824891,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 527048,
+      "away_pitcher_id": 676917,
+      "observado_home": "2026-08-01T20:01:32.328534+00:00",
+      "observado_away": "2026-08-01T20:01:32.328534+00:00"
+    },
+    {
+      "game_pk": 822783,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 453286,
+      "away_pitcher_id": 700241,
+      "observado_home": "2026-08-01T20:01:36.496177+00:00",
+      "observado_away": "2026-08-01T20:01:36.496177+00:00"
+    },
+    {
+      "game_pk": 824404,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 668909,
+      "away_pitcher_id": 518876,
+      "observado_home": "2026-08-01T20:01:39.800340+00:00",
+      "observado_away": "2026-08-01T20:01:39.800340+00:00"
+    },
+    {
+      "game_pk": 824483,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 695505,
+      "away_pitcher_id": 656605,
+      "observado_home": "2026-08-01T20:01:43.310628+00:00",
+      "observado_away": "2026-08-01T20:01:43.310628+00:00"
+    },
+    {
+      "game_pk": 822943,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 643377,
+      "away_pitcher_id": 641743,
+      "observado_home": "2026-08-01T20:01:54.854393+00:00",
+      "observado_away": "2026-08-01T20:01:54.854393+00:00"
+    },
+    {
+      "game_pk": 824648,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 607067,
+      "away_pitcher_id": 543037,
+      "observado_home": "2026-08-01T20:02:07.075282+00:00",
+      "observado_away": "2026-08-01T20:02:07.075282+00:00"
+    },
+    {
+      "game_pk": 824323,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 607536,
+      "away_pitcher_id": 607625,
+      "observado_home": "2026-08-01T20:02:11.133669+00:00",
+      "observado_away": "2026-08-01T20:02:11.133669+00:00"
+    },
+    {
+      "game_pk": 823996,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 700712,
+      "away_pitcher_id": 694819,
+      "observado_home": "2026-08-01T20:02:14.112814+00:00",
+      "observado_away": "2026-08-01T20:02:14.112814+00:00"
+    },
+    {
+      "game_pk": 823270,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 650633,
+      "away_pitcher_id": 694738,
+      "observado_home": "2026-08-01T20:02:20.713996+00:00",
+      "observado_away": "2026-08-01T20:02:20.713996+00:00"
+    },
+    {
+      "game_pk": 823107,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 669923,
+      "away_pitcher_id": 671737,
+      "observado_home": "2026-08-01T20:02:24.993256+00:00",
+      "observado_away": "2026-08-01T20:02:24.993256+00:00"
+    },
+    {
+      "game_pk": 823919,
+      "season": 2026,
+      "corte": "2026-08-02T17:00:00+00:00",
+      "home_pitcher_id": 686218,
+      "away_pitcher_id": 687562,
+      "observado_home": "2026-08-01T20:02:29.281196+00:00",
+      "observado_away": "2026-08-01T20:02:29.281196+00:00"
+    },
+    {
+      "game_pk": 823520,
+      "season": 2026,
+      "corte": "2026-08-03T17:00:00+00:00",
+      "home_pitcher_id": 693645,
+      "away_pitcher_id": 700241,
+      "observado_home": "2026-08-02T20:01:04.770012+00:00",
+      "observado_away": "2026-08-02T20:01:04.770012+00:00"
+    },
+    {
+      "game_pk": 823757,
+      "season": 2026,
+      "corte": "2026-08-03T17:00:00+00:00",
+      "home_pitcher_id": 687075,
+      "away_pitcher_id": 696149,
+      "observado_home": "2026-08-02T20:01:25.269548+00:00",
+      "observado_away": "2026-08-02T20:01:25.269548+00:00"
+    },
+    {
+      "game_pk": 824160,
+      "season": 2026,
+      "corte": "2026-08-03T17:00:00+00:00",
+      "home_pitcher_id": 664299,
+      "away_pitcher_id": 669456,
+      "observado_home": "2026-08-02T20:02:19.481076+00:00",
+      "observado_away": "2026-08-02T20:02:19.481076+00:00"
+    },
+    {
+      "game_pk": 824324,
+      "season": 2026,
+      "corte": "2026-08-03T17:00:00+00:00",
+      "home_pitcher_id": 547179,
+      "away_pitcher_id": 693855,
+      "observado_home": "2026-08-02T20:02:39.633775+00:00",
+      "observado_away": "2026-08-02T20:02:39.633775+00:00"
+    },
+    {
+      "game_pk": 825095,
+      "season": 2026,
+      "corte": "2026-08-03T17:00:00+00:00",
+      "home_pitcher_id": 694297,
+      "away_pitcher_id": 650633,
+      "observado_home": "2026-08-02T20:03:00.416817+00:00",
+      "observado_away": "2026-08-02T20:03:00.416817+00:00"
+    },
+    {
+      "game_pk": 824403,
+      "season": 2026,
+      "corte": "2026-08-04T21:51:01.434186+00:00",
+      "home_pitcher_id": 676282,
+      "away_pitcher_id": 640455,
+      "observado_home": "2026-08-03T20:01:15.328859+00:00",
+      "observado_away": "2026-08-03T20:01:15.328859+00:00"
+    },
+    {
+      "game_pk": 824484,
+      "season": 2026,
+      "corte": "2026-08-04T20:51:01.900523+00:00",
+      "home_pitcher_id": 663903,
+      "away_pitcher_id": 669372,
+      "observado_home": "2026-08-03T20:01:19.738935+00:00",
+      "observado_away": "2026-08-03T20:01:19.738935+00:00"
+    },
+    {
+      "game_pk": 823432,
+      "season": 2026,
+      "corte": "2026-08-04T21:51:01.434186+00:00",
+      "home_pitcher_id": 666200,
+      "away_pitcher_id": 641793,
+      "observado_home": "2026-08-03T20:01:29.446824+00:00",
+      "observado_away": "2026-08-03T20:01:29.446824+00:00"
+    },
+    {
+      "game_pk": 824084,
+      "season": 2026,
+      "corte": "2026-08-04T21:51:01.434186+00:00",
+      "home_pitcher_id": 677976,
+      "away_pitcher_id": 657746,
+      "observado_home": "2026-08-03T20:02:06.328376+00:00",
+      "observado_away": "2026-08-03T20:02:06.328376+00:00"
+    },
+    {
+      "game_pk": 823756,
+      "season": 2026,
+      "corte": "2026-08-04T22:51:01.774956+00:00",
+      "home_pitcher_id": 701656,
+      "away_pitcher_id": 683003,
+      "observado_home": "2026-08-03T20:02:22.479749+00:00",
+      "observado_away": "2026-08-03T20:02:22.479749+00:00"
+    },
+    {
+      "game_pk": 824645,
+      "season": 2026,
+      "corte": "2026-08-04T22:51:01.774956+00:00",
+      "home_pitcher_id": 665871,
+      "away_pitcher_id": 669373,
+      "observado_home": "2026-08-03T20:02:34.270591+00:00",
+      "observado_away": "2026-08-03T20:02:34.270591+00:00"
+    },
+    {
+      "game_pk": 824161,
+      "season": 2026,
+      "corte": "2026-08-04T23:51:01.822983+00:00",
+      "home_pitcher_id": 669713,
+      "away_pitcher_id": 702056,
+      "observado_home": "2026-08-03T20:03:07.705427+00:00",
+      "observado_away": "2026-08-03T20:03:07.705427+00:00"
+    },
+    {
+      "game_pk": 823517,
+      "season": 2026,
+      "corte": "2026-08-04T22:51:01.774956+00:00",
+      "home_pitcher_id": 677960,
+      "away_pitcher_id": 690928,
+      "observado_home": "2026-08-04T14:00:41.257402+00:00",
+      "observado_away": "2026-08-04T14:00:41.257402+00:00"
+    },
+    {
+      "game_pk": 824731,
+      "season": 2026,
+      "corte": "2026-08-04T22:51:01.774956+00:00",
+      "home_pitcher_id": 663776,
+      "away_pitcher_id": 663436,
+      "observado_home": "2026-08-04T14:00:45.636429+00:00",
+      "observado_away": "2026-08-04T14:00:45.636429+00:00"
+    },
+    {
+      "game_pk": 824888,
+      "season": 2026,
+      "corte": "2026-08-04T22:51:01.774956+00:00",
+      "home_pitcher_id": 656550,
+      "away_pitcher_id": 687473,
+      "observado_home": "2026-08-04T14:00:49.919612+00:00",
+      "observado_away": "2026-08-04T14:00:49.919612+00:00"
+    },
+    {
+      "game_pk": 822865,
+      "season": 2026,
+      "corte": "2026-08-04T23:51:01.822983+00:00",
+      "home_pitcher_id": 669022,
+      "away_pitcher_id": 694918,
+      "observado_home": "2026-08-04T14:01:10.327519+00:00",
+      "observado_away": "2026-08-04T14:01:10.327519+00:00"
+    },
+    {
+      "game_pk": 824321,
+      "season": 2026,
+      "corte": "2026-08-04T23:51:01.822983+00:00",
+      "home_pitcher_id": 687312,
+      "away_pitcher_id": 642547,
+      "observado_home": "2026-08-04T14:01:20.106694+00:00",
+      "observado_away": "2026-08-04T14:01:20.106694+00:00"
+    },
+    {
+      "game_pk": 825054,
+      "season": 2026,
+      "corte": "2026-08-05T00:51:01.967770+00:00",
+      "home_pitcher_id": 593958,
+      "away_pitcher_id": 681190,
+      "observado_home": "2026-08-04T14:01:24.730583+00:00",
+      "observado_away": "2026-08-04T14:01:24.730583+00:00"
+    },
+    {
+      "game_pk": 824805,
+      "season": 2026,
+      "corte": "2026-08-04T21:51:01.434186+00:00",
+      "home_pitcher_id": 700249,
+      "away_pitcher_id": 680570,
+      "observado_home": "2026-08-04T20:00:12.421668+00:00",
+      "observado_away": "2026-08-04T20:00:12.421668+00:00"
+    },
+    {
+      "game_pk": 823108,
+      "season": 2026,
+      "corte": "2026-08-05T00:51:01.967770+00:00",
+      "home_pitcher_id": 676106,
+      "away_pitcher_id": 675512,
+      "observado_home": "2026-08-04T20:01:38.091696+00:00",
+      "observado_away": "2026-08-04T20:01:38.091696+00:00"
+    },
+    {
+      "game_pk": 824158,
+      "season": 2026,
+      "corte": "2026-08-05T17:51:02.495471+00:00",
+      "home_pitcher_id": 686613,
+      "away_pitcher_id": 592791,
+      "observado_home": "2026-08-04T20:01:41.635659+00:00",
+      "observado_away": "2026-08-05T14:00:32.029305+00:00"
+    },
+    {
+      "game_pk": 824646,
+      "season": 2026,
+      "corte": "2026-08-05T17:51:02.495471+00:00",
+      "home_pitcher_id": 684007,
+      "away_pitcher_id": 641778,
+      "observado_home": "2026-08-04T20:01:44.982730+00:00",
+      "observado_away": "2026-08-04T20:01:44.982730+00:00"
+    },
+    {
+      "game_pk": 824322,
+      "season": 2026,
+      "corte": "2026-08-05T18:51:02.331738+00:00",
+      "home_pitcher_id": 608372,
+      "away_pitcher_id": 607259,
+      "observado_home": "2026-08-04T20:01:50.526549+00:00",
+      "observado_away": "2026-08-04T20:01:50.526549+00:00"
+    },
+    {
+      "game_pk": 824806,
+      "season": 2026,
+      "corte": "2026-08-05T21:51:02.634017+00:00",
+      "home_pitcher_id": 669432,
+      "away_pitcher_id": 672282,
+      "observado_home": "2026-08-04T20:02:02.129078+00:00",
+      "observado_away": "2026-08-04T20:02:02.129078+00:00"
+    },
+    {
+      "game_pk": 824402,
+      "season": 2026,
+      "corte": "2026-08-05T18:51:02.331738+00:00",
+      "home_pitcher_id": 677944,
+      "away_pitcher_id": 690997,
+      "observado_home": "2026-08-04T20:02:05.239557+00:00",
+      "observado_away": "2026-08-04T20:02:05.239557+00:00"
+    },
+    {
+      "game_pk": 823429,
+      "season": 2026,
+      "corte": "2026-08-05T22:51:02.123868+00:00",
+      "home_pitcher_id": 691725,
+      "away_pitcher_id": 663623,
+      "observado_home": "2026-08-04T20:02:17.892868+00:00",
+      "observado_away": "2026-08-04T20:02:17.892868+00:00"
+    },
+    {
+      "game_pk": 823516,
+      "season": 2026,
+      "corte": "2026-08-05T23:51:01.872553+00:00",
+      "home_pitcher_id": 701542,
+      "away_pitcher_id": 669467,
+      "observado_home": "2026-08-04T20:02:34.202414+00:00",
+      "observado_away": "2026-08-04T20:02:34.202414+00:00"
+    },
+    {
+      "game_pk": 824728,
+      "season": 2026,
+      "corte": "2026-08-05T22:51:02.123868+00:00",
+      "home_pitcher_id": 543243,
+      "away_pitcher_id": 680732,
+      "observado_home": "2026-08-04T20:02:45.678327+00:00",
+      "observado_away": "2026-08-04T20:02:45.678327+00:00"
+    },
+    {
+      "game_pk": 824889,
+      "season": 2026,
+      "corte": "2026-08-05T22:51:02.123868+00:00",
+      "home_pitcher_id": 693821,
+      "away_pitcher_id": 691587,
+      "observado_home": "2026-08-04T20:02:49.185837+00:00",
+      "observado_away": "2026-08-04T20:02:49.185837+00:00"
+    },
+    {
+      "game_pk": 824082,
+      "season": 2026,
+      "corte": "2026-08-05T22:51:02.123868+00:00",
+      "home_pitcher_id": 702070,
+      "away_pitcher_id": 665152,
+      "observado_home": "2026-08-04T20:02:52.531533+00:00",
+      "observado_away": "2026-08-04T20:02:52.531533+00:00"
+    }
+  ]
+}
