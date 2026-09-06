@@ -1,0 +1,37 @@
+# FBQ track_record — Fase 2A commit 4 (quarantine mode)
+0 7 * * *   cd /home/raulio/anterior && . mi_entorno/bin/activate && python run_daily_picks.py >> logs/daily_picks.log 2>&1
+0 13 * * *  cd /home/raulio/anterior && . mi_entorno/bin/activate && python run_daily_picks.py --publish-only >> logs/daily_picks.log 2>&1
+# --- añadido 2026-07-26 (alineación del paso 0) ---
+# Barrida de cierre temprana: el primer pitcheo de la cartelera suele ser 09:15 PDT,
+# así que la barrida de 09:15 llegaba justo al límite y las de 15:30/18:30 ya tarde
+# para la mayoría de los juegos. Esta corre antes que cualquier juego del día.
+# Salud del disparador: detecta cron que no arrancó, crash, día vacío y cierres en riesgo.
+# 07:15 verifica la corrida de la mañana; 19:30 cierra el día completo.
+15 7 * * *  cd /home/raulio/anterior && . mi_entorno/bin/activate && python scripts/cron_health_check.py >> logs/cron_health.log 2>&1
+30 19 * * * cd /home/raulio/anterior && . mi_entorno/bin/activate && python scripts/cron_health_check.py >> logs/cron_health.log 2>&1
+# --- barridas de cierre, 2026-07-26: una por hora a los :50 ---
+# Derivado de la distribución real de primeros pitcheos del ledger (09h a 19h PDT,
+# con el grueso entre 15h y 18h). Con "última pre-inicio gana", una barrida a los
+# :50 deja el cierre de cualquier juego capturado como máximo 59 min antes de su
+# arranque — justo dentro del corte de staleness que el protocolo pre-registró.
+# Lo que reemplaza: 09:15/15:30/18:30 dejaban un hueco de 6 h que cubría 21 juegos,
+# cuyo "cierre" se tomaba hasta 6 horas antes del primer pitcheo.
+# Costo: ~11 llamadas/día (la caché de odds es de 10 min, así que es 1 por barrida,
+# no 1 por pick). Si la cuota aprieta, sacar primero las de 08:50 y 19:50.
+50 8,9,10,11,12,13,14,15,16,17,18,19 * * * cd /home/raulio/anterior && . mi_entorno/bin/activate && python -m track_record.capture_closing_lines --game-date $(date +\%F) >> logs/closing_lines.log 2>&1
+
+# --- almacén de precios append-only, 2026-08-04 (market/) ---
+# A los :51, un minuto después de la barrida de cierre: esa barrida deja el
+# board en la caché de 10 min de odds_fetcher, así que esto es un cache hit y
+# cuesta CERO llamadas nuevas a la API. Guarda el board completo (todos los
+# deportes, todos los libros, h2h/totals/spreads, los dos lados) en filas
+# append-only, que es la trayectoria de precio que las doce barridas de cierre
+# venían trayendo y sobreescribiendo.
+51 8,9,10,11,12,13,14,15,16,17,18,19 * * * cd /home/raulio/anterior && . mi_entorno/bin/activate && python -m fbq.market.capture >> logs/market_capture.log 2>&1
+# El enlace evento↔game_pk es recuperable (el precio no), así que va una vez
+# al día y no bloquea ninguna captura.
+5 20 * * * cd /home/raulio/anterior && . mi_entorno/bin/activate && python -m fbq.market.link_events >> logs/market_capture.log 2>&1
+# --- resultados, 2026-08-04 (fbq/results) --- 23:30 local: para entonces
+# terminó hasta el último juego de la costa oeste. Sólo escribe FINALES, así
+# que un juego todavía en curso simplemente no entra y se recoge mañana.
+30 23 * * * cd /home/raulio/anterior && . mi_entorno/bin/activate && python -m fbq.results.fetch >> logs/results.log 2>&1

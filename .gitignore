@@ -73,3 +73,6 @@ data/.g8_autorun_once
 .bashrc
 .profile
 .lesshst
+
+# Worktree aislado de la recuperación de fbq/ (no es parte del proyecto)
+/fbq-recuperacion/
