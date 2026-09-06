@@ -66,6 +66,18 @@ CACHE = Path(__file__).parent.parent.parent / "data" / "fines_de_juego.json"
 # conserva únicamente como respaldo y marcada como tal.
 DURACION_MAXIMA = timedelta(hours=8)
 
+# Margen sobre el fin MEDIDO. El instante que publica el feed es el de la última
+# JUGADA, que no es exactamente el cierre oficial del partido, y `T` está
+# redondeado al minuto. Contrastando el fin contra la estimación independiente
+# `inicio + T` sobre los 7.656 partidos no suspendidos —en los suspendidos `T`
+# es el tiempo de juego de los DOS días y la comparación no aplica—, la
+# estimación independiente supera al fin medido en 302 casos, con un **máximo de
+# 15,7 minutos**. 20 minutos los cubre todos.
+#
+# El margen sólo puede costar cobertura, nunca causar una fuga, así que se
+# redondea hacia arriba. Medido: no excluye ni un juego del conjunto evaluable.
+MARGEN_FIN = timedelta(minutes=20)
+
 
 def cargar(cache: Path = CACHE) -> Dict[int, Dict[str, Any]]:
     if not cache.exists():
@@ -86,7 +98,8 @@ def disponible_desde(
     m = medidos.get(int(game_pk)) or {}
     fin = m.get("fin")
     if fin and tiene_hora(fin):
-        return normalizar_utc(fin), "medido"
+        return (datetime.fromisoformat(normalizar_utc(fin))
+                + MARGEN_FIN).isoformat(), "medido"
     inicio = m.get("reanudacion") or m.get("inicio") or inicio_schedule
     if inicio and tiene_hora(inicio):
         return (datetime.fromisoformat(normalizar_utc(inicio))
@@ -110,8 +123,8 @@ def descargar(
     pendientes = [p for p in pks if not solo_faltantes or p not in previos]
     log.info("partidos a fechar: %s (de %s)", len(pendientes), len(pks))
 
-    salida = dict(previos)
-    fallos = []
+    salida = {int(k): v for k, v in previos.items()}
+    fallos: list = []
 
     def uno(pk):
         for intento in range(3):
@@ -125,8 +138,10 @@ def descargar(
     if pendientes:
         with ThreadPoolExecutor(max_workers=hilos) as ex:
             for r in ex.map(uno, pendientes):
-                (fallos if r.get("error") else salida).__setitem__(
-                    *((len(fallos), r) if r.get("error") else (str(r["game_pk"]), r)))
+                if r.get("error"):
+                    fallos.append(r)
+                else:
+                    salida[int(r["game_pk"])] = r
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps({
         "fuente": "https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live",

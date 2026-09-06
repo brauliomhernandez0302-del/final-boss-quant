@@ -272,7 +272,8 @@ def test_el_fin_medido_manda_sobre_la_cota():
     from fbq.results.fines import DURACION_MAXIMA, disponible_desde
     medidos = {1: {"fin": "2024-04-24T01:30:00Z", "inicio": "2024-04-23T22:00:00Z"}}
     cuando, proc = disponible_desde(1, "2024-04-23T22:00:00Z", medidos)
-    assert proc == "medido" and cuando == "2024-04-24T01:30:00+00:00"
+    # el fin medido manda, con el margen de seguridad de 20 min encima
+    assert proc == "medido" and cuando == "2024-04-24T01:50:00+00:00"
     # sin medición cae a la cota, y queda marcado
     cuando, proc = disponible_desde(2, "2024-04-23T22:00:00Z", {})
     assert proc == "cota" and cuando == "2024-04-24T06:00:00+00:00"
@@ -286,3 +287,63 @@ def test_un_partido_sin_fin_ni_inicio_no_entra_a_ninguna_ventana():
     p = Partido(1, "2024-04-24", 2024, "A", "B", 5, 3, None, "desconocido")
     v = VentanaPIT([p])
     assert v.de_equipo("A", "2099-01-01T00:00:00+00:00", ventana=162) == []
+
+
+# ── Validación de las horas de finalización (2026-09-06) ─────────────────
+
+def test_el_fin_medido_lleva_margen_de_seguridad():
+    """El instante que publica el feed es el de la última JUGADA, no el cierre
+    oficial, y `T` está redondeado al minuto. Contrastado contra la estimación
+    independiente `inicio + T` sobre los 7.656 partidos no suspendidos, la
+    estimación supera al fin medido en 302 casos, con un máximo de 15,7 min.
+    """
+    from fbq.results.fines import MARGEN_FIN, disponible_desde
+    assert MARGEN_FIN == timedelta(minutes=20), "cubre el máximo medido de 15,7 min"
+    medidos = {1: {"fin": "2024-04-24T01:30:00Z", "inicio": "2024-04-23T22:00:00Z"}}
+    cuando, proc = disponible_desde(1, None, medidos)
+    assert proc == "medido"
+    assert cuando == "2024-04-24T01:50:00+00:00"      # 01:30 + 20 min
+
+
+def test_el_margen_solo_puede_costar_cobertura_nunca_causar_fuga():
+    """Retrasar la disponibilidad excluye hechos; nunca los adelanta."""
+    from fbq.results.fines import disponible_desde
+    medidos = {1: {"fin": "2024-04-24T01:30:00Z"}}
+    con_margen, _ = disponible_desde(1, None, medidos)
+    assert con_margen > "2024-04-24T01:30:00+00:00"
+
+
+def test_los_estados_del_feed_son_mas_finos_que_los_del_schedule():
+    """Hallazgo de la validación, fijado para que no sorprenda.
+
+    El schedule dice `Completed Early`; el feed en vivo dice `Completed Early:
+    Rain`. Son dos granularidades del mismo estado, y `ESTADOS_FINALES` —una
+    lista de PERMITIDOS por coincidencia exacta— acepta el primero y rechaza el
+    segundo. Hoy nada valida estados del feed contra esa lista, y por eso no se
+    perdió ningún partido; el test existe para que quien lo conecte se entere.
+    """
+    from fbq.core.identity import ESTADOS_FINALES
+    assert "Completed Early" in ESTADOS_FINALES
+    assert "Completed Early: Rain" not in ESTADOS_FINALES
+    assert not any(e.startswith("Completed Early:") for e in ESTADOS_FINALES)
+
+
+def test_descargar_no_rompe_cuando_un_partido_falla(tmp_path, monkeypatch):
+    """El camino de fallos guardaba el error con `list.__setitem__(len(lista))`,
+    que levanta IndexError: un solo partido caído tiraba la descarga entera."""
+    import json as _json
+    from fbq.results import fines
+
+    db, _, _ = _almacen_sintetico(tmp_path, n_dias=2)
+    cache = tmp_path / "fines_descarga.json"   # distinta de la del almacén
+
+    def falla_siempre(pk):
+        raise RuntimeError("proveedor caído")
+
+    monkeypatch.setattr(fines.mlb_stats, "fin_de_juego", falla_siempre)
+    monkeypatch.setattr(fines.time, "sleep", lambda *_: None)
+    r = fines.descargar(db_resultados=db, cache=cache, hilos=2)
+    assert r["fechados"] == 0 and r["fallos"] > 0
+    guardado = _json.loads(cache.read_text(encoding="utf-8"))
+    assert guardado["juegos"] == {} and len(guardado["fallos"]) == r["fallos"]
+    assert guardado["campo"].startswith("liveData.plays.currentPlay")

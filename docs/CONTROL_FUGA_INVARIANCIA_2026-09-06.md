@@ -1,5 +1,12 @@
 # Control de fuga por invariancia, y el fin de la aproximación de 8 h
 
+> 📌 **La v1.1 quedó superada por la v1.2** el mismo día: la validación del
+> contenido de las horas de fin encontró que el instante medido puede quedarse
+> corto hasta 15,7 minutos, y se le agregó un margen de 20. Ver
+> `docs/INFORME_FINAL_CANDIDATO_V1_2_2026-09-06.md`, que es el informe vigente.
+> Este documento se conserva entero: la comparación v1 ↔ v1.1 y el detalle de
+> las tres pruebas siguen siendo válidos.
+
 Completa el control de fuga del candidato v1
 (`docs/CANDIDATO_V1_RESULTADO_2026-09-06.md`). **Ventana (162), `k` (67) y
 regularización (`λ=1.0`) quedaron congeladas durante toda esta corrección**, tal

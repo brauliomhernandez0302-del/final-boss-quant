@@ -1,6 +1,16 @@
 # Preregistro — candidato v1 de P(gana el local)
 
-**Fecha: 2026-09-06.** Este documento se commitea **antes de medir nada**. Ese
+**Fecha: 2026-09-06.** Este documento se commitea **antes de medir nada**.
+
+> 📌 **Cambio posterior, registrado y no editado en silencio** (2026-09-06): la
+> §2 fijaba `inicio + 8 h` como cota del fin de un partido *"porque ninguna
+> fuente propia guarda la hora de FIN"*. Esa evidencia sí existía y no se había
+> buscado: el feed en vivo publica el instante de la última jugada. Medido sobre
+> los 7.664 partidos, la cota fallaba en 2 (máx. 9,04 h) y retrasaba de más
+> todas las demás. Se reemplazó por la finalización medida más un margen de 20
+> minutos derivado de su imprecisión real. **Ventana, k y regularización no se
+> tocaron.** El resultado se versionó: v1 (cota) → v1.1 (fin medido) → v1.2
+> (fin + margen). Ver `docs/INFORME_FINAL_CANDIDATO_V1_2_2026-09-06.md`. Ese
 es su único valor: un preregistro escrito después de ver el resultado no es un
 preregistro, es una racionalización. Si algo de acá cambia después de la primera
 medición, se anota el cambio con su fecha y su motivo, no se edita en silencio.
