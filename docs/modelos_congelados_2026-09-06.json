@@ -1,0 +1,83 @@
+{
+  "congelado_en": "2026-09-06",
+  "entrenado_con": [
+    2024,
+    2025
+  ],
+  "preregistros": [
+    "docs/PREREGISTRO_MODELO_V1_2026-09-06.md",
+    "docs/PREREGISTRO_V1_4_ABRIDORES_2026-09-06.md"
+  ],
+  "concesion_declarada": "v1.4 se ENTRENA con el abridor real del boxscore porque el anuncio de 2024-2025 no existe; se APLICA con el anuncio previo al corte. Magnitud acotada: 7,1% de cambio de anuncio medido sobre 84 equipo-juego. No es fuga en la evaluación, que es prospectiva.",
+  "constantes": {
+    "LAMBDA_L2": 1.0,
+    "K_BF": 300,
+    "MIN_BF_ABRIDOR": 150,
+    "LIGA_K_MENOS_BB": 0.135,
+    "VENTANA": 162,
+    "K_REGRESION": 67
+  },
+  "modelos": {
+    "v1.2": {
+      "version": "v1.2",
+      "variables": [
+        "dif_pitagorica",
+        "dif_descanso"
+      ],
+      "beta": [
+        0.16413931993892214,
+        0.29648673149411,
+        -0.031198164734696547
+      ],
+      "mu": [
+        -0.00010155079144724848,
+        0.014596793491265853
+      ],
+      "sd": [
+        0.07202436265568268,
+        0.2802033222393783
+      ],
+      "n_entrenamiento": 4179,
+      "lambda_l2": 1.0,
+      "coeficientes": {
+        "intercepto": 0.16413931993892214,
+        "dif_pitagorica": 0.29648673149411,
+        "dif_descanso": -0.031198164734696547
+      },
+      "sha": "d88d41ecc7dcd437"
+    },
+    "v1.4": {
+      "version": "v1.4",
+      "variables": [
+        "dif_pitagorica",
+        "dif_descanso",
+        "dif_calidad_abridor"
+      ],
+      "beta": [
+        0.1337415288098516,
+        0.21341598837085038,
+        -0.05307948447391303,
+        0.12394977784843092
+      ],
+      "mu": [
+        0.00018065861385126546,
+        0.01627804663440387,
+        -0.000144442567509109
+      ],
+      "sd": [
+        0.0708330593902835,
+        0.28636541827263295,
+        0.038716465030104855
+      ],
+      "n_entrenamiento": 2273,
+      "lambda_l2": 1.0,
+      "coeficientes": {
+        "intercepto": 0.1337415288098516,
+        "dif_pitagorica": 0.21341598837085038,
+        "dif_descanso": -0.05307948447391303,
+        "dif_calidad_abridor": 0.12394977784843092
+      },
+      "sha": "277364404636b308"
+    }
+  }
+}

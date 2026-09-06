@@ -89,3 +89,9 @@ data/fines_de_juego.json
 
 # Almacén de anuncios: se genera con `python3 -m fbq.anuncios.capturar`.
 data/anuncios.db
+
+# Almacenes generados por la serie prospectiva.
+data/anuncios.db
+data/prospectiva.db
+data/abridores_reales.json
+logs/
