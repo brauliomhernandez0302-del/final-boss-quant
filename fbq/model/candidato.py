@@ -112,6 +112,8 @@ def construir(
     db_mercado: Path = DB_MERCADO,
     db_resultados: Path = DB_RESULTADOS,
     constructor=None,
+    precios: Optional[Dict[int, Dict[str, Any]]] = None,
+    cache_fines: Optional[Path] = None,
 ) -> Tuple[List[Fila], Counter]:
     """Las filas predecibles y el conteo de exclusiones por motivo.
 
@@ -119,11 +121,17 @@ def construir(
     inyecta una variable envenenada para comprobar que los detectores la
     rechazan.
     """
-    partidos = cargar_partidos(seasons, db_resultados=db_resultados)
+    partidos = cargar_partidos(seasons, db_resultados=db_resultados,
+                               cache_fines=cache_fines)
     ventana = VentanaPIT(partidos)
-    precios = _precios_de_referencia(seasons, db_mercado=db_mercado,
-                                     db_resultados=db_resultados)
+    # Los precios no dependen de los marcadores, así que el test de invariancia
+    # los calcula UNA vez y los reusa en cada reconstrucción. Es la diferencia
+    # entre dos minutos y un segundo por perturbación.
+    if precios is None:
+        precios = _precios_de_referencia(seasons, db_mercado=db_mercado,
+                                         db_resultados=db_resultados)
     construir_fila = constructor or F.construir_fila
+    indice_liga = F.IndiceLiga(partidos)
 
     filas: List[Fila] = []
     excl: Counter = Counter()
@@ -133,7 +141,7 @@ def construir(
             excl["sin_precio_pinnacle_pre_juego"] += 1
             continue
         corte = ref["corte"]
-        v = construir_fila(ventana, partidos, juego, corte)
+        v = construir_fila(ventana, partidos, juego, corte, indice_liga)
         if not v.get("ok"):
             excl[str(v.get("motivo", "desconocido"))] += 1
             continue

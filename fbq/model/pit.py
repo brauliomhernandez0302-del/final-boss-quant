@@ -4,16 +4,25 @@ Todo hecho que entra en una fila pasa por acá. No es una convención que el
 constructor de features deba recordar: es una compuerta que **levanta una
 excepción** si le piden un hecho que al corte no existía.
 
-La regla, del preregistro §2:
+La regla, del preregistro §2, **corregida el 2026-09-06**:
 
     un partido anterior está disponible en el corte T si
-        inicio_utc(partido) + DURACION_MAXIMA ≤ T
+        fin_medido(partido) ≤ T
 
-`DURACION_MAXIMA = 8 horas` es una cota deliberadamente holgada. La mediana de
-un partido de MLB ronda las 3 horas y los extremos de entradas extra no llegan a
-7; ninguna fuente propia guarda la hora de FIN, y la alternativa a una cota es
-adivinar. **Errar por exceso cuesta cobertura; errar por defecto cuesta una
-fuga**, y este proyecto ya pagó siete baselines por fugas.
+El preregistro aproximaba el fin con `inicio + 8 h` porque ninguna fuente propia
+guardaba la hora de fin. Ahora sí la hay: `fbq/results/fines.py` trae el
+instante de la ÚLTIMA JUGADA del feed en vivo, medido para los 7.664 partidos de
+los almacenes, sin un solo fallo.
+
+**La cota era mala en las dos direcciones.** Medido: la mediana del reloj de
+pared es 2,69 h y el p99 es 4,96 h, así que 8 h retrasaba de más la
+disponibilidad de casi todos los partidos —eso cuesta cobertura—; y **2 de 7.664
+(0,026%) la exceden**, con un máximo de 9,04 h, así que tampoco era una cota
+superior — eso cuesta una fuga. Con el fin medido desaparecen las dos.
+
+La cota se conserva **sólo como respaldo** para un partido sin fin medido, y
+queda marcada como tal en `procedencia`. Un partido sin fin ni inicio no está
+disponible nunca.
 
 **Suspendidos**: un partido suspendido y reanudado tiene dos entradas en el
 schedule con el mismo `game_pk`. La disponibilidad se calcula sobre la MÁS
@@ -25,6 +34,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from bisect import bisect_right
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
@@ -33,12 +43,11 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 from fbq.core.clock import normalizar_utc, tiene_hora
 from fbq.evaluator.frame import DB_RESULTADOS
+from fbq.results import fines as _fines
+from fbq.results.fines import DURACION_MAXIMA   # respaldo, ver la nota del módulo
 
 RAIZ = Path(__file__).parent.parent.parent
 CACHE_SCHEDULE = RAIZ / "data" / "schedule_inicios.json"
-
-# Ver la nota del módulo. Cota, no estimación.
-DURACION_MAXIMA = timedelta(hours=8)
 
 
 class FugaDetectada(Exception):
@@ -58,6 +67,7 @@ class Partido:
     home_runs: int
     away_runs: int
     disponible_desde: Optional[str]   # None = nunca se pudo fechar el fin
+    procedencia: str = "medido"       # medido | cota | desconocido
 
     @property
     def home_won(self) -> int:
@@ -89,14 +99,17 @@ def cargar_partidos(
     *,
     db_resultados: Path = DB_RESULTADOS,
     cache_schedule: Path = CACHE_SCHEDULE,
+    cache_fines: Optional[Path] = None,
 ) -> List[Partido]:
     """Los partidos terminados, con su instante de disponibilidad.
 
-    Un partido sin hora de inicio en el schedule queda con
-    `disponible_desde=None`: **nunca** se usa como hecho previo. No se le
-    inventa una hora — es el mismo criterio que la importación del histórico.
+    El fin sale MEDIDO de `results/fines.py`; la cota sobre el inicio es sólo el
+    respaldo. Un partido que no se pueda fechar de ninguna de las dos formas
+    queda con `disponible_desde=None` y **nunca** se usa como hecho previo. No
+    se le inventa una hora — mismo criterio que la importación del histórico.
     """
     inicios = _inicios(cache_schedule)
+    medidos = _fines.cargar(cache_fines) if cache_fines else _fines.cargar()
     marcas = ",".join("?" * len(seasons))
     con = sqlite3.connect(f"file:{db_resultados}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
@@ -111,19 +124,18 @@ def cargar_partidos(
 
     out = []
     for r in filas:
-        arranques = inicios.get(int(r["game_pk"]))
-        # El más tardío: un suspendido no terminó antes de su reanudación.
-        fin = (normalizar_utc(
-            (max(arranques) if arranques else None) or "1970-01-01T00:00:00Z")
-            if arranques else None)
-        if fin is not None:
-            from datetime import datetime
-            fin = (datetime.fromisoformat(fin) + DURACION_MAXIMA).isoformat()
+        pk = int(r["game_pk"])
+        arranques = inicios.get(pk)
+        # El más tardío: un suspendido no terminó antes de su reanudación. Sólo
+        # se usa como respaldo, cuando no hay fin medido.
+        inicio = max(arranques) if arranques else None
+        cuando, procedencia = _fines.disponible_desde(pk, inicio, medidos)
         out.append(Partido(
-            game_pk=int(r["game_pk"]), official_date=r["official_date"],
+            game_pk=pk, official_date=r["official_date"],
             season=int(r["season"]), home_team=r["home_team"],
             away_team=r["away_team"], home_runs=int(r["home_runs"]),
-            away_runs=int(r["away_runs"]), disponible_desde=fin))
+            away_runs=int(r["away_runs"]), disponible_desde=cuando,
+            procedencia=procedencia))
     return out
 
 
@@ -140,10 +152,21 @@ class VentanaPIT:
         self._por_pk: Dict[int, Partido] = {}
         for p in partidos:
             self._por_pk[p.game_pk] = p
+            if p.disponible_desde is None:
+                # Sin hora de fin nunca está disponible: no entra al índice de
+                # ningún equipo. Sigue accesible por `exigir_disponible`, que es
+                # quien explica por qué no se puede usar.
+                continue
             self._por_equipo[p.home_team].append(p)
             self._por_equipo[p.away_team].append(p)
-        for lista in self._por_equipo.values():
-            lista.sort(key=lambda p: (p.disponible_desde or "", p.game_pk))
+        # Ordenados por disponibilidad, con las claves aparte: así "los que ya
+        # habían terminado en T" es una búsqueda binaria y no un barrido, y
+        # perturbar un partido para el test de invariancia deja de costar
+        # minutos. El RESULTADO es idéntico; sólo cambia el costo.
+        self._claves: Dict[str, List[str]] = {}
+        for equipo, lista in self._por_equipo.items():
+            lista.sort(key=lambda p: (p.disponible_desde, p.game_pk))
+            self._claves[equipo] = [p.disponible_desde for p in lista]
 
     def disponible(self, partido: Partido, corte: str) -> bool:
         return (partido.disponible_desde is not None
@@ -176,6 +199,9 @@ class VentanaPIT:
         Cruza el borde de temporada a propósito (preregistro §4): así abril
         tiene historia en vez de un fallback.
         """
-        previos = [p for p in self._por_equipo.get(equipo, ())
-                   if self.disponible(p, corte)]
+        lista = self._por_equipo.get(equipo)
+        if not lista:
+            return []
+        corte_idx = bisect_right(self._claves[equipo], corte)
+        previos = lista[:corte_idx]
         return previos[-ventana:] if ventana else previos

@@ -1,0 +1,257 @@
+{
+  "config": {
+    "preregistro": "docs/PREREGISTRO_MODELO_V1_2026-09-06.md",
+    "variables": [
+      "dif_pitagorica",
+      "dif_descanso"
+    ],
+    "ventana": 162,
+    "min_juegos_previos": 30,
+    "k_regresion": 67,
+    "exponente_pitagorico": 1.83,
+    "tope_descanso": 5,
+    "lambda_l2": 1.0,
+    "corte": "captured_at del precio de referencia (último par de Pinnacle pre-juego)",
+    "evaluacion": "HISTÓRICA — 2025 y 2026 ya fueron explorados por el proyecto"
+  },
+  "advertencia": "Evaluación HISTÓRICA, no fuera de muestra: 2025 y 2026 ya fueron explorados por este proyecto. El diseño temporal impide que el modelo vea el futuro, no que lo haya visto quien eligió las variables.",
+  "cobertura": {
+    "filas_predecibles": 5736,
+    "por_temporada": {
+      "2024": 1988,
+      "2025": 2191,
+      "2026": 1557
+    },
+    "exclusiones": {
+      "sin_precio_pinnacle_pre_juego": 1558,
+      "historial_insuficiente": 370
+    }
+  },
+  "temporadas": {
+    "2025": {
+      "entrenamiento": {
+        "temporadas": [
+          2024
+        ],
+        "n": 1988,
+        "tasa_base": 0.5306841046277666
+      },
+      "n_evaluables": 2191,
+      "n_marco_completo": 2191,
+      "coeficientes": {
+        "intercepto": 0.1256346680072203,
+        "dif_pitagorica": 0.2946444468708946,
+        "dif_descanso": -0.0799962995693291
+      },
+      "lambda_l2": 1.0,
+      "metricas": {
+        "v1": {
+          "brier": 0.24323816735192993,
+          "log_loss": 0.6794033099476613
+        },
+        "tasa_base": {
+          "brier": 0.2479585319464954,
+          "log_loss": 0.6890602928203333
+        },
+        "mercado_interseccion": {
+          "brier": 0.2414173130137386,
+          "log_loss": 0.6754167225609204
+        }
+      },
+      "brier_mercado_marco_completo": 0.2414173130137386,
+      "veredicto_evaluador": {
+        "n": 2191,
+        "brier_candidato": 0.24323816735192993,
+        "brier_mercado": 0.2414173130137386,
+        "brecha": 0.0018208543381913467,
+        "b_candidato": 0.1928734411809604,
+        "ic95": [
+          -0.2368064327779554,
+          0.5723513750363445
+        ],
+        "p_b_positivo": 0.7775,
+        "aporta_sobre_el_precio": false,
+        "roi": [
+          {
+            "umbral": 0.02,
+            "n": 1628,
+            "pnl_u": 54.81,
+            "roi_pct": 3.367,
+            "ic95_roi_pct": [
+              -1.637,
+              8.455
+            ],
+            "p_roi_positivo": 0.887
+          },
+          {
+            "umbral": 0.04,
+            "n": 1097,
+            "pnl_u": 45.83,
+            "roi_pct": 4.178,
+            "ic95_roi_pct": [
+              -2.738,
+              11.163
+            ],
+            "p_roi_positivo": 0.863
+          },
+          {
+            "umbral": 0.06,
+            "n": 667,
+            "pnl_u": 33.81,
+            "roi_pct": 5.069,
+            "ic95_roi_pct": [
+              -4.367,
+              14.725
+            ],
+            "p_roi_positivo": 0.835
+          },
+          {
+            "umbral": 0.08,
+            "n": 372,
+            "pnl_u": 9.94,
+            "roi_pct": 2.672,
+            "ic95_roi_pct": [
+              -7.075,
+              12.481
+            ],
+            "p_roi_positivo": 0.69
+          },
+          {
+            "umbral": 0.1,
+            "n": 197,
+            "pnl_u": -3.86,
+            "roi_pct": -1.959,
+            "ic95_roi_pct": [
+              -15.271,
+              13.134
+            ],
+            "p_roi_positivo": 0.383
+          }
+        ],
+        "mezcla_fuera_de_muestra": []
+      }
+    },
+    "2026": {
+      "entrenamiento": {
+        "temporadas": [
+          2024,
+          2025
+        ],
+        "n": 4179,
+        "tasa_base": 0.5400813591768365
+      },
+      "n_evaluables": 1557,
+      "n_marco_completo": 1557,
+      "coeficientes": {
+        "intercepto": 0.16413931993892214,
+        "dif_pitagorica": 0.29648673149411,
+        "dif_descanso": -0.031198164734696547
+      },
+      "lambda_l2": 1.0,
+      "metricas": {
+        "v1": {
+          "brier": 0.24819311625612428,
+          "log_loss": 0.6896158569247781
+        },
+        "tasa_base": {
+          "brier": 0.2494698725713962,
+          "log_loss": 0.6920881047894925
+        },
+        "mercado_interseccion": {
+          "brier": 0.2464108196142687,
+          "log_loss": 0.6859831502207325
+        }
+      },
+      "brier_mercado_marco_completo": 0.2464108196142687,
+      "veredicto_evaluador": {
+        "n": 1557,
+        "brier_candidato": 0.24819311625612428,
+        "brier_mercado": 0.2464108196142687,
+        "brecha": 0.0017822966418555852,
+        "b_candidato": 0.07742857085662719,
+        "ic95": [
+          -0.5480431961635139,
+          0.5669551961663225
+        ],
+        "p_b_positivo": 0.595,
+        "aporta_sobre_el_precio": false,
+        "roi": [
+          {
+            "umbral": 0.02,
+            "n": 1093,
+            "pnl_u": 9.92,
+            "roi_pct": 0.908,
+            "ic95_roi_pct": [
+              -5.177,
+              6.248
+            ],
+            "p_roi_positivo": 0.603
+          },
+          {
+            "umbral": 0.04,
+            "n": 716,
+            "pnl_u": 36.76,
+            "roi_pct": 5.134,
+            "ic95_roi_pct": [
+              -3.602,
+              13.989
+            ],
+            "p_roi_positivo": 0.865
+          },
+          {
+            "umbral": 0.06,
+            "n": 446,
+            "pnl_u": 40.21,
+            "roi_pct": 9.016,
+            "ic95_roi_pct": [
+              -1.399,
+              20.341
+            ],
+            "p_roi_positivo": 0.958
+          },
+          {
+            "umbral": 0.08,
+            "n": 250,
+            "pnl_u": 25.18,
+            "roi_pct": 10.072,
+            "ic95_roi_pct": [
+              -4.618,
+              25.243
+            ],
+            "p_roi_positivo": 0.902
+          },
+          {
+            "umbral": 0.1,
+            "n": 123,
+            "pnl_u": 3.44,
+            "roi_pct": 2.797,
+            "ic95_roi_pct": [
+              -23.542,
+              32.024
+            ],
+            "p_roi_positivo": 0.55
+          }
+        ],
+        "mezcla_fuera_de_muestra": []
+      }
+    }
+  },
+  "version_codigo": {
+    "commit": "b1cedc5c94473c07ccc24d77937d4348eb1efc83",
+    "rama": "recuperacion/fbq",
+    "arbol_limpio": false
+  },
+  "version_datos": {
+    "market.db": {
+      "filas": 143899,
+      "primera_captura": "2024-03-20T17:00:00+00:00",
+      "ultima_captura": "2026-08-07T23:37:57.009995+00:00",
+      "eventos_enlazados": 6295
+    },
+    "results.db": {
+      "juegos": 7664,
+      "primer_dia": "2024-03-20",
+      "ultimo_dia": "2026-08-06"
+    }
+  }
+}

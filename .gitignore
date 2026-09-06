@@ -83,3 +83,6 @@ data/.g8_autorun_once
 # vigente queda escrito en docs/REFERENCIA_MERCADO_2026-09.md.
 data/schedule_inicios.json
 data/importacion_historica_pendientes.csv
+
+# Fines de partido medidos: caché generada por `python3 -m fbq.results.fines`.
+data/fines_de_juego.json

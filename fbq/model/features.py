@@ -22,6 +22,7 @@ original exista.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date
 from typing import Dict, List, Optional, Sequence
@@ -104,18 +105,38 @@ def descanso(p: Perfil, dia_juego: str) -> Optional[float]:
     return float(max(0, min(d, TOPE_DESCANSO)))
 
 
-def media_carreras_liga(ventana: VentanaPIT, partidos: Sequence[Partido],
-                        corte: str) -> float:
-    """Carreras por equipo y por partido en la liga, con lo disponible al corte.
+class IndiceLiga:
+    """Carreras por equipo y por partido en la liga, en cualquier corte.
 
     También pasa por la compuerta: la media de la liga es un hecho tan sujeto al
-    corte como el récord de un equipo.
+    corte como el récord de un equipo. Se precalcula con sumas acumuladas sobre
+    los partidos ordenados por disponibilidad — el resultado es idéntico al del
+    barrido, sólo cambia el costo, y ese costo es lo que hace practicable
+    reconstruir el marco entero por cada partido perturbado.
     """
+
+    def __init__(self, partidos: Sequence[Partido]) -> None:
+        ordenados = sorted((p for p in partidos if p.disponible_desde is not None),
+                           key=lambda p: p.disponible_desde)
+        self._claves = [p.disponible_desde for p in ordenados]
+        self._acum = [0]
+        for p in ordenados:
+            self._acum.append(self._acum[-1] + p.home_runs + p.away_runs)
+
+    def media(self, corte: str) -> float:
+        n = bisect_right(self._claves, corte)
+        if n == 0:
+            return 4.5   # sólo alcanzable si no hay NINGÚN partido previo
+        return self._acum[n] / (2 * n)
+
+
+def media_carreras_liga(ventana: VentanaPIT, partidos: Sequence[Partido],
+                        corte: str) -> float:
+    """Compatibilidad: la versión directa, sin índice. Misma cuenta."""
     disponibles = [p for p in partidos if ventana.disponible(p, corte)]
     if not disponibles:
-        return 4.5   # sólo alcanzable si no hay NINGÚN partido previo
-    total = sum(p.home_runs + p.away_runs for p in disponibles)
-    return total / (2 * len(disponibles))
+        return 4.5
+    return sum(p.home_runs + p.away_runs for p in disponibles) / (2 * len(disponibles))
 
 
 def construir_fila(
@@ -123,6 +144,7 @@ def construir_fila(
     partidos: Sequence[Partido],
     juego: Partido,
     corte: str,
+    indice_liga: Optional["IndiceLiga"] = None,
 ) -> Dict[str, object]:
     """Las variables de un juego, al corte de su precio de referencia.
 
@@ -136,7 +158,8 @@ def construir_fila(
         return {"ok": False, "motivo": "historial_insuficiente",
                 "n_local": pl.n, "n_visita": pv.n}
 
-    media = media_carreras_liga(ventana, partidos, corte)
+    media = (indice_liga.media(corte) if indice_liga is not None
+             else media_carreras_liga(ventana, partidos, corte))
     dl, dv = descanso(pl, juego.official_date), descanso(pv, juego.official_date)
     if dl is None or dv is None:
         return {"ok": False, "motivo": "sin_descanso_calculable"}

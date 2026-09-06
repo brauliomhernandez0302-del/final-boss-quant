@@ -198,3 +198,91 @@ def test_el_roi_viene_con_intervalo_agrupado():
             lo, hi = f["ic95_roi_pct"]
             assert lo < hi
             assert 0.0 <= f["p_roi_positivo"] <= 1.0
+
+
+# ── Invariancia del proceso completo (2026-09-06) ────────────────────────
+
+def _almacen_sintetico(tmp_path, n_dias=40):
+    """Un `results.db` con historia suficiente para que el modelo prediga."""
+    import sqlite3
+    from datetime import date, timedelta
+    from fbq.results.store import Final, ResultsStore
+
+    res = ResultsStore(tmp_path / "results.db")
+    equipos = [f"Equipo{i}" for i in range(6)]
+    finales, inicios, fines = [], [], {}
+    pk = 1000
+    d0 = date(2024, 4, 1)
+    for dia in range(n_dias):
+        f = d0 + timedelta(days=dia)
+        for i in range(0, 6, 2):
+            local, visita = equipos[i], equipos[i + 1]
+            cl, cv = 3 + (pk % 5), 2 + (pk % 3)
+            if cl == cv:
+                cl += 1
+            finales.append(Final(game_pk=pk, official_date=f.isoformat(),
+                                 season=2024, home_team=local, away_team=visita,
+                                 home_runs=cl, away_runs=cv,
+                                 detailed_state="Final"))
+            inicio = f"{f.isoformat()}T22:00:00Z"
+            inicios.append({"game_pk": pk, "game_date": inicio,
+                            "official_date": f.isoformat(), "estado": "Final"})
+            fines[str(pk)] = {"game_pk": pk, "inicio": inicio,
+                              "fin": f"{(f + timedelta(days=1)).isoformat()}T01:00:00Z"}
+            pk += 1
+    res.registrar(finales)
+    (tmp_path / "sched.json").write_text(json.dumps({"juegos": inicios}), encoding="utf-8")
+    (tmp_path / "fines.json").write_text(json.dumps({"juegos": fines}), encoding="utf-8")
+    return tmp_path / "results.db", tmp_path / "sched.json", tmp_path / "fines.json"
+
+
+def test_perturbar_siempre_invierte_al_ganador_y_cambia_el_total(tmp_path):
+    """Un test de fuga que a veces no perturba nada es peor que no tenerlo.
+
+    La primera versión sumaba 7 e invertía los lados, y con margen original
+    grande dejaba al mismo ganador: 3 de 14 partidos no se perturbaban.
+    """
+    from fbq.model.invariancia import _perturbar
+    db, _, _ = _almacen_sintetico(tmp_path, n_dias=4)
+    import sqlite3
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    antes = {r[0]: (r[1], r[2]) for r in
+             con.execute("SELECT game_pk, home_runs, away_runs FROM resultado")}
+    con.close()
+    nuevos = _perturbar(db, list(antes))
+    for pk, (cl, cv) in antes.items():
+        nl, nv = nuevos[pk]
+        assert nl != nv, "un empate no es un final legítimo en MLB"
+        assert (cl > cv) != (nl > nv), f"game_pk={pk}: el ganador no se invirtió"
+        assert (nl + nv) != (cl + cv), f"game_pk={pk}: el total no cambió"
+
+
+def test_la_simetria_de_perfiles_hace_la_fila_insensible_por_construccion():
+    """La excepción de la prueba 2, comprobada y no supuesta: con perfiles
+    idénticos `dif_pitagorica` vale 0 para CUALQUIER media de liga."""
+    from fbq.model.features import Perfil, pitagorica
+    p = Perfil(n=162, cf_juego=4.197531, cc_juego=4.561728, ultimo_dia="2026-06-27")
+    for media in (3.5, 4.0, 4.532426778, 5.5, 9.9):
+        assert pitagorica(p, media) - pitagorica(p, media) == 0.0
+
+
+def test_el_fin_medido_manda_sobre_la_cota():
+    """La cota de 8h era mala en las dos direcciones: retrasaba de más casi
+    todos los partidos y era CORTA en 2 de 7.664 (máximo real 9,04 h)."""
+    from fbq.results.fines import DURACION_MAXIMA, disponible_desde
+    medidos = {1: {"fin": "2024-04-24T01:30:00Z", "inicio": "2024-04-23T22:00:00Z"}}
+    cuando, proc = disponible_desde(1, "2024-04-23T22:00:00Z", medidos)
+    assert proc == "medido" and cuando == "2024-04-24T01:30:00+00:00"
+    # sin medición cae a la cota, y queda marcado
+    cuando, proc = disponible_desde(2, "2024-04-23T22:00:00Z", {})
+    assert proc == "cota" and cuando == "2024-04-24T06:00:00+00:00"
+    assert DURACION_MAXIMA == timedelta(hours=8)
+    # sin nada, nunca disponible
+    assert disponible_desde(3, None, {}) == (None, "desconocido")
+
+
+def test_un_partido_sin_fin_ni_inicio_no_entra_a_ninguna_ventana():
+    from fbq.model.pit import Partido, VentanaPIT
+    p = Partido(1, "2024-04-24", 2024, "A", "B", 5, 3, None, "desconocido")
+    v = VentanaPIT([p])
+    assert v.de_equipo("A", "2099-01-01T00:00:00+00:00", ventana=162) == []

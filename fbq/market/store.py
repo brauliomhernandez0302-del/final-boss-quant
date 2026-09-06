@@ -74,6 +74,12 @@ CREATE INDEX IF NOT EXISTS ix_snap_time
     ON odds_snapshot (captured_at);
 CREATE INDEX IF NOT EXISTS ix_snap_commence
     ON odds_snapshot (sport_key, commence_time);
+-- El evaluador y el modelo piden "el último precio de UN libro en UN mercado"
+-- sobre toda la tabla. Sin este índice esa consulta barre las 143.899 filas y
+-- tarda ~2 minutos, que es lo que hacía impracticable reconstruir el marco por
+-- cada partido perturbado en el test de invariancia.
+CREATE INDEX IF NOT EXISTS ix_snap_libro
+    ON odds_snapshot (sport_key, market, book, event_id, side, captured_at);
 
 -- Append-only impuesto por el motor, no por convención.
 CREATE TRIGGER IF NOT EXISTS trg_snapshot_no_update

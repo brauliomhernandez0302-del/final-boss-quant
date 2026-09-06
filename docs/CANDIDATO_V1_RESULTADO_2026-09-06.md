@@ -4,6 +4,13 @@
 escrito y commiteado **antes** de medir. **Nada de lo preregistrado se cambió
 después de ver los resultados.**
 
+> 📌 **SUPERSEDED en parte por la v1.1** (2026-09-06, mismo día):
+> `docs/CONTROL_FUGA_INVARIANCIA_2026-09-06.md` reemplaza la cota de 8 h por el
+> fin de partido MEDIDO. La población evaluable no cambia y los comparadores dan
+> lo mismo; el Brier del modelo se mueve en la quinta cifra. Este documento se
+> conserva entero: su conclusión sigue en pie y la comparación v1 ↔ v1.1 vive en
+> el documento nuevo.
+
 > ⚠️ **Evaluación HISTÓRICA, no fuera de muestra.** 2025 y 2026 ya fueron
 > explorados exhaustivamente por este proyecto —siete baselines, una auditoría
 > de dieciséis informes, nueve motores medidos sobre esos mismos años—. El

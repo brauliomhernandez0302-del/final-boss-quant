@@ -115,3 +115,47 @@ def linescore_final(juego: Dict[str, Any]) -> Optional[tuple[int, int, int | Non
     if local is None or visita is None:
         return None
     return int(local), int(visita), ls.get("currentInning")
+
+# Campos mínimos del feed en vivo para fechar el FIN de un partido. La API
+# acepta `fields` y recorta la respuesta: sin esto cada feed pesa megabytes y
+# fechar una temporada sería inviable; con esto son ~1,3 KB por juego.
+CAMPOS_FIN = ("gameData,datetime,dateTime,resumeDateTime,officialDate,"
+              "liveData,plays,currentPlay,about,endTime,"
+              "boxscore,info,label,value,status,detailedState")
+
+
+def fin_de_juego(game_pk: int) -> Dict[str, Any]:
+    """Cuándo terminó REALMENTE un partido, según el feed en vivo.
+
+    Devuelve el instante de la ÚLTIMA JUGADA (`currentPlay.about.endTime` en un
+    partido terminado), que es una observación y no una estimación. Es el dato
+    que permite dejar de aproximar el fin con una cota sobre el inicio.
+
+    Trae además `duracion` tal como la publica el boxscore —el campo `T`, que
+    incluye entre paréntesis los minutos de demora cuando los hubo— porque un
+    partido de 2:08 con 1:31 de demora ocupa 3:39 de reloj de pared, y lo que
+    importa para un corte es el reloj de pared, no el tiempo de juego.
+
+    Para un suspendido, `dateTime` ya viene siendo la REANUDACIÓN y
+    `resumeDateTime` lo confirma.
+    """
+    r = requests.get(f"https://statsapi.mlb.com/api/v1.1/game/{int(game_pk)}/feed/live",
+                     params={"fields": CAMPOS_FIN}, timeout=TIMEOUT)
+    r.raise_for_status()
+    d = r.json()
+    gd = (d.get("gameData") or {}).get("datetime") or {}
+    live = d.get("liveData") or {}
+    fin = (((live.get("plays") or {}).get("currentPlay") or {})
+           .get("about") or {}).get("endTime")
+    duracion = next(
+        (i.get("value") for i in ((live.get("boxscore") or {}).get("info") or [])
+         if i.get("label") == "T"), None)
+    return {
+        "game_pk": int(game_pk),
+        "inicio": gd.get("dateTime"),
+        "reanudacion": gd.get("resumeDateTime"),
+        "official_date": gd.get("officialDate"),
+        "fin": fin,
+        "duracion": duracion,
+        "estado": ((d.get("gameData") or {}).get("status") or {}).get("detailedState"),
+    }
