@@ -87,9 +87,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fecha", help="un solo día (YYYY-MM-DD)")
+    ap.add_argument("--dias", type=int, default=None,
+                    help="ventana hacia atrás desde hoy; evita aritmética de "
+                         "fechas en el cron, que se escribe distinto en cada shell")
     ap.add_argument("--desde", default=(hoy - timedelta(days=1)).isoformat())
     ap.add_argument("--hasta", default=hoy.isoformat())
     args = ap.parse_args()
+    if args.dias:
+        args.desde = (hoy - timedelta(days=int(args.dias))).isoformat()
+        args.hasta = hoy.isoformat()
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")

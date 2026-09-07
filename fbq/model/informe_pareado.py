@@ -7,7 +7,19 @@
 la potencia del 80 % para un ΔBrier de 0,001. Mirar la diferencia todos los días
 y decidir el día que da positivo es cómo se fabrica un hallazgo.
 
-Las tres poblaciones van **separadas y nunca se suman**:
+## La regla de selección, declarada antes de conocer resultados
+
+`docs/REGLA_SELECCION_PAREJA_2026-09-07.md`, commiteada con **0 partidos
+evaluados**:
+
+> **Para el informe principal se usa el PRIMER par completo y verificable de
+> cada partido.**
+
+Un partido con tres emisiones aporta **un** par, no tres. Contar las tres haría
+caer el error estándar por √3 sin una sola observación nueva. Las emisiones
+posteriores se conservan y se reportan aparte, en `emisiones_posteriores`.
+
+Las poblaciones van **separadas y nunca se suman**:
 
 | población | qué es |
 |---|---|
@@ -75,12 +87,31 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
             por_llave[llave][r["version"]] = r
 
     grupos: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    grupos_posteriores: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     pendientes: Dict[str, int] = defaultdict(int)
+    # ── La regla: UN par por partido, el primero completo y verificable ──
+    #
+    # Se aplica ANTES de mirar resultados y sin consultarlos: el criterio es el
+    # `corte` más temprano, con el `id` como desempate. Un partido no puede
+    # aportar más de un par al informe principal.
+    completos: Dict[tuple, tuple] = {}
+    for llave, v in sorted(por_llave.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        if "v1.2" in v and "v1.4" in v:
+            completos.setdefault((llave[0], llave[2]), (llave, v))
+    elegidos = {llave for llave, _ in completos.values()}
+
     for (pk, corte, cohorte), v in por_llave.items():
         if "v1.2" not in v or "v1.4" not in v:
             pendientes["sin_las_dos_versiones"] += 1
             continue
         origen = min((v["v1.2"]["origen"], v["v1.4"]["origen"]), key=lambda o: FUERZA.get(o, 0))
+        if (pk, corte, cohorte) not in elegidos:
+            # Emisión posterior del mismo partido: se conserva, no se cuenta.
+            grupos_posteriores[origen].append({
+                "game_pk": pk, "corte": corte,
+                "y": y_real.get(pk),
+                "p12": v["v1.2"]["p_home"], "p14": v["v1.4"]["p_home"]})
+            continue
         if pk not in y_real:
             pendientes[f"{origen}:sin_resultado_todavia"] += 1
             continue
@@ -95,7 +126,18 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
     salida: Dict[str, Any] = {
         "advertencia": ("DESCRIPTIVO, no veredicto. Umbral de decisión: n ≥ 900 "
                         "pares con resultado (potencia 80% para ΔBrier=0,001)."),
-        "poblaciones": {}, "pendientes": dict(pendientes)}
+        "regla_de_seleccion": (
+            "primer par completo y verificable de cada partido — "
+            "docs/REGLA_SELECCION_PAREJA_2026-09-07.md, declarada con 0 evaluados"),
+        "poblaciones": {}, "pendientes": dict(pendientes),
+        "emisiones_posteriores": {
+            origen: {
+                "n": len(xs),
+                "partidos": len({x["game_pk"] for x in xs}),
+                "con_resultado": sum(1 for x in xs if x["y"] is not None),
+                "nota": "conservadas y NO sumadas al informe principal",
+            } for origen, xs in sorted(grupos_posteriores.items())},
+    }
     for origen, xs in sorted(grupos.items()):
         n = len(xs)
         b12 = sum(x["b12"] for x in xs) / n
@@ -116,7 +158,10 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
             "shas_v1_4": sorted({x["sha_v14"] for x in xs}),
             "juegos_donde_v1_4_mejora": sum(1 for x in d if x < 0),
             "potencia_alcanzada": f"{n}/900 del umbral de decisión",
+            "partidos_unicos": len({x["game_pk"] for x in xs}),
         }
+        assert salida["poblaciones"][origen]["partidos_unicos"] == n, (
+            "un partido no puede aportar más de un par al informe principal")
     return salida
 
 

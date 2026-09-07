@@ -222,12 +222,30 @@ def resumen(db: Path = DB_PATH) -> Dict[str, Any]:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--pitchers", type=Path, required=True,
+    ap.add_argument("--pitchers", type=Path, default=None,
                     help="JSON con la lista de pitcher_id")
+    ap.add_argument("--desde-anuncios", action="store_true",
+                    help="refresca los lanzadores vistos en el almacén de anuncios")
     ap.add_argument("--seasons", nargs="+", type=int, default=[2024, 2025, 2026])
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    ids = json.loads(args.pitchers.read_text(encoding="utf-8"))
+    if args.desde_anuncios:
+        # Sin esto la ventana de 40 aperturas se va quedando vieja: un abridor
+        # anunciado hoy necesita sus últimas aperturas, no las de hace un mes.
+        from fbq.anuncios.store import AnunciosStore
+        with AnunciosStore()._conn() as c:
+            ids = [int(r[0]) for r in c.execute(
+                "SELECT DISTINCT pitcher_id FROM anuncio WHERE pitcher_id IS NOT NULL")]
+        ya = {int(r[0]) for r in
+              __import__("sqlite3").connect(f"file:{DB_PATH}?mode=ro", uri=True)
+              .execute("SELECT DISTINCT pitcher_id FROM apertura").fetchall()} \
+            if DB_PATH.exists() else set()
+        log.info("lanzadores de anuncios: %s (nuevos: %s)", len(ids),
+                 len(set(ids) - ya))
+    elif args.pitchers:
+        ids = json.loads(args.pitchers.read_text(encoding="utf-8"))
+    else:
+        ap.error("hace falta --pitchers o --desde-anuncios")
     log.info("%s", descargar(ids, args.seasons))
     log.info("almacén: %s", resumen())
 
