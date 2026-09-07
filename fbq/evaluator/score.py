@@ -166,6 +166,48 @@ def roi_con_ic(
     return salida
 
 
+def dif_pareada_ic(
+    d: np.ndarray, clusters: np.ndarray, *,
+    n_bootstrap: int = 2000, seed: int = 7,
+) -> dict:
+    """Media de una diferencia PAREADA y su IC95 por bootstrap AGRUPADO.
+
+    `d` es la diferencia por juego (por ejemplo `brier_A − brier_B`) y
+    `clusters` la unidad de remuestreo, que acá es el equipo local. Se
+    remuestrean clústeres enteros y no filas por la misma razón que en
+    `roi_con_ic`: los juegos de un equipo se repiten decenas de veces y los
+    errores iid sobre ellos inflan los t entre 5x y 21x sobre este tipo de dato.
+
+    Se publica también el error estándar iid, sólo para poder ver el EFECTO DE
+    DISEÑO — cuánto se estaría exagerando la precisión si se ignorara el
+    agrupamiento. Nunca para usarlo en su lugar.
+    """
+    d = np.asarray(d, float)
+    n = len(d)
+    if n == 0:
+        return {"n": 0, "media": None, "ic95": None}
+    unicos = np.unique(clusters)
+    indices = {g: np.where(clusters == g)[0] for g in unicos}
+    rng = np.random.default_rng(seed)
+    muestras = np.empty(n_bootstrap, float)
+    for i in range(n_bootstrap):
+        elegidos = rng.choice(unicos, len(unicos), replace=True)
+        idx = np.concatenate([indices[g] for g in elegidos])
+        muestras[i] = float(np.mean(d[idx]))
+    lo, hi = np.percentile(muestras, [2.5, 97.5])
+    se_iid = float(np.std(d, ddof=1) / np.sqrt(n)) if n > 1 else float("nan")
+    se_agr = float(np.std(muestras, ddof=1))
+    return {
+        "n": int(n), "clusters": int(len(unicos)),
+        "media": float(np.mean(d)),
+        "ic95": [float(lo), float(hi)],
+        "se_agrupado": se_agr,
+        "se_iid": se_iid,
+        "efecto_diseno": (se_agr / se_iid) ** 2 if se_iid and se_iid == se_iid else None,
+        "p_negativa": float(np.mean(muestras < 0)),
+    }
+
+
 def mezcla_fuera_de_muestra(
     frame: EvalFrame,
     p: np.ndarray,

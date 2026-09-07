@@ -136,14 +136,24 @@ def filas_de_boxscore(pk: int, box: Dict[str, Any]) -> List[Dict[str, Any]]:
                 v = s.get("pitchesThrown")
             return int(v or 0)
 
-        abridor = int(orden[0])
-        relevistas = [int(p) for p in orden[1:]]
+        # La regla de rol reutilizada dice "el primero de la lista es el
+        # abridor". En 3 de 16.174 equipos-partido el primero figura con CERO
+        # lanzamientos —anunciado y retirado antes de lanzarle a nadie— y el
+        # abridor real (`gamesStarted = 1`) es el segundo. Contarlo como relevo
+        # metería una apertura entera en la carga del bullpen.
+        #
+        # No es una excepción a la regla de rol: una entrada de cero
+        # lanzamientos no es una aparición. Se salta, y en todos los demás
+        # casos esto ES la regla original, porque el primero ya lanzó.
+        i0 = next((i for i, pid in enumerate(orden) if np_(int(pid)) > 0), 0)
+        abridor = int(orden[i0])
+        relevistas = [int(p) for p in orden[i0 + 1:]]
         filas.append({
             "game_pk": int(pk), "es_local": es_local,
             "team_id": int((t.get("team") or {}).get("id") or 0),
             "team_nombre": (t.get("team") or {}).get("name") or "",
             "lanzadores": len(orden), "relevistas": len(relevistas),
-            "pitches_total": sum(np_(p) for p in orden),
+            "pitches_total": sum(np_(int(p)) for p in orden),
             "pitches_abridor": np_(abridor),
             "pitches_relevo": sum(np_(p) for p in relevistas),
             "bf_relevo": sum(int(stat(p).get("battersFaced") or 0)

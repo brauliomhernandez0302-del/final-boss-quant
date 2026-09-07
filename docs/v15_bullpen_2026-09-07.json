@@ -1,0 +1,195 @@
+{
+  "config": {
+    "preregistro": "docs/PREREGISTRO_V1_5_BULLPEN_2026-09-07.md",
+    "v1_2": [
+      "dif_pitagorica",
+      "dif_descanso"
+    ],
+    "v1_5": [
+      "dif_pitagorica",
+      "dif_descanso",
+      "dif_carga_relevo"
+    ],
+    "ventana_horas": 72.0,
+    "escala_carga": 100.0,
+    "lambda_l2": 1.0,
+    "pliegues": "expansivos: entrena con temporadas < T, evalúa T",
+    "evaluacion": "EXPLORATORIA — 2025 y 2026 ya fueron explorados"
+  },
+  "cobertura": {
+    "filas_predecibles": 5741,
+    "con_carga_computable": 5741,
+    "sin_carga": 0,
+    "motivos_sin_carga": {},
+    "por_temporada": {
+      "2024": {
+        "filas": 1988,
+        "con_carga": 1988
+      },
+      "2025": {
+        "filas": 2191,
+        "con_carga": 2191
+      },
+      "2026": {
+        "filas": 1562,
+        "con_carga": 1562
+      }
+    },
+    "juegos_en_ventana_local": {
+      "media": 2.548859083783313,
+      "distribucion": {
+        "0": 49,
+        "1": 133,
+        "2": 2238,
+        "3": 3260,
+        "4": 61
+      }
+    },
+    "juegos_en_ventana_visita": {
+      "media": 2.5882250479010627
+    },
+    "dif_lanzamientos_sin_escalar": {
+      "media": 4.134297160773384,
+      "desvio": 67.74150686301023,
+      "min": -237.0,
+      "max": 270.0
+    }
+  },
+  "exclusiones_de_fila": {
+    "sin_precio_pinnacle_pre_juego": 1976,
+    "historial_insuficiente": 370
+  },
+  "pliegues": [
+    {
+      "temporada": 2025,
+      "n_entrenamiento": 1988,
+      "n_evaluacion": 2191,
+      "temporadas_entrenamiento": [
+        2024
+      ],
+      "brier_v1_2": 0.24323816735192993,
+      "brier_v1_5": 0.24317687192024448,
+      "brier_mercado": 0.2414173130137386,
+      "coeficientes_v1_5": {
+        "dif_pitagorica": 0.2992558153327717,
+        "dif_descanso": -0.07369310963585247,
+        "dif_carga_relevo": 0.027439672110659986
+      },
+      "intercepto_v1_5": 0.1256560473834006,
+      "coeficientes_v1_2": {
+        "dif_pitagorica": 0.2946444468708946,
+        "dif_descanso": -0.0799962995693291
+      },
+      "desvio_entrenamiento_v1_5": {
+        "dif_pitagorica": 0.07137349324615458,
+        "dif_descanso": 0.28500848010323354,
+        "dif_carga_relevo": 0.684679413428432
+      },
+      "pareado_v1_5_menos_v1_2": {
+        "n": 2191,
+        "clusters": 29,
+        "media": -6.12954316854295e-05,
+        "ic95": [
+          -0.00036907297566095434,
+          0.00022673595802769552
+        ],
+        "se_agrupado": 0.0001514777459363852,
+        "se_iid": 0.00013023296852520747,
+        "efecto_diseno": 1.3528691329558782,
+        "p_negativa": 0.678
+      },
+      "pareado_v1_5_menos_mercado": {
+        "n": 2191,
+        "clusters": 29,
+        "media": 0.0017595589065058706,
+        "ic95": [
+          -0.0004881186758736751,
+          0.004140084858604911
+        ],
+        "se_agrupado": 0.001191516503637913,
+        "se_iid": 0.0012236827250007131,
+        "efecto_diseno": 0.9481181624429528,
+        "p_negativa": 0.0675
+      },
+      "pareado_v1_2_menos_mercado": {
+        "n": 2191,
+        "clusters": 29,
+        "media": 0.0018208543381912996,
+        "ic95": [
+          -0.0005311352744140866,
+          0.004271589474728166
+        ],
+        "se_agrupado": 0.0012275502493294833,
+        "se_iid": 0.0012209464495884807,
+        "efecto_diseno": 1.0108467638517469,
+        "p_negativa": 0.0645
+      }
+    },
+    {
+      "temporada": 2026,
+      "n_entrenamiento": 4179,
+      "n_evaluacion": 1562,
+      "temporadas_entrenamiento": [
+        2024,
+        2025
+      ],
+      "brier_v1_2": 0.24833648571987582,
+      "brier_v1_5": 0.24822810695697411,
+      "brier_mercado": 0.24647346102181136,
+      "coeficientes_v1_5": {
+        "dif_pitagorica": 0.301587532440054,
+        "dif_descanso": -0.02372799347405113,
+        "dif_carga_relevo": 0.03199314504018105
+      },
+      "intercepto_v1_5": 0.1641807084404022,
+      "coeficientes_v1_2": {
+        "dif_pitagorica": 0.29648673149411,
+        "dif_descanso": -0.031198164734696547
+      },
+      "desvio_entrenamiento_v1_5": {
+        "dif_pitagorica": 0.07202436265568268,
+        "dif_descanso": 0.2802033222393783,
+        "dif_carga_relevo": 0.6700865218176009
+      },
+      "pareado_v1_5_menos_v1_2": {
+        "n": 1562,
+        "clusters": 29,
+        "media": -0.00010837876290169396,
+        "ic95": [
+          -0.000493916744606818,
+          0.00027587520613565745
+        ],
+        "se_agrupado": 0.00019910499738449945,
+        "se_iid": 0.00019637538537066947,
+        "efecto_diseno": 1.0279931496661912,
+        "p_negativa": 0.7195
+      },
+      "pareado_v1_5_menos_mercado": {
+        "n": 1562,
+        "clusters": 29,
+        "media": 0.0017546459351627972,
+        "ic95": [
+          -0.0010333445371687618,
+          0.004677660755022428
+        ],
+        "se_agrupado": 0.001474268410246721,
+        "se_iid": 0.0014386738431791692,
+        "efecto_diseno": 1.0500945978903478,
+        "p_negativa": 0.11
+      },
+      "pareado_v1_2_menos_mercado": {
+        "n": 1562,
+        "clusters": 29,
+        "media": 0.001863024698064491,
+        "ic95": [
+          -0.0008638457556856388,
+          0.0047623416110869135
+        ],
+        "se_agrupado": 0.0014760407948921478,
+        "se_iid": 0.001406696169959709,
+        "efecto_diseno": 1.1010222903604234,
+        "p_negativa": 0.0985
+      }
+    }
+  ]
+}

@@ -409,8 +409,12 @@ def test_las_dos_versiones_se_evaluan_sobre_las_mismas_columnas_de_las_mismas_fi
     from fbq.model import features as FF
     assert FF.NOMBRES == ("dif_pitagorica", "dif_descanso")
     assert FF.NOMBRES_V13 == FF.NOMBRES + ("b2b_visita",)
-    assert FF.TODAS == FF.NOMBRES_V13 + FF.DIAGNOSTICOS
+    assert FF.NOMBRES_V15 == FF.NOMBRES + ("dif_carga_relevo",)
+    assert FF.TODAS == FF.NOMBRES_V13 + ("dif_carga_relevo",) + FF.DIAGNOSTICOS
     assert "b2b_local" in FF.DIAGNOSTICOS and "b2b_local" not in FF.NOMBRES_V13
+    # v1.5 es v1.2 MÁS UNA variable, no v1.3 más una: el componente recuperado
+    # se cerró sin mejora demostrada y no se arrastra.
+    assert "b2b_visita" not in FF.NOMBRES_V15
 
 
 def test_el_diagnostico_del_lado_local_no_entra_a_ninguna_prediccion():
@@ -423,6 +427,6 @@ def test_el_diagnostico_del_lado_local_no_entra_a_ninguna_prediccion():
     f = Fila(game_pk=1, official_date="2025-05-01", season=2025, home_team="A",
              away_team="B", corte="2025-05-01T17:00:00+00:00",
              inicio_utc="2025-05-01T22:00:00+00:00", y=1, p_mercado=0.5,
-             x=(0.1, 1.0, 1.0, 999.0))          # b2b_local = 999, imposible
+             x=(0.1, 1.0, 1.0, 0.5, 999.0))     # b2b_local = 999, imposible
     X, _ = _matriz([f], FF.NOMBRES_V13)
     assert X.shape == (1, 3) and 999.0 not in X.flatten()

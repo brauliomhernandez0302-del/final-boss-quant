@@ -98,3 +98,7 @@ logs/
 data/aperturas.db
 data/pit_cache_pitcher.db
 docs/informe_pareado_vigente.json
+
+# El almacén de relevo: 16.174 filas reconstruibles con `python3 -m
+# fbq.model.bullpen`. Como el resto de los almacenes, el dato no viaja en git.
+data/bullpen.db

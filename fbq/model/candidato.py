@@ -116,6 +116,7 @@ def construir(
     constructor=None,
     precios: Optional[Dict[int, Dict[str, Any]]] = None,
     cache_fines: Optional[Path] = None,
+    indice_carga: Optional[Any] = None,
 ) -> Tuple[List[Fila], Counter]:
     """Las filas predecibles y el conteo de exclusiones por motivo.
 
@@ -134,6 +135,12 @@ def construir(
                                          db_resultados=db_resultados)
     construir_fila = constructor or F.construir_fila
     indice_liga = F.IndiceLiga(partidos)
+    # "auto" arma el índice de carga desde ESTOS partidos, no desde una copia
+    # calculada antes. Es lo que hace que la prueba de invariancia recorra
+    # también la variable nueva: si la perturbación la moviera, se vería.
+    if indice_carga == "auto":
+        from fbq.model.carga import cargar_indice
+        indice_carga = cargar_indice(partidos)
     # El inicio de cada partido, para el componente recuperado.
     #
     # La fuente primaria es la caché de FINES, que trae `inicio` para los 7.664
@@ -157,7 +164,8 @@ def construir(
             excl["sin_precio_pinnacle_pre_juego"] += 1
             continue
         corte = ref["corte"]
-        v = construir_fila(ventana, partidos, juego, corte, indice_liga, inicios)
+        v = construir_fila(ventana, partidos, juego, corte, indice_liga, inicios,
+                           indice_carga)
         if not v.get("ok"):
             excl[str(v.get("motivo", "desconocido"))] += 1
             continue
@@ -167,8 +175,14 @@ def construir(
             away_team=juego.away_team, corte=corte, inicio_utc=ref["inicio"],
             y=juego.home_won, p_mercado=ref["p_mercado"],
             x=tuple(float(v[n]) for n in F.TODAS),
-            extra={k: v[k] for k in ("n_local", "n_visita", "media_carreras_liga")
-                   if k in v}))
+            extra={k: v[k] for k in (
+                "n_local", "n_visita", "media_carreras_liga",
+                # La carga viaja en `extra` y no en `x` porque es la única que
+                # puede faltar: sin `carga_ok` no se puede saber si el 0.0 de la
+                # columna es un cero medido o una ausencia.
+                "carga_ok", "carga_motivo", "pitches_relevo_local",
+                "pitches_relevo_visita", "juegos_ventana_local",
+                "juegos_ventana_visita") if k in v}))
     return filas, excl
 
 

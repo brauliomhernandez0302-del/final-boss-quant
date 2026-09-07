@@ -45,12 +45,17 @@ NOMBRES = ("dif_pitagorica", "dif_descanso")
 # cambia entre versiones es qué columnas usa el ajuste, no cómo se arma la fila.
 NOMBRES_V13 = NOMBRES + ("b2b_visita",)
 
+# La v1.5 agrega UNA variable: la diferencia de carga reciente del bullpen.
+# Su definición vive en `docs/PREREGISTRO_V1_5_BULLPEN_2026-09-07.md`, escrito
+# antes de medir, y se calcula en `fbq/model/carga.py`.
+NOMBRES_V15 = NOMBRES + ("dif_carga_relevo",)
+
 # Se calcula siempre pero NO entra a ningún modelo: es el diagnóstico que dice
 # si la neutralización del lado local que hizo el sistema anterior se sostiene
 # sobre datos propios.
 DIAGNOSTICOS = ("b2b_local",)
 
-TODAS = NOMBRES_V13 + DIAGNOSTICOS
+TODAS = NOMBRES_V13 + ("dif_carga_relevo",) + DIAGNOSTICOS
 
 
 def regress(observed: float, mean: float, n: float, k: float) -> float:
@@ -160,6 +165,7 @@ def construir_fila(
     corte: str,
     indice_liga: Optional["IndiceLiga"] = None,
     inicios: Optional[Dict[int, str]] = None,
+    indice_carga: Optional[object] = None,
 ) -> Dict[str, object]:
     """Las variables de un juego, al corte de su precio de referencia.
 
@@ -190,12 +196,29 @@ def construir_fila(
     if b2b_v is None or b2b_l is None:
         return {"ok": False, "motivo": "sin_b2b_calculable"}
 
+    # Carga del bullpen (v1.5). Es la ÚNICA variable que puede faltar, así que
+    # no tumba la fila: la marca `carga_ok = 0` y sale de la comparación de v1.5
+    # —y con ella de la de v1.2 y del mercado, para que las tres se midan sobre
+    # las mismas filas—. El 0.0 que queda en la columna NUNCA se usa: quien la
+    # lee tiene que exigir `carga_ok`.
+    carga = ({"ok": False, "motivo": "sin_indice_de_carga"}
+             if indice_carga is None
+             else indice_carga.diferencia(juego.home_team, juego.away_team, corte))
+
     return {
         "ok": True,
         "dif_pitagorica": pitagorica(pl, media) - pitagorica(pv, media),
         "dif_descanso": dl - dv,
         "b2b_visita": b2b_v,
         "b2b_local": b2b_l,
+        "dif_carga_relevo": (float(carga["dif_carga_relevo"])
+                             if carga.get("ok") else 0.0),
+        "carga_ok": 1 if carga.get("ok") else 0,
+        "carga_motivo": carga.get("motivo", ""),
+        "pitches_relevo_local": carga.get("pitches_relevo_local"),
+        "pitches_relevo_visita": carga.get("pitches_relevo_visita"),
+        "juegos_ventana_local": carga.get("juegos_ventana_local"),
+        "juegos_ventana_visita": carga.get("juegos_ventana_visita"),
         "n_local": pl.n, "n_visita": pv.n,
         "media_carreras_liga": media,
     }

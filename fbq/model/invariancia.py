@@ -158,6 +158,7 @@ def verificar(
     tmp: Optional[Path] = None,
     constructor: Optional[Callable] = None,
     nombres: Sequence[str] = F.NOMBRES,
+    indice_carga: Optional[object] = None,
 ) -> Informe:
     """Corre las pruebas 1 y 2 sobre los partidos de `dias`.
 
@@ -182,7 +183,8 @@ def verificar(
         precios = _precios_de_referencia(seasons, db_mercado=db_mercado,
                                          db_resultados=tmp)
         base, _ = construir(seasons, db_mercado=db_mercado, db_resultados=tmp,
-                            precios=precios, constructor=constructor)
+                            precios=precios, constructor=constructor,
+                            indice_carga=indice_carga)
         modelo = _modelo_fijo(base, temporada, nombres)
         b_por_pk = {f.game_pk: f for f in base}
 
@@ -193,7 +195,8 @@ def verificar(
         _perturbar(tmp, objetivo)
 
         post, _ = construir(seasons, db_mercado=db_mercado, db_resultados=tmp,
-                            precios=precios, constructor=constructor)
+                            precios=precios, constructor=constructor,
+                            indice_carga=indice_carga)
         p_por_pk = {f.game_pk: f for f in post}
 
         # ── Prueba 1: el objetivo no se mueve ────────────────────────────
