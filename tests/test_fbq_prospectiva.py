@@ -117,20 +117,71 @@ def test_el_congelado_publicado_tiene_las_dos_versiones_y_su_huella():
 
 # ── La variable de abridor ───────────────────────────────────────────────
 
-def test_la_calidad_se_encoge_hacia_la_liga_por_bateadores_enfrentados():
+# ── Compatibilidad de fuentes y ventana de aperturas (2026-09-06) ────────
+
+def _almacen_aperturas(tmp_path, filas):
+    from fbq.model import aperturas as AP
+    db = tmp_path / "ap.db"
+    with AP._conn(db) as c:
+        c.executemany(
+            """INSERT OR REPLACE INTO apertura
+               (pitcher_id, game_pk, game_date, season, es_apertura, bf, k, bb)
+               VALUES (?,?,?,?,?,?,?,?)""", filas)
+    return db
+
+
+def test_la_ventana_es_de_40_aperturas_y_el_corte_es_ESTRICTO(tmp_path):
+    """El preregistro fija 40 aperturas; ninguna de las dos fuentes del almacén
+    PIT la ofrecía —las dos son acumuladas de temporada—, y por eso se
+    reconstruye desde las aperturas individuales."""
+    from fbq.model import aperturas as AP
+    filas = [(1, 1000 + i, f"2025-0{4 + i // 28}-{1 + i % 28:02d}", 2025, 1, 25, 6, 2)
+             for i in range(50)]
+    filas.append((1, 9999, "2025-09-01", 2025, 1, 25, 99, 0))   # el día del juego
+    db = _almacen_aperturas(tmp_path, filas)
+    k, bb, bf, n = AP.ventana(1, "2025-09-01", n=40, db=db)
+    assert n == 40, "toma exactamente las 40 últimas"
+    assert k == 40 * 6 and bf == 40 * 25, "el K=99 del propio día NO entra"
+
+
+def test_los_tres_conteos_se_suman_sobre_las_MISMAS_aperturas(tmp_path):
+    """El defecto que obligó a reconstruir: numerador y denominador venían de
+    fuentes que no contaban la misma población de turnos (129/300 de acuerdo)."""
+    from fbq.model import aperturas as AP
+    filas = [(7, 1, "2025-05-01", 2025, 1, 20, 5, 1),
+             (7, 2, "2025-05-07", 2025, 1, 30, 9, 3),
+             (7, 3, "2025-05-13", 2025, 0, 4, 1, 0)]   # relevo: no es apertura
+    db = _almacen_aperturas(tmp_path, filas)
+    k, bb, bf, n = AP.ventana(7, "2025-06-01", n=40, db=db)
+    assert (k, bb, bf, n) == (14, 4, 50, 2), "el relevo queda fuera de las tres sumas"
+
+
+def test_solo_se_cuentan_aperturas_no_relevos(tmp_path):
+    from fbq.model import aperturas as AP
+    filas = [(7, 1, "2025-05-01", 2025, 0, 4, 2, 0)]
+    db = _almacen_aperturas(tmp_path, filas)
+    assert AP.ventana(7, "2025-06-01", db=db) == (0, 0, 0, 0)
+
+
+def test_un_abridor_bajo_el_minimo_de_BF_excluye_el_juego():
+    from fbq.model.abridores import MIN_BF_ABRIDOR, Abridor, diferencia
+    bueno = Abridor(1, k=40, bb=10, bf=MIN_BF_ABRIDOR, n_aperturas=6)
+    flaco = Abridor(2, k=40, bb=10, bf=MIN_BF_ABRIDOR - 1, n_aperturas=5)
+    assert diferencia(bueno, bueno)[0] == pytest.approx(0.0)
+    assert diferencia(bueno, flaco) == (None, "abridor_con_muestra_insuficiente")
+    assert diferencia(None, bueno) == (None, "sin_aperturas_previas")
+
+
+def test_la_calidad_encoge_hacia_la_liga_por_bateadores_enfrentados():
     from fbq.model.abridores import K_BF, Abridor
     liga = 0.135
-    poco = Abridor(1, k_pct=0.40, bb_pct=0.05, bf=10, fuente="t")
-    mucho = Abridor(2, k_pct=0.40, bb_pct=0.05, bf=5000, fuente="t")
+    poco = Abridor(1, k=5, bb=0, bf=10, n_aperturas=1)      # K−BB% = 0.50
+    mucho = Abridor(2, k=2500, bb=0, bf=5000, n_aperturas=99)
     assert abs(poco.calidad(liga) - liga) < abs(mucho.calidad(liga) - liga)
-    medio = Abridor(3, k_pct=0.40, bb_pct=0.05, bf=K_BF, fuente="t")
-    assert medio.calidad(liga) == pytest.approx((0.35 + liga) / 2, abs=1e-12)
+    medio = Abridor(3, k=K_BF // 2, bb=0, bf=K_BF, n_aperturas=40)
+    assert medio.calidad(liga) == pytest.approx((0.5 + liga) / 2, abs=1e-12)
 
 
-def test_un_abridor_con_poca_muestra_EXCLUYE_el_juego(tmp_path):
-    from fbq.model.abridores import MIN_BF_ABRIDOR, Abridor, diferencia
-    bueno = Abridor(1, 0.25, 0.07, MIN_BF_ABRIDOR, "t")
-    flaco = Abridor(2, 0.25, 0.07, MIN_BF_ABRIDOR - 1, "t")
-    assert diferencia(bueno, bueno)[0] is not None
-    assert diferencia(bueno, flaco) == (None, "abridor_con_muestra_insuficiente")
-    assert diferencia(None, bueno) == (None, "sin_estadistica_de_abridor")
+def test_las_constantes_del_preregistro_de_v1_4_no_se_movieron():
+    from fbq.model import abridores as AB
+    assert (AB.VENTANA_ABRIDOR, AB.K_BF, AB.MIN_BF_ABRIDOR) == (40, 300, 150)

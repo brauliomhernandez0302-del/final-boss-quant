@@ -48,6 +48,69 @@ registrada**, que es lo que distingue "no cambió" de "no miramos".
 ⚠️ **GANICUS intacto**: sus 4 entradas de cron siguen tal cual. Las dos nuevas
 sólo usan la API de MLB; **no tocan la cuota de The Odds API**.
 
+## 1-bis. Compatibilidad de las fuentes: verificada, y NEGATIVA
+
+Antes de combinar `fangraphs.pitcher.daily` con `savant.pitcher.rolling` se
+comprobó que correspondieran al mismo lanzador, período, tipo de apariciones y
+unidades. **Dos de las cuatro comprobaciones fallaron**, así que no se
+combinaron.
+
+| comprobación | resultado |
+|---|---|
+| llave del lanzador (`entity_id` == `mlbam_id`) | ✅ coinciden |
+| **unidades** de `k_pct` / `bb_pct` | ✅ **fracción**, no porcentaje (máx 0,833 y 0,357) |
+| ventana declarada por cada fuente, mismo lanzador y misma `as_of` | ✅ idéntica (`2024-03-28 → as_of` en las dos) |
+| `K%`/`BB%` de FanGraphs == reconstruido del Statcast crudo | ⚠️ **221 / 300** |
+| `pa` de Savant == bateadores enfrentados contados en el crudo | ❌ **129 / 300** |
+
+**El numerador y el denominador venían de fuentes que no cuentan la misma
+población de turnos.** Se detectó primero por una imposibilidad aritmética en el
+propio dato: una instantánea con `pa = 21` y `bip = 34` —más batazos en juego
+que turnos enfrentados, que no puede ser— y de ahí salió la verificación.
+
+### Qué demuestra la disponibilidad temporal, y no es el nombre
+
+*"PIT diaria"* es una etiqueta. Lo que demuestra la disponibilidad es esto:
+
+> Sobre 300 instantáneas al azar, reconstruyendo los conteos desde el registro
+> de lanzamientos del Statcast crudo: **0 instantáneas contienen un juego
+> posterior a su `as_of_date`**.
+
+Comprobación puntual, exacta a ocho decimales: Verlander (434378) al
+2024-04-19 — el crudo da BF=21, K=4, BB=0 → `K% = 0.19047619`, `BB% = 0.0`; la
+instantánea dice `pa=21`, `k_pct=0.19047619`, `bb_pct=0.0`. Y su primera
+apertura de 2024 fue **ese mismo día**, o sea que la instantánea del día D sí
+incluye el juego del día D — por eso el corte del modelo es `< día del juego`,
+estricto.
+
+### Ninguna de las dos ventanas era la del preregistro
+
+Las dos fuentes acumulan **desde el inicio de la temporada**; el preregistro fija
+**40 aperturas** cruzando el borde de temporada. Ese solo hecho ya obligaba a
+reconstruir.
+
+### La reconstrucción, y su validación
+
+`fbq/model/aperturas.py`: una fila por (lanzador, apertura) del `gameLog`
+oficial de MLB —gratis, sin clave—, con `k`, `bb` y `bf` del **mismo registro de
+boxscore**. Numerador y denominador consistentes por construcción, y **la misma
+fuente para entrenar y para predecir**: desaparece la paridad entre dos caminos.
+
+| almacén | |
+|---|---|
+| filas | **27.958** |
+| lanzadores | **517** |
+| aperturas | **13.743** |
+| rango | **2024-03-20 → 2026-09-06** (incluye la temporada en curso) |
+
+Validado contra el Statcast crudo sobre 300 aperturas: **K 300/300**, **BB
+300/300**, **BF 287/300** — Statcast cuenta un turno de más en el 4,3%, por
+turnos truncados o repartidos entre lanzadores.
+
+**Efecto de reconstruir**: el entrenamiento de v1.4 pasa de 2.273 a **2.608**
+juegos y la cohorte histórica de 30 a **37**, porque la ventana de 40 aperturas
+cruza el borde de temporada mientras la acumulada se reiniciaba cada año.
+
 ## 2. Con qué se entrena cada versión, y el ajuste congelado
 
 `docs/modelos_congelados_2026-09-06.json`. Se entrena **una vez** y se lee de
@@ -59,16 +122,17 @@ produce una sucesión de modelos evaluados una vez cada uno.
 | entrenado con | **2024 + 2025** | **2024 + 2025** |
 | n | **4.179** | **2.273** |
 | variables | `dif_pitagorica`, `dif_descanso` | + `dif_calidad_abridor` |
-| huella | `d88d41ecc7dcd437` | `277364404636b308` |
-| intercepto | +0,1641 | +0,1337 |
-| `dif_pitagorica` | +0,2965 | +0,2134 |
-| `dif_descanso` | −0,0312 | −0,0531 |
-| **`dif_calidad_abridor`** | — | **+0,1239** |
+| n | 4.179 | **2.608** |
+| huella | `d88d41ecc7dcd437` | `e72f9b3b44a396b6` |
+| intercepto | +0,1641 | +0,1941 |
+| `dif_pitagorica` | +0,2965 | +0,2363 |
+| `dif_descanso` | −0,0312 | −0,0196 |
+| **`dif_calidad_abridor`** | — | **+0,0789** |
 
 El coeficiente del abridor sale **positivo** —un mejor abridor local sube
-P(gana el local)— y es **4 veces** el que tuvo `b2b_visita` en la v1.3. Eso es
-una observación sobre el entrenamiento, **no evidencia**: el veredicto sale de
-la serie prospectiva.
+P(gana el local)—, con la ventana de 40 aperturas del preregistro. Es una
+observación sobre el entrenamiento, **no evidencia**: el veredicto sale de la
+serie prospectiva.
 
 ### La variable, y de dónde sale cada número
 
@@ -77,13 +141,11 @@ la serie prospectiva.
 
 | dato | entrenamiento | aplicación prospectiva |
 |---|---|---|
-| `k_pct`, `bb_pct` | `pit_cache_pitcher.db` · `fangraphs.pitcher.daily`, instantánea PIT **anterior al día** | API de MLB, temporada en curso (gratis) |
-| bateadores enfrentados | mismo almacén · `savant.pitcher.rolling.pa` | `battersFaced` de la misma respuesta |
+| `k`, `bb`, `bf` | `data/aperturas.db` — últimas **40 aperturas** anteriores al día | **la misma tabla y la misma ventana** |
 
-**La sustitución de fuente está medida**, sobre 29 lanzadores con ≥100 BF en
-2025: `K%` difiere en media **+0,00075** (máx 0,0152) y `BB%` en **−0,00038**
-(máx 0,0124). Frente a una dispersión de K% entre lanzadores de 0,15-0,30, es
-ruido de definición.
+Una sola fuente para los dos caminos, con los tres conteos sumados sobre
+**exactamente el mismo conjunto de aperturas**. No hay sustitución de fuente que
+vigilar porque no hay dos fuentes.
 
 ### La concesión declarada del entrenamiento
 

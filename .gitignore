@@ -95,3 +95,5 @@ data/anuncios.db
 data/prospectiva.db
 data/abridores_reales.json
 logs/
+data/aperturas.db
+data/pit_cache_pitcher.db

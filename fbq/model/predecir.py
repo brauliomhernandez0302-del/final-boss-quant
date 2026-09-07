@@ -89,8 +89,8 @@ def generar(dias: int = 3, *, store: Optional[Prospectiva] = None) -> Dict[str, 
         if any(r is None or r["pitcher_id"] is None for r in ident.values()):
             motivos["sin_abridor_anunciado_antes_del_corte"] += 1
             continue
-        loc = AB.desde_mlb(ident["home"]["pitcher_id"], temporada)
-        vis = AB.desde_mlb(ident["away"]["pitcher_id"], temporada)
+        loc = AB.hasta(ident["home"]["pitcher_id"], g["official_date"])
+        vis = AB.hasta(ident["away"]["pitcher_id"], g["official_date"])
         dif, motivo = AB.diferencia(loc, vis)
         if dif is None:
             motivos[motivo] += 1
@@ -174,8 +174,8 @@ def generar_historicas(
         if any(r is None or r["pitcher_id"] is None for r in ident.values()):
             motivos["sin_abridor_anunciado_antes_del_corte"] += 1
             continue
-        loc = AB.desde_pit(ident["home"]["pitcher_id"], juego.official_date)
-        vis = AB.desde_pit(ident["away"]["pitcher_id"], juego.official_date)
+        loc = AB.hasta(ident["home"]["pitcher_id"], juego.official_date)
+        vis = AB.hasta(ident["away"]["pitcher_id"], juego.official_date)
         dif, motivo = AB.diferencia(loc, vis)
         if dif is None:
             motivos[motivo] += 1

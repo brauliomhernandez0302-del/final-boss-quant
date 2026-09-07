@@ -80,8 +80,8 @@ def variable_abridor(filas: List[Fila], reales: Dict[int, Dict[str, Optional[int
             motivos["sin_abridor_real"] = motivos.get("sin_abridor_real", 0) + 1
             continue
         dia = f.official_date
-        loc = AB.desde_pit(r["home"], dia)
-        vis = AB.desde_pit(r["away"], dia)
+        loc = AB.hasta(r["home"], dia)
+        vis = AB.hasta(r["away"], dia)
         val, motivo = AB.diferencia(loc, vis)
         if val is None:
             motivos[motivo] = motivos.get(motivo, 0) + 1
@@ -125,6 +125,7 @@ def congelar(*, seasons=(2024, 2025, 2026), entrenar_con=(2024, 2025),
             "equipo-juego. No es fuga en la evaluación, que es prospectiva."),
         "constantes": {"LAMBDA_L2": LAMBDA_L2, "K_BF": AB.K_BF,
                        "MIN_BF_ABRIDOR": AB.MIN_BF_ABRIDOR,
+                       "VENTANA_ABRIDOR": AB.VENTANA_ABRIDOR,
                        "LIGA_K_MENOS_BB": AB.LIGA_K_MENOS_BB,
                        "VENTANA": F.VENTANA, "K_REGRESION": F.K_REGRESION},
         "modelos": {},
