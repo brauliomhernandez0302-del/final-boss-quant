@@ -33,6 +33,7 @@ from fbq.results import fines as _fines
 from fbq.sources import mlb_stats
 
 log = logging.getLogger(__name__)
+LOG = Path(__file__).parent.parent.parent / "logs" / "prospectiva.log"
 
 
 def _juegos_futuros(dias: int) -> List[Dict[str, Any]]:
@@ -89,8 +90,8 @@ def generar(dias: int = 3, *, store: Optional[Prospectiva] = None) -> Dict[str, 
         if any(r is None or r["pitcher_id"] is None for r in ident.values()):
             motivos["sin_abridor_anunciado_antes_del_corte"] += 1
             continue
-        loc = AB.hasta(ident["home"]["pitcher_id"], g["official_date"])
-        vis = AB.hasta(ident["away"]["pitcher_id"], g["official_date"])
+        loc = AB.hasta(ident["home"]["pitcher_id"], corte)
+        vis = AB.hasta(ident["away"]["pitcher_id"], corte)
         dif, motivo = AB.diferencia(loc, vis)
         if dif is None:
             motivos[motivo] += 1
@@ -101,7 +102,8 @@ def generar(dias: int = 3, *, store: Optional[Prospectiva] = None) -> Dict[str, 
         base = {"corte": corte, "game_pk": g["game_pk"],
                 "official_date": g["official_date"],
                 "commence_time": g["commence_time"], "home_team": g["home_team"],
-                "away_team": g["away_team"], "cohorte": "prospectiva"}
+                "away_team": g["away_team"], "cohorte": "prospectiva",
+                "generado_utc": normalizar_utc(ahora())}
         for version, modelo in (("v1.2", m12), ("v1.4", m14)):
             filas.append({**base, "version": version,
                           "p_home": aplicar(modelo, x),
@@ -174,8 +176,8 @@ def generar_historicas(
         if any(r is None or r["pitcher_id"] is None for r in ident.values()):
             motivos["sin_abridor_anunciado_antes_del_corte"] += 1
             continue
-        loc = AB.hasta(ident["home"]["pitcher_id"], juego.official_date)
-        vis = AB.hasta(ident["away"]["pitcher_id"], juego.official_date)
+        loc = AB.hasta(ident["home"]["pitcher_id"], corte)
+        vis = AB.hasta(ident["away"]["pitcher_id"], corte)
         dif, motivo = AB.diferencia(loc, vis)
         if dif is None:
             motivos[motivo] += 1
@@ -184,7 +186,11 @@ def generar_historicas(
              "dif_calidad_abridor": dif}
         base = {"corte": corte, "game_pk": pk, "official_date": juego.official_date,
                 "commence_time": inicio, "home_team": juego.home_team,
-                "away_team": juego.away_team, "cohorte": "historica_42"}
+                "away_team": juego.away_team, "cohorte": "historica_42",
+                "generado_utc": normalizar_utc(ahora()),
+                # La cohorte histórica se RECONSTRUYE hoy sobre cortes de hace
+                # un mes. No es prospectiva y no puede contarse como tal.
+                "origen": "reconstruccion"}
         for version, modelo in (("v1.2", m12), ("v1.4", m14)):
             filas.append({**base, "version": version, "p_home": aplicar(modelo, x),
                           "variables_json": json.dumps(
@@ -203,7 +209,13 @@ def main() -> int:
     ap.add_argument("--historicas", action="store_true",
                     help="genera además la cohorte histórica de 42, aparte")
     args = ap.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # El log en ARCHIVO es parte de la evidencia: una predicción cuya emisión
+    # sólo consta en la salida de una terminal no es demostrable después.
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[logging.FileHandler(LOG, encoding="utf-8"),
+                  logging.StreamHandler()], force=True)
     try:
         if args.historicas:
             log.info("cohorte histórica: %s",

@@ -1,5 +1,6 @@
 {
   "congelado_en": "2026-09-06",
+  "vigente_desde": "2026-09-07T02:18:32.050652+00:00",
   "entrenado_con": [
     2024,
     2025
@@ -55,30 +56,116 @@
         "dif_calidad_abridor"
       ],
       "beta": [
-        0.19411990776028187,
-        0.23629726155322017,
-        -0.019623404499957454,
-        0.07892233370052297
+        0.19411818175246237,
+        0.23637181958045408,
+        -0.019620118715218432,
+        0.0786807697039618
       ],
       "mu": [
         0.0006271292738368519,
         0.013803680981595092,
-        0.00012519118590979377
+        0.000122589997795017
       ],
       "sd": [
         0.07072829438320326,
         0.2820710187494538,
-        0.04233930014924959
+        0.042340895817397375
       ],
       "n_entrenamiento": 2608,
       "lambda_l2": 1.0,
       "coeficientes": {
-        "intercepto": 0.19411990776028187,
-        "dif_pitagorica": 0.23629726155322017,
-        "dif_descanso": -0.019623404499957454,
-        "dif_calidad_abridor": 0.07892233370052297
+        "intercepto": 0.19411818175246237,
+        "dif_pitagorica": 0.23637181958045408,
+        "dif_descanso": -0.019620118715218432,
+        "dif_calidad_abridor": 0.0786807697039618
       },
-      "sha": "e72f9b3b44a396b6"
+      "sha": "3258fd9e648a0135"
     }
-  }
+  },
+  "superseded": [
+    {
+      "congelado_en": "2026-09-06",
+      "entrenado_con": [
+        2024,
+        2025
+      ],
+      "preregistros": [
+        "docs/PREREGISTRO_MODELO_V1_2026-09-06.md",
+        "docs/PREREGISTRO_V1_4_ABRIDORES_2026-09-06.md"
+      ],
+      "concesion_declarada": "v1.4 se ENTRENA con el abridor real del boxscore porque el anuncio de 2024-2025 no existe; se APLICA con el anuncio previo al corte. Magnitud acotada: 7,1% de cambio de anuncio medido sobre 84 equipo-juego. No es fuga en la evaluación, que es prospectiva.",
+      "constantes": {
+        "LAMBDA_L2": 1.0,
+        "K_BF": 300,
+        "MIN_BF_ABRIDOR": 150,
+        "VENTANA_ABRIDOR": 40,
+        "LIGA_K_MENOS_BB": 0.135,
+        "VENTANA": 162,
+        "K_REGRESION": 67
+      },
+      "modelos": {
+        "v1.2": {
+          "version": "v1.2",
+          "variables": [
+            "dif_pitagorica",
+            "dif_descanso"
+          ],
+          "beta": [
+            0.16413931993892214,
+            0.29648673149411,
+            -0.031198164734696547
+          ],
+          "mu": [
+            -0.00010155079144724848,
+            0.014596793491265853
+          ],
+          "sd": [
+            0.07202436265568268,
+            0.2802033222393783
+          ],
+          "n_entrenamiento": 4179,
+          "lambda_l2": 1.0,
+          "coeficientes": {
+            "intercepto": 0.16413931993892214,
+            "dif_pitagorica": 0.29648673149411,
+            "dif_descanso": -0.031198164734696547
+          },
+          "sha": "d88d41ecc7dcd437"
+        },
+        "v1.4": {
+          "version": "v1.4",
+          "variables": [
+            "dif_pitagorica",
+            "dif_descanso",
+            "dif_calidad_abridor"
+          ],
+          "beta": [
+            0.19411990776028187,
+            0.23629726155322017,
+            -0.019623404499957454,
+            0.07892233370052297
+          ],
+          "mu": [
+            0.0006271292738368519,
+            0.013803680981595092,
+            0.00012519118590979377
+          ],
+          "sd": [
+            0.07072829438320326,
+            0.2820710187494538,
+            0.04233930014924959
+          ],
+          "n_entrenamiento": 2608,
+          "lambda_l2": 1.0,
+          "coeficientes": {
+            "intercepto": 0.19411990776028187,
+            "dif_pitagorica": 0.23629726155322017,
+            "dif_descanso": -0.019623404499957454,
+            "dif_calidad_abridor": 0.07892233370052297
+          },
+          "sha": "e72f9b3b44a396b6"
+        }
+      }
+    }
+  ]
 }

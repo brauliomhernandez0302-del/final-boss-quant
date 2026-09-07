@@ -1,0 +1,25 @@
+{
+  "advertencia": "DESCRIPTIVO, no veredicto. Umbral de decisión: n ≥ 900 pares con resultado (potencia 80% para ΔBrier=0,001).",
+  "poblaciones": {
+    "no_verificable": {
+      "pares": 37,
+      "brier_v1_2": 0.2429619335053338,
+      "brier_v1_4": 0.24282872105439274,
+      "diferencia_media_v14_menos_v12": -0.00013321245094101544,
+      "error_estandar": 0.003841040525574754,
+      "ic95": [
+        -0.0076616518810675325,
+        0.007395226979185502
+      ],
+      "shas_v1_4": [
+        "3258fd9e648a0135"
+      ],
+      "juegos_donde_v1_4_mejora": 21,
+      "potencia_alcanzada": "37/900 del umbral de decisión"
+    }
+  },
+  "pendientes": {
+    "sin_las_dos_versiones": 14,
+    "prospectiva_verificada:sin_resultado_todavia": 30
+  }
+}

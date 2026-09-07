@@ -81,12 +81,16 @@ class Abridor:
         return regress(self.bruto, media_liga, self.bf, K_BF)
 
 
-def hasta(pitcher_id: Optional[int], dia_juego: str, *,
+def hasta(pitcher_id: Optional[int], corte: str, *,
           ventana: int = VENTANA_ABRIDOR) -> Optional[Abridor]:
-    """Las últimas `ventana` aperturas del lanzador ANTES de `dia_juego`."""
+    """Las últimas `ventana` aperturas DISPONIBLES en `corte`.
+
+    `corte` es un instante, no un día: la compuerta compara el fin medido de
+    cada apertura más el margen preregistrado contra ese instante.
+    """
     if pitcher_id is None:
         return None
-    k, bb, bf, n = AP.ventana(int(pitcher_id), dia_juego, n=ventana)
+    k, bb, bf, n = AP.ventana(int(pitcher_id), corte, n=ventana)
     if bf <= 0:
         return None
     return Abridor(int(pitcher_id), k, bb, bf, n)

@@ -33,9 +33,22 @@ corresponde a `strikeOuts` y `baseOnBalls` del mismo registro.
 
 ## Disponibilidad temporal
 
-Cada apertura lleva su `game_date`, y la ventana se arma con
-`game_date < día del juego a predecir`, estricto. Una apertura del propio día no
-entra: es la misma regla que rige todo el proyecto.
+**La misma compuerta que el resto del proyecto**, no una comparación de fechas:
+una apertura entra sólo si
+
+    fin_medido(apertura) + MARGEN_FIN  ≤  corte
+
+con el fin de la última jugada y el margen de 20 minutos ya preregistrados
+(`fbq/results/fines.py`). Comparar `game_date < día del juego` era más débil:
+una apertura de anoche que terminó a las 02:10 UTC no está disponible para un
+corte de las 01:00 del mismo día, aunque su fecha de calendario sea anterior.
+
+**Suspendidos y reanudados**: el fin medido corresponde a la reanudación, y como
+respaldo se toma el inicio más tardío. Un partido suspendido el día D y
+terminado el D+1 no estaba disponible el D.
+
+Una apertura que no se puede fechar de ninguna de las dos formas **no entra**:
+no se le inventa disponibilidad.
 """
 
 from __future__ import annotations
@@ -141,23 +154,58 @@ def descargar(pitchers: Iterable[int], seasons: Sequence[int], *,
     return {"filas_traidas": len(filas), "en_almacen": n}
 
 
-def ventana(pitcher_id: int, antes_de: str, *, n: int = 40,
+_DISPONIBLE: Dict[int, Optional[str]] = {}
+
+
+def _indice_disponibilidad() -> Dict[int, Optional[str]]:
+    """`{game_pk: instante desde el cual su resultado se puede usar}`.
+
+    Sale de `results/fines.py`: fin medido de la última jugada más el margen
+    preregistrado, con la cota sobre el inicio como respaldo. Se calcula una vez
+    por proceso porque la ventana se pide miles de veces.
+    """
+    global _DISPONIBLE
+    if not _DISPONIBLE:
+        from fbq.results import fines as _f
+        medidos = _f.cargar()
+        _DISPONIBLE = {pk: _f.disponible_desde(pk, None, medidos)[0] for pk in medidos}
+    return _DISPONIBLE
+
+
+def ventana(pitcher_id: int, corte: str, *, n: int = 40,
             solo_aperturas: bool = True, db: Path = DB_PATH,
             ) -> Tuple[int, int, int, int]:
-    """`(k, bb, bf, n_aperturas)` de las últimas `n` aperturas ANTES de `antes_de`.
+    """`(k, bb, bf, n_aperturas)` de las últimas `n` aperturas DISPONIBLES en `corte`.
 
-    El corte es estricto: una apertura del propio día del juego no entra. Los
-    tres conteos se suman sobre **exactamente el mismo conjunto de aperturas**,
-    que es lo que evita mezclar poblaciones.
+    Dos filtros, **en este orden**:
+
+    1. **primero** se descartan los relevos y las aperturas que en `corte`
+       todavía no habían terminado (compuerta temporal, ver la nota del módulo);
+    2. **después** se toman las últimas `n` de las que quedaron.
+
+    El orden importa: seleccionar 40 y recién entonces filtrar dejaría ventanas
+    de menos de 40 aperturas sin avisar, y con menos muestra de la declarada.
+
+    Los tres conteos se suman sobre **exactamente el mismo conjunto**, que es lo
+    que evita mezclar poblaciones — el defecto que tenían las dos fuentes del
+    almacén PIT.
     """
+    disp = _indice_disponibilidad()
     with _conn(db) as c:
         filas = c.execute(
-            f"""SELECT k, bb, bf FROM apertura
-                WHERE pitcher_id=? AND game_date < ? {'AND es_apertura=1' if solo_aperturas else ''}
-                ORDER BY game_date DESC, game_pk DESC LIMIT ?""",
-            (int(pitcher_id), antes_de, int(n))).fetchall()
-    return (sum(f["k"] for f in filas), sum(f["bb"] for f in filas),
-            sum(f["bf"] for f in filas), len(filas))
+            f"""SELECT game_pk, k, bb, bf FROM apertura
+                WHERE pitcher_id=? {'AND es_apertura=1' if solo_aperturas else ''}
+                ORDER BY game_date DESC, game_pk DESC""",
+            (int(pitcher_id),)).fetchall()
+    elegidas = []
+    for f in filas:
+        d = disp.get(int(f["game_pk"]))
+        if d is not None and d <= corte:          # compuerta ANTES de recortar
+            elegidas.append(f)
+            if len(elegidas) >= int(n):
+                break
+    return (sum(f["k"] for f in elegidas), sum(f["bb"] for f in elegidas),
+            sum(f["bf"] for f in elegidas), len(elegidas))
 
 
 def resumen(db: Path = DB_PATH) -> Dict[str, Any]:

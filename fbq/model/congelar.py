@@ -79,9 +79,11 @@ def variable_abridor(filas: List[Fila], reales: Dict[int, Dict[str, Optional[int
         if not r.get("home") or not r.get("away"):
             motivos["sin_abridor_real"] = motivos.get("sin_abridor_real", 0) + 1
             continue
-        dia = f.official_date
-        loc = AB.hasta(r["home"], dia)
-        vis = AB.hasta(r["away"], dia)
+        # El corte de la fila es el `captured_at` de su precio de referencia,
+        # igual que para las variables de equipo. Pasarle el día perdería la
+        # hora y ablandaría la compuerta.
+        loc = AB.hasta(r["home"], f.corte)
+        vis = AB.hasta(r["away"], f.corte)
         val, motivo = AB.diferencia(loc, vis)
         if val is None:
             motivos[motivo] = motivos.get(motivo, 0) + 1
@@ -115,6 +117,8 @@ def congelar(*, seasons=(2024, 2025, 2026), entrenar_con=(2024, 2025),
 
     doc = {
         "congelado_en": date.today().isoformat(),
+        "vigente_desde": __import__("datetime").datetime.now(
+            __import__("datetime").timezone.utc).isoformat(),
         "entrenado_con": list(entrenar_con),
         "preregistros": ["docs/PREREGISTRO_MODELO_V1_2026-09-06.md",
                          "docs/PREREGISTRO_V1_4_ABRIDORES_2026-09-06.md"],
@@ -139,6 +143,17 @@ def congelar(*, seasons=(2024, 2025, 2026), entrenar_con=(2024, 2025),
         cuerpo["sha"] = hashlib.sha256(
             json.dumps(cuerpo, sort_keys=True).encode()).hexdigest()[:16]
         doc["modelos"][version] = cuerpo
+
+    # El ajuste anterior NO se pisa: se apila. Un ajuste que desaparece se
+    # lleva consigo la posibilidad de auditar las predicciones que produjo, y
+    # este proyecto ya perdió una vez las emisiones originales por sobreescribir.
+    anteriores = []
+    if salida.exists():
+        previo = json.loads(salida.read_text(encoding="utf-8"))
+        anteriores = previo.pop("superseded", [])
+        if previo.get("modelos") != doc["modelos"]:
+            anteriores.append(previo)
+    doc["superseded"] = anteriores
 
     salida.parent.mkdir(parents=True, exist_ok=True)
     salida.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
