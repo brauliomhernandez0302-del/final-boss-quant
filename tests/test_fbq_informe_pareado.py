@@ -50,9 +50,9 @@ def test_un_partido_con_tres_emisiones_aporta_UN_par(tmp_path):
              + _par(1, "2026-09-07T04:00:00+00:00", 0.62, 0.64))
     pred, res = _bases(tmp_path, filas, [(1, 1)])
     r = informe(db_pred=pred, db_res=res)
-    p = r["poblaciones"]["prospectiva_verificada"]
+    p = r["poblaciones"]["prospectiva_verificada|sin_anotar"]
     assert p["pares"] == 1 and p["partidos_unicos"] == 1
-    post = r["emisiones_posteriores"]["prospectiva_verificada"]
+    post = r["emisiones_posteriores"]["prospectiva_verificada|sin_anotar"]
     assert post["n"] == 2, "las otras dos se conservan, aparte"
 
 
@@ -62,7 +62,7 @@ def test_se_elige_el_PRIMER_corte_no_el_mejor(tmp_path):
     filas = (_par(1, "2026-09-07T02:00:00+00:00", 0.50, 0.50)
              + _par(1, "2026-09-07T05:00:00+00:00", 0.99, 0.99))
     pred, res = _bases(tmp_path, filas, [(1, 1)])   # ganó el local
-    p = informe(db_pred=pred, db_res=res)["poblaciones"]["prospectiva_verificada"]
+    p = informe(db_pred=pred, db_res=res)["poblaciones"]["prospectiva_verificada|sin_anotar"]
     assert p["brier_v1_2"] == pytest.approx(0.25), "usó el par de las 02:00"
 
 
@@ -72,7 +72,7 @@ def test_una_emision_sin_pareja_no_entra_ni_desplaza_a_la_completa(tmp_path):
     filas += _par(1, "2026-09-07T02:00:00+00:00", 0.50, 0.50)
     pred, res = _bases(tmp_path, filas, [(1, 1)])
     r = informe(db_pred=pred, db_res=res)
-    p = r["poblaciones"]["prospectiva_verificada"]
+    p = r["poblaciones"]["prospectiva_verificada|sin_anotar"]
     assert p["pares"] == 1
     assert p["brier_v1_2"] == pytest.approx(0.25), "la suelta de las 01:00 no cuenta"
     assert r["pendientes"]["sin_las_dos_versiones"] == 1
@@ -86,17 +86,17 @@ def test_los_partidos_repetidos_no_inflan_la_muestra(tmp_path):
             filas += _par(pk, f"2026-09-07T0{h}:00:00+00:00", 0.55, 0.56)
     pred, res = _bases(tmp_path, filas, [(pk, pk % 2) for pk in range(1, 11)])
     r = informe(db_pred=pred, db_res=res)
-    p = r["poblaciones"]["prospectiva_verificada"]
+    p = r["poblaciones"]["prospectiva_verificada|sin_anotar"]
     assert p["pares"] == 10 and p["partidos_unicos"] == 10
-    assert r["emisiones_posteriores"]["prospectiva_verificada"]["n"] == 20
+    assert r["emisiones_posteriores"]["prospectiva_verificada|sin_anotar"]["n"] == 20
 
 
 def test_un_partido_sin_resultado_queda_pendiente_no_se_cuenta(tmp_path):
     filas = _par(1, "2026-09-07T02:00:00+00:00", 0.55, 0.56)
     pred, res = _bases(tmp_path, filas, [])
     r = informe(db_pred=pred, db_res=res)
-    assert "prospectiva_verificada" not in r["poblaciones"]
-    assert r["pendientes"]["prospectiva_verificada:sin_resultado_todavia"] == 1
+    assert "prospectiva_verificada|sin_anotar" not in r["poblaciones"]
+    assert r["pendientes"]["prospectiva_verificada|sin_anotar:sin_resultado_todavia"] == 1
 
 
 def test_las_cohortes_no_se_mezclan(tmp_path):
@@ -104,7 +104,7 @@ def test_las_cohortes_no_se_mezclan(tmp_path):
     filas += _par(2, "2026-08-02T17:00:00+00:00", 0.55, 0.56, origen="reconstruccion")
     pred, res = _bases(tmp_path, filas, [(1, 1), (2, 0)])
     r = informe(db_pred=pred, db_res=res)
-    assert set(r["poblaciones"]) == {"prospectiva_verificada", "reconstruccion"}
+    assert set(r["poblaciones"]) == {"prospectiva_verificada|sin_anotar", "reconstruccion|sin_anotar"}
     assert all(p["pares"] == 1 for p in r["poblaciones"].values())
 
 
@@ -116,4 +116,74 @@ def test_un_par_vale_lo_que_su_pierna_mas_debil(tmp_path):
               "prospectiva_verificada", "SHA14", "2099-01-01T00:00:00+00:00")]
     pred, res = _bases(tmp_path, filas, [(1, 1)])
     r = informe(db_pred=pred, db_res=res)
-    assert set(r["poblaciones"]) == {"no_verificable"}
+    assert set(r["poblaciones"]) == {"no_verificable|sin_anotar"}
+
+
+# ── Calidad de datos: dimensión APARTE de la condición prospectiva ───────
+
+def _con_calidad(tmp_path, filas, resultados, anotaciones):
+    pred, res = _bases(tmp_path, filas, resultados)
+    con = sqlite3.connect(pred)
+    con.execute("CREATE TABLE calidad_datos (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "anotado_en TEXT, game_pk INT, version TEXT, corte TEXT, "
+                "modelo_sha TEXT, calidad TEXT, motivo TEXT, historial_hasta TEXT, "
+                "historial_filas INT, dias_sin_datos INT)")
+    con.executemany("INSERT INTO calidad_datos (anotado_en, game_pk, version, corte, "
+                    "modelo_sha, calidad) VALUES (?,?,?,?,?,?)", anotaciones)
+    con.commit(); con.close()
+    return pred, res
+
+
+def test_una_emision_puede_ser_prospectiva_Y_tener_entradas_incompletas(tmp_path):
+    """Las dos cosas son ciertas a la vez y ninguna anula a la otra: degradar
+    la primera escondería que la predicción sí se hizo antes."""
+    filas = _par(1, "2026-09-07T02:00:00+00:00", 0.55, 0.56)
+    anot = [("2026-09-07T13:00:00+00:00", 1, v, "2026-09-07T02:00:00+00:00",
+             s, "historial_incompleto")
+            for v, s in (("v1.2", "SHA12"), ("v1.4", "SHA14"))]
+    pred, res = _con_calidad(tmp_path, filas, [(1, 1)], anot)
+    r = informe(db_pred=pred, db_res=res)
+    clave = "prospectiva_verificada|historial_incompleto"
+    assert clave in r["poblaciones"]
+    p = r["poblaciones"][clave]
+    assert p["origen"] == "prospectiva_verificada"
+    assert p["calidad_datos"] == "historial_incompleto"
+
+
+def test_calidades_distintas_NO_se_suman_en_la_misma_poblacion(tmp_path):
+    filas = _par(1, "2026-09-07T02:00:00+00:00", 0.55, 0.56)
+    filas += _par(2, "2026-09-09T02:00:00+00:00", 0.55, 0.56)
+    anot = [("x", 1, v, "2026-09-07T02:00:00+00:00", s, "historial_incompleto")
+            for v, s in (("v1.2", "SHA12"), ("v1.4", "SHA14"))]
+    anot += [("x", 2, v, "2026-09-09T02:00:00+00:00", s, "completo")
+             for v, s in (("v1.2", "SHA12"), ("v1.4", "SHA14"))]
+    pred, res = _con_calidad(tmp_path, filas, [(1, 1), (2, 0)], anot)
+    r = informe(db_pred=pred, db_res=res)
+    assert set(r["poblaciones"]) == {
+        "prospectiva_verificada|historial_incompleto",
+        "prospectiva_verificada|completo"}
+    assert all(p["pares"] == 1 for p in r["poblaciones"].values())
+
+
+def test_vale_la_ULTIMA_anotacion_de_calidad(tmp_path):
+    """Una anotación equivocada se corrige agregando otra fila, no pisándola —
+    y el informe tiene que leer la corrección."""
+    filas = _par(1, "2026-08-02T17:00:00+00:00", 0.55, 0.56)
+    anot = []
+    for v, s in (("v1.2", "SHA12"), ("v1.4", "SHA14")):
+        anot.append(("2026-09-07T13:00:00+00:00", 1, v, "2026-08-02T17:00:00+00:00",
+                     s, "historial_incompleto"))          # anotación de más
+        anot.append(("2026-09-07T14:00:00+00:00", 1, v, "2026-08-02T17:00:00+00:00",
+                     s, "completo"))                      # corrección posterior
+    pred, res = _con_calidad(tmp_path, filas, [(1, 1)], anot)
+    r = informe(db_pred=pred, db_res=res)
+    assert list(r["poblaciones"]) == ["prospectiva_verificada|completo"]
+
+
+def test_un_par_hereda_la_PEOR_calidad_de_sus_dos_piernas(tmp_path):
+    filas = _par(1, "2026-09-07T02:00:00+00:00", 0.55, 0.56)
+    anot = [("x", 1, "v1.2", "2026-09-07T02:00:00+00:00", "SHA12", "completo"),
+            ("x", 1, "v1.4", "2026-09-07T02:00:00+00:00", "SHA14", "historial_incompleto")]
+    pred, res = _con_calidad(tmp_path, filas, [(1, 1)], anot)
+    r = informe(db_pred=pred, db_res=res)
+    assert list(r["poblaciones"]) == ["prospectiva_verificada|historial_incompleto"]

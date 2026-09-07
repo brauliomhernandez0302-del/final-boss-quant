@@ -116,8 +116,18 @@ def generar(dias: int = 3, *, store: Optional[Prospectiva] = None) -> Dict[str, 
                           "modelo_sha": modelo["sha"]})
 
     nuevas = store.guardar(filas)
+    # La calidad de los datos se sella al EMITIR, no se deduce después: el
+    # estado del almacén de resultados cambia, y reconstruirlo más tarde sería
+    # adivinar con qué entradas se calculó cada fila.
+    from fbq.model.calidad import huella_historial
+    huella = huella_historial()
+    store.anotar_calidad([
+        {"game_pk": f["game_pk"], "version": f["version"], "corte": f["corte"],
+         "modelo_sha": f["modelo_sha"], "motivo": "sellada al emitir", **huella}
+        for f in filas])
     return {"corte": corte, "candidatos": len(filas) // 2, "guardadas": nuevas,
-            "exclusiones": dict(motivos), "almacen": store.resumen()}
+            "calidad_datos": huella, "exclusiones": dict(motivos),
+            "almacen": store.resumen()}
 
 
 def generar_historicas(

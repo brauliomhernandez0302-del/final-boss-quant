@@ -18,13 +18,21 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, Iterator, List
 
+from fbq.core.cerrojo import Cerrojo, Ocupado
 from fbq.results.store import ESTADOS_FINALES, Final, ResultsStore
 from fbq.sources import mlb_stats
 
 log = logging.getLogger(__name__)
+
+# El almacén de resultados deduplica COMPARANDO contra la última observación del
+# juego. Dos corridas simultáneas leen las dos "todavía no está" y las dos
+# insertan: la misma razón por la que la captura de anuncios lleva cerrojo.
+CERROJO = Path(__file__).parent.parent.parent / "logs" / "resultados.lock"
 
 
 def _dias(desde: str, hasta: str) -> Iterator[str]:
@@ -103,7 +111,14 @@ def main() -> None:
     if not args.fecha:
         desde, hasta = args.desde, args.hasta
 
-    resumen = traer(ResultsStore(), desde, hasta)
+    try:
+        with Cerrojo(CERROJO, "incorporación de resultados"):
+            resumen = traer(ResultsStore(), desde, hasta)
+    except Ocupado as exc:
+        # Salir sin error es lo correcto para algo que corre cada hora: la
+        # corrida en curso ya está haciendo el trabajo.
+        log.info("%s — esta corrida no hace nada", exc)
+        sys.exit(0)
     log.info("Resultados %s..%s: %s", desde, hasta, resumen)
 
 

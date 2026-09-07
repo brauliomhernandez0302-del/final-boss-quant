@@ -66,9 +66,24 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
     con = sqlite3.connect(f"file:{db_pred}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     try:
+        # `calidad_datos` es append-only y SIN llave única a propósito: una
+        # anotación equivocada se corrige agregando otra fila, así que vale la
+        # ÚLTIMA (`MAX(id)`). Una base anterior a la tabla no es un error: se
+        # reporta `sin_anotar`, que es la verdad — nadie miró esa calidad.
+        hay_calidad = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='calidad_datos'"
+        ).fetchone() is not None
+        calidad_sql = ("""COALESCE(q.calidad, 'sin_anotar') AS calidad
+               FROM prediccion p
+               LEFT JOIN calidad_datos q
+                 ON q.id = (SELECT MAX(id) FROM calidad_datos d
+                            WHERE d.game_pk=p.game_pk AND d.version=p.version
+                              AND d.corte=p.corte AND d.modelo_sha=p.modelo_sha)"""
+                       if hay_calidad else "'sin_anotar' AS calidad FROM prediccion p")
         filas = con.execute(
-            "SELECT game_pk, corte, version, p_home, cohorte, origen, modelo_sha, "
-            "commence_time FROM prediccion").fetchall()
+            """SELECT p.game_pk, p.corte, p.version, p.p_home, p.cohorte, p.origen,
+                      p.modelo_sha, p.commence_time,
+                      """ + calidad_sql).fetchall()
     finally:
         con.close()
 
@@ -105,18 +120,25 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
             pendientes["sin_las_dos_versiones"] += 1
             continue
         origen = min((v["v1.2"]["origen"], v["v1.4"]["origen"]), key=lambda o: FUERZA.get(o, 0))
+        # La CALIDAD es una dimensión aparte de la condición prospectiva: una
+        # emisión puede ser impecablemente prospectiva y haber usado entradas
+        # incompletas. Se reportan cruzadas, no fundidas.
+        calidad = ("historial_incompleto"
+                   if "historial_incompleto" in (v["v1.2"]["calidad"], v["v1.4"]["calidad"])
+                   else v["v1.2"]["calidad"])
+        clave_grupo = f"{origen}|{calidad}"
         if (pk, corte, cohorte) not in elegidos:
             # Emisión posterior del mismo partido: se conserva, no se cuenta.
-            grupos_posteriores[origen].append({
+            grupos_posteriores[clave_grupo].append({
                 "game_pk": pk, "corte": corte,
                 "y": y_real.get(pk),
                 "p12": v["v1.2"]["p_home"], "p14": v["v1.4"]["p_home"]})
             continue
         if pk not in y_real:
-            pendientes[f"{origen}:sin_resultado_todavia"] += 1
+            pendientes[f"{clave_grupo}:sin_resultado_todavia"] += 1
             continue
         y = y_real[pk]
-        grupos[origen].append({
+        grupos[clave_grupo].append({
             "game_pk": pk, "corte": corte, "cohorte": cohorte, "y": y,
             "p12": v["v1.2"]["p_home"], "p14": v["v1.4"]["p_home"],
             "b12": (v["v1.2"]["p_home"] - y) ** 2,
@@ -138,7 +160,7 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
                 "nota": "conservadas y NO sumadas al informe principal",
             } for origen, xs in sorted(grupos_posteriores.items())},
     }
-    for origen, xs in sorted(grupos.items()):
+    for clave, xs in sorted(grupos.items()):
         n = len(xs)
         b12 = sum(x["b12"] for x in xs) / n
         b14 = sum(x["b14"] for x in xs) / n
@@ -149,18 +171,19 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
             se = math.sqrt(var / n)
         else:
             se = float("nan")
-        salida["poblaciones"][origen] = {
+        salida["poblaciones"][clave] = {
             "pares": n,
             "brier_v1_2": b12, "brier_v1_4": b14,
             "diferencia_media_v14_menos_v12": media,
             "error_estandar": se,
             "ic95": [media - 1.96 * se, media + 1.96 * se] if n > 1 else None,
             "shas_v1_4": sorted({x["sha_v14"] for x in xs}),
+            "origen": clave.split("|")[0], "calidad_datos": clave.split("|")[1],
             "juegos_donde_v1_4_mejora": sum(1 for x in d if x < 0),
             "potencia_alcanzada": f"{n}/900 del umbral de decisión",
             "partidos_unicos": len({x["game_pk"] for x in xs}),
         }
-        assert salida["poblaciones"][origen]["partidos_unicos"] == n, (
+        assert salida["poblaciones"][clave]["partidos_unicos"] == n, (
             "un partido no puede aportar más de un par al informe principal")
     return salida
 

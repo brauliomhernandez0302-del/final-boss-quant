@@ -68,6 +68,42 @@ CREATE TABLE IF NOT EXISTS prediccion (
     UNIQUE (game_pk, version, corte, modelo_sha)
 );
 
+-- La CALIDAD DE LOS DATOS es una propiedad distinta de la condición
+-- prospectiva, y se guarda aparte para que no se confundan:
+--
+--   origen         ¿se escribió ANTES del primer lanzamiento?
+--   calidad_datos  ¿con qué entradas se calculó?
+--
+-- Una emisión puede ser impecablemente prospectiva y haber usado un historial
+-- incompleto. Las dos cosas son ciertas a la vez y ninguna anula a la otra.
+--
+-- Va en su propia tabla, append-only, y no como columna de `prediccion`:
+-- anotar es agregar un hecho NUEVO sobre una fila existente, no modificarla —
+-- y `prediccion` no admite UPDATE por trigger, que es como debe ser.
+CREATE TABLE IF NOT EXISTS calidad_datos (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    anotado_en    TEXT    NOT NULL,
+    game_pk       INTEGER NOT NULL,
+    version       TEXT    NOT NULL,
+    corte         TEXT    NOT NULL,
+    modelo_sha    TEXT    NOT NULL,
+    calidad       TEXT    NOT NULL,   -- completo | historial_incompleto
+    motivo        TEXT,
+    historial_hasta   TEXT,           -- max(official_date) de results.db
+    historial_filas   INTEGER,
+    dias_sin_datos    INTEGER         -- jornadas vacías en los 60 días previos
+    -- SIN llave única a propósito: el módulo declara que "una anotación
+    -- equivocada se corrige agregando otra fila", y un UNIQUE lo impedía —
+    -- lo descubrí al anotar de más la cohorte histórica y no poder corregirla.
+    -- Vale la ÚLTIMA por `id`.
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_calidad_no_update
+BEFORE UPDATE ON calidad_datos
+BEGIN
+    SELECT RAISE(ABORT, 'calidad_datos es append-only: una anotación equivocada se corrige agregando otra fila, no pisándola');
+END;
+
 CREATE INDEX IF NOT EXISTS ix_pred_juego ON prediccion (game_pk, version);
 CREATE INDEX IF NOT EXISTS ix_pred_corte ON prediccion (corte);
 
@@ -123,6 +159,32 @@ _MIGRACIONES = (
 _LLAVE_NUEVA = "game_pk, version, corte, modelo_sha"
 
 
+def _migrar_calidad(conn) -> None:
+    """Quita el UNIQUE de `calidad_datos`, conservando las filas.
+
+    Estaba mal desde el principio: con él, una anotación equivocada no se podía
+    corregir agregando otra, que es exactamente lo que el módulo promete.
+    """
+    fila = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='calidad_datos'"
+    ).fetchone()
+    if fila is None or "UNIQUE" not in (fila[0] or ""):
+        return
+    n = conn.execute("SELECT COUNT(*) FROM calidad_datos").fetchone()[0]
+    cols = ", ".join(r[1] for r in conn.execute("PRAGMA table_info(calidad_datos)"))
+    conn.executescript(_SCHEMA.replace("calidad_datos", "calidad_nueva")
+                       .replace("trg_calidad_", "trg_calidadn_"))
+    conn.execute(f"INSERT INTO calidad_nueva ({cols}) SELECT {cols} FROM calidad_datos")
+    if conn.execute("SELECT COUNT(*) FROM calidad_nueva").fetchone()[0] != n:
+        conn.execute("DROP TABLE calidad_nueva")
+        raise RuntimeError("migración de calidad_datos abortada: se perdían filas")
+    conn.executescript(
+        "DROP TRIGGER IF EXISTS trg_calidad_no_update;"
+        "DROP TABLE calidad_datos;"
+        "ALTER TABLE calidad_nueva RENAME TO calidad_datos;")
+    conn.executescript(_SCHEMA)
+
+
 def _migrar_llave(conn) -> None:
     idx = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='prediccion'"
@@ -166,6 +228,7 @@ class Prospectiva:
                 if nombre not in existentes:
                     c.execute(f"ALTER TABLE prediccion ADD COLUMN {nombre} {tipo}")
             _migrar_llave(c)
+            _migrar_calidad(c)
 
     @contextmanager
     def _conn(self) -> Generator[sqlite3.Connection, None, None]:
@@ -210,6 +273,26 @@ class Prospectiva:
                 sellados)
             return conn.execute("SELECT COUNT(*) FROM prediccion").fetchone()[0] - antes
 
+    def anotar_calidad(self, filas: Sequence[Dict[str, Any]]) -> int:
+        """Registra con qué historial se calculó cada emisión.
+
+        No toca `prediccion`: la anotación es un hecho nuevo sobre una fila
+        existente, no una corrección de la fila.
+        """
+        if not filas:
+            return 0
+        ts = normalizar_utc(datetime.now(timezone.utc).isoformat())
+        with self._conn() as conn:
+            antes = conn.execute("SELECT COUNT(*) FROM calidad_datos").fetchone()[0]
+            conn.executemany(
+                """INSERT INTO calidad_datos
+                   (anotado_en, game_pk, version, corte, modelo_sha, calidad,
+                    motivo, historial_hasta, historial_filas, dias_sin_datos)
+                   VALUES (?,:game_pk,:version,:corte,:modelo_sha,:calidad,
+                           :motivo,:historial_hasta,:historial_filas,:dias_sin_datos)"""
+                .replace("?", f"'{ts}'"), filas)
+            return conn.execute("SELECT COUNT(*) FROM calidad_datos").fetchone()[0] - antes
+
     def resumen(self) -> Dict[str, Any]:
         with self._conn() as conn:
             q = conn.execute
@@ -225,6 +308,17 @@ class Prospectiva:
                 "pareados": q(
                     "SELECT COUNT(*) FROM (SELECT game_pk, corte FROM prediccion "
                     "GROUP BY game_pk, corte HAVING COUNT(DISTINCT version)=2)").fetchone()[0],
+                # vale la ÚLTIMA anotación de cada emisión
+                "por_calidad": {r[0]: r[1] for r in q(
+                    "SELECT calidad, COUNT(*) FROM (SELECT calidad FROM calidad_datos c "
+                    "WHERE c.id = (SELECT MAX(id) FROM calidad_datos d "
+                    "WHERE d.game_pk=c.game_pk AND d.version=c.version "
+                    "AND d.corte=c.corte AND d.modelo_sha=c.modelo_sha)) GROUP BY calidad")},
+                "sin_anotar": q(
+                    "SELECT COUNT(*) FROM prediccion p WHERE NOT EXISTS "
+                    "(SELECT 1 FROM calidad_datos c WHERE c.game_pk=p.game_pk "
+                    "AND c.version=p.version AND c.corte=p.corte "
+                    "AND c.modelo_sha=p.modelo_sha)").fetchone()[0],
                 "primera": q("SELECT MIN(corte) FROM prediccion").fetchone()[0],
                 "ultima": q("SELECT MAX(corte) FROM prediccion").fetchone()[0],
             }

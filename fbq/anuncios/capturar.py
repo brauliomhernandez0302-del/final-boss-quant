@@ -26,15 +26,14 @@ porque el hueco que deja no se puede rellenar después.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import logging
-import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
 from fbq.anuncios.store import AnunciosStore
+from fbq.core.cerrojo import Cerrojo, Ocupado
 from fbq.sources import mlb_stats
 
 log = logging.getLogger(__name__)
@@ -44,41 +43,11 @@ LOG = RAIZ / "logs" / "anuncios.log"
 CERROJO = RAIZ / "logs" / "anuncios.lock"
 
 
-class Ocupado(Exception):
-    """Ya hay una captura corriendo."""
-
-
-class _Cerrojo:
-    """Exclusión mutua por `flock`, no por existencia de archivo.
-
-    Un cerrojo basado en "existe el archivo" deja el sistema trabado para
-    siempre si el proceso muere; `flock` lo suelta el kernel cuando el proceso
-    termina, pase lo que pase.
-    """
-
-    def __init__(self, ruta: Path = CERROJO) -> None:
-        self.ruta = Path(ruta)
-        self._fh = None
-
-    def __enter__(self):
-        self.ruta.parent.mkdir(parents=True, exist_ok=True)
-        self._fh = open(self.ruta, "w")
-        try:
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            self._fh.close()
-            self._fh = None
-            raise Ocupado(f"ya hay una captura corriendo ({self.ruta})") from exc
-        self._fh.write(str(os.getpid()))
-        self._fh.flush()
-        return self
-
-    def __exit__(self, *exc):
-        if self._fh is not None:
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
-            self._fh.close()
-            self._fh = None
-        return False
+# `Ocupado` y `_Cerrojo` viven en `fbq.core.cerrojo`: el mismo modo de falla
+# —dos escritores contra un almacén que deduplica por cambio— lo tienen también
+# la incorporación de resultados y cualquier otra barrida futura. Se re-exportan
+# acá para no romper a quien los importe de este módulo.
+_Cerrojo = Cerrojo
 
 
 def capturar(dias: int = 3, *, store: Optional[AnunciosStore] = None) -> dict:
@@ -116,7 +85,7 @@ def main() -> int:
     _configurar_log(args.verboso)
 
     try:
-        with _Cerrojo():
+        with Cerrojo(CERROJO, "captura"):
             total = capturar(args.dias)
             log.info("total: %s | almacén: %s", total, AnunciosStore().resumen())
         return 0

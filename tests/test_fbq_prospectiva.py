@@ -275,3 +275,103 @@ def test_la_compuerta_va_ANTES_de_recortar_a_40(tmp_path, monkeypatch):
                       else "2025-01-01T00:00:00+00:00") for i in range(45)}
     monkeypatch.setattr(AP, "_DISPONIBLE", disp)
     assert AP.ventana(1, "2025-08-01T00:00:00+00:00", n=40, db=db)[3] == 40
+
+
+# ── La anotación de calidad de datos ─────────────────────────────────────
+#
+# `calidad_datos` responde una pregunta DISTINTA a `origen`: no si la
+# predicción se escribió antes del partido, sino con qué entradas se calculó.
+# Las dos son ciertas a la vez y ninguna anula a la otra.
+
+def _anot(**kw):
+    base = {"game_pk": 1, "version": "v1.2", "corte": "2026-09-06T18:00:00+00:00",
+            "modelo_sha": "abc", "calidad": "historial_incompleto", "motivo": "hueco",
+            "historial_hasta": "2026-08-06", "historial_filas": 100, "dias_sin_datos": 28}
+    base.update(kw)
+    return base
+
+
+def test_la_anotacion_de_calidad_es_append_only(tmp_path):
+    s = Prospectiva(tmp_path / "p.db")
+    s.anotar_calidad([_anot()])
+    with s._conn() as c:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            c.execute("UPDATE calidad_datos SET calidad = 'completo'")
+
+
+def test_una_anotacion_equivocada_se_corrige_AGREGANDO_no_pisando(tmp_path):
+    """Sin esto, corregir una anotación de más exigiría borrar evidencia. La
+    tabla NO lleva llave única a propósito: la última anotación es la vigente,
+    y la equivocada queda a la vista."""
+    s = Prospectiva(tmp_path / "p.db")
+    s.anotar_calidad([_anot(calidad="historial_incompleto")])
+    assert s.anotar_calidad([_anot(calidad="completo",
+                                   motivo="su corte precede al hueco")]) == 1
+    with s._conn() as c:
+        assert c.execute("SELECT COUNT(*) FROM calidad_datos").fetchone()[0] == 2
+        vig = c.execute("SELECT calidad FROM calidad_datos "
+                        "ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert vig == "completo"
+    assert s.resumen()["por_calidad"] == {"completo": 1}
+
+
+def test_una_emision_puede_ser_prospectiva_Y_de_historial_incompleto(tmp_path):
+    """Prospectiva y calidad son ejes independientes: degradar la primera por la
+    segunda escondería que la predicción sí se escribió antes del partido."""
+    from datetime import datetime, timedelta, timezone
+    futuro = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    s = Prospectiva(tmp_path / "p.db")
+    s.guardar([_fila(corte="2020-01-01T00:00:00+00:00", commence_time=futuro)])
+    s.anotar_calidad([_anot(corte="2020-01-01T00:00:00+00:00")])
+    with s._conn() as c:
+        origen = c.execute("SELECT origen FROM prediccion").fetchone()[0]
+    assert origen == "prospectiva_verificada"
+    assert s.resumen()["por_calidad"] == {"historial_incompleto": 1}
+
+
+def test_una_prediccion_sin_anotar_se_ve_como_pendiente(tmp_path):
+    """Lo que no se miró no puede contarse como bueno."""
+    s = Prospectiva(tmp_path / "p.db")
+    s.guardar([_fila()])
+    assert s.resumen()["sin_anotar"] == 1
+    s.anotar_calidad([_anot()])
+    assert s.resumen()["sin_anotar"] == 0
+
+
+def test_la_anotacion_es_por_AJUSTE_no_por_partido(tmp_path):
+    """Dos versiones del mismo juego pueden tener calidades distintas; fundirlas
+    contagiaría a una el defecto de la otra."""
+    s = Prospectiva(tmp_path / "p.db")
+    s.anotar_calidad([_anot(version="v1.2", calidad="completo"),
+                      _anot(version="v1.4", calidad="historial_incompleto")])
+    assert s.resumen()["por_calidad"] == {"completo": 1, "historial_incompleto": 1}
+
+
+def test_la_huella_del_historial_detecta_el_hueco(tmp_path):
+    """Un almacén sin 28 jornadas seguidas no puede declararse completo."""
+    from fbq.model.calidad import MAX_DIAS_VACIOS, huella_historial
+    db = tmp_path / "r.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE resultado (game_pk INT, official_date TEXT)")
+    from datetime import date, timedelta
+    dias = ([date(2026, 7, 8) + timedelta(days=i) for i in range(30)]
+            + [date(2026, 9, 5) + timedelta(days=i) for i in range(3)])
+    con.executemany("INSERT INTO resultado VALUES (?,?)",
+                    [(i, d.isoformat()) for i, d in enumerate(dias)])
+    con.commit(); con.close()
+    h = huella_historial(db=db)
+    assert h["calidad"] == "historial_incompleto"
+    assert h["dias_sin_datos"] > MAX_DIAS_VACIOS
+    assert h["historial_hasta"] == "2026-09-07"
+
+
+def test_dos_incorporaciones_de_resultados_no_corren_a_la_vez(tmp_path, monkeypatch):
+    """`results.db` deduplica COMPARANDO contra la última observación del juego:
+    dos corridas simultáneas leen las dos «todavía no está» y las dos insertan."""
+    import fbq.results.fetch as F
+    from fbq.core.cerrojo import Cerrojo, Ocupado
+    monkeypatch.setattr(F, "CERROJO", tmp_path / "r.lock")
+    with Cerrojo(F.CERROJO, "incorporación de resultados"):
+        with pytest.raises(Ocupado):
+            with Cerrojo(F.CERROJO, "incorporación de resultados"):
+                pass
