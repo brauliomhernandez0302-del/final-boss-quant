@@ -129,6 +129,13 @@ def _migrar_llave(conn) -> None:
     ).fetchone()
     if idx is None or "modelo_sha" in (idx[0] or "").split("UNIQUE")[-1]:
         return
+    # Respaldo ANTES de tocar nada. Una migración que sale mal sin copia previa
+    # es exactamente cómo este proyecto perdió las emisiones originales.
+    try:
+        from fbq.respaldo import respaldar
+        respaldar(["prospectiva.db"], motivo="antes_de_migracion")
+    except Exception:                                     # noqa: BLE001
+        pass
     n_antes = conn.execute("SELECT COUNT(*) FROM prediccion").fetchone()[0]
     cols = [r[1] for r in conn.execute("PRAGMA table_info(prediccion)")]
     lista = ", ".join(cols)

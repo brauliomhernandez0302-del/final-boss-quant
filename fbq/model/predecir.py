@@ -221,6 +221,11 @@ def main() -> int:
             log.info("cohorte histórica: %s",
                      json.dumps(generar_historicas(), ensure_ascii=False))
         log.info("%s", json.dumps(generar(args.dias), indent=1, ensure_ascii=False))
+        # Respaldo DESPUÉS de escribir: una tanda de emisiones que no se
+        # respalda es una tanda que un `rm` se lleva entera.
+        from fbq.respaldo import respaldar
+        for e in respaldar(["prospectiva.db"], motivo="tras_predicciones"):
+            log.info("respaldo: %s · %s", Path(e["archivo"]).name, e["integridad"])
         return 0
     except Exception:                                     # noqa: BLE001
         log.exception("FALLÓ la generación prospectiva")

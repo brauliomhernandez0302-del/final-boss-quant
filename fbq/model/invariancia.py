@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -163,7 +164,17 @@ def verificar(
     `constructor` se usa sólo para inyectar una fuga y comprobar que la prueba
     la rechaza; en uso normal va en None.
     """
-    tmp = Path(tmp or (db_resultados.parent / "_invariancia_tmp.db"))
+    # Base temporal INDEPENDIENTE por corrida, y fuera de `data/`.
+    #
+    # Antes era una ruta fija (`data/_invariancia_tmp.db`) y eso produjo un
+    # fallo real y difícil de leer: una corrida anterior caída dejaba el archivo
+    # a medio copiar, la siguiente lo sobrescribía mientras `_precios_de_
+    # referencia` lo leía, salían 0 precios, 0 filas, y el pliegue de
+    # entrenamiento vacío terminaba en un `TypeError` sobre un escalar de numpy
+    # a veinte llamadas de distancia. Un ensayo nunca debe compartir archivo con
+    # otro ensayo ni vivir junto a la base de producción.
+    carpeta = Path(tempfile.mkdtemp(prefix="fbq_invariancia_"))
+    tmp = Path(tmp) if tmp else carpeta / "resultados.db"
     _CACHE_PARTIDOS.clear()
     shutil.copy2(db_resultados, tmp)
     try:
@@ -240,6 +251,7 @@ def verificar(
             exentos=exentos, detalle=detalle[:20])
     finally:
         tmp.unlink(missing_ok=True)
+        shutil.rmtree(carpeta, ignore_errors=True)
 
 
 _CACHE_PARTIDOS: Dict[Tuple, Any] = {}

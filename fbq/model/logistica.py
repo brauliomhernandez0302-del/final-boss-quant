@@ -57,6 +57,13 @@ def ajustar(
     precisamente el hecho que el intercepto tiene que capturar (la ventaja de
     local). Es un error clásico y silencioso.
     """
+    X = np.atleast_2d(np.asarray(X, float))
+    if X.size == 0 or len(y) == 0:
+        # Sin esto el fallo salía como un TypeError sobre un escalar de numpy,
+        # veinte llamadas más abajo y sin decir qué faltaba.
+        raise ValueError(
+            "no se puede ajustar con un pliegue de entrenamiento VACÍO: "
+            "revisá que la construcción de filas haya devuelto algo")
     mu = X.mean(axis=0)
     sd = X.std(axis=0)
     sd[sd == 0] = 1.0                      # una constante no aporta, no rompe

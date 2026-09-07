@@ -82,7 +82,7 @@ class Abridor:
 
 
 def hasta(pitcher_id: Optional[int], corte: str, *,
-          ventana: int = VENTANA_ABRIDOR) -> Optional[Abridor]:
+          ventana: int = VENTANA_ABRIDOR, db=None) -> Optional[Abridor]:
     """Las últimas `ventana` aperturas DISPONIBLES en `corte`.
 
     `corte` es un instante, no un día: la compuerta compara el fin medido de
@@ -90,7 +90,9 @@ def hasta(pitcher_id: Optional[int], corte: str, *,
     """
     if pitcher_id is None:
         return None
-    k, bb, bf, n = AP.ventana(int(pitcher_id), corte, n=ventana)
+    k, bb, bf, n = (AP.ventana(int(pitcher_id), corte, n=ventana, db=db)
+                    if db is not None else
+                    AP.ventana(int(pitcher_id), corte, n=ventana))
     if bf <= 0:
         return None
     return Abridor(int(pitcher_id), k, bb, bf, n)
