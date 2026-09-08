@@ -187,3 +187,92 @@ def test_un_par_hereda_la_PEOR_calidad_de_sus_dos_piernas(tmp_path):
     pred, res = _con_calidad(tmp_path, filas, [(1, 1)], anot)
     r = informe(db_pred=pred, db_res=res)
     assert list(r["poblaciones"]) == ["prospectiva_verificada|historial_incompleto"]
+
+
+# ── El desglose por partido, que se publica en CADA corrida ──────────────
+
+def _bases_completas(tmp_path, filas, resultados_full):
+    """Como `_bases`, pero con el `resultado` COMPLETO que el desglose lee."""
+    pred = tmp_path / "prospectiva.db"
+    con = sqlite3.connect(pred)
+    con.execute("CREATE TABLE prediccion (id INTEGER PRIMARY KEY, game_pk INT, "
+                "corte TEXT, version TEXT, p_home REAL, cohorte TEXT, origen TEXT, "
+                "modelo_sha TEXT, commence_time TEXT)")
+    con.executemany("INSERT INTO prediccion (game_pk, corte, version, p_home, "
+                    "cohorte, origen, modelo_sha, commence_time) VALUES (?,?,?,?,?,?,?,?)",
+                    filas)
+    con.commit(); con.close()
+    res = tmp_path / "results.db"
+    con = sqlite3.connect(res)
+    con.execute("CREATE TABLE resultado (game_pk INT, official_date TEXT, "
+                "home_team TEXT, away_team TEXT, home_runs INT, away_runs INT, "
+                "home_won INT)")
+    con.executemany("INSERT INTO resultado VALUES (?,?,?,?,?,?,?)", resultados_full)
+    con.commit(); con.close()
+    return pred, res
+
+
+def test_el_desglose_trae_una_fila_por_par_con_lo_que_paso(tmp_path):
+    filas = _par(1, "2026-09-07T02:00:00+00:00", 0.60, 0.55)
+    pred, res = _bases_completas(
+        tmp_path, filas,
+        [(1, "2026-09-07", "Locales", "Visitas", 5, 3, 1)])
+    r = informe(db_pred=pred, db_res=res)
+    d = r["desglose_por_partido"]
+    assert len(d) == 1
+    f = d[0]
+    assert (f["official_date"], f["home_team"], f["away_team"]) == (
+        "2026-09-07", "Locales", "Visitas")
+    assert f["marcador"] == "5-3" and f["gano"] == "local"
+    assert f["p12"] == 0.60 and f["p14"] == 0.55
+    assert f["b12"] == pytest.approx(0.16) and f["b14"] == pytest.approx(0.2025)
+    assert f["delta_brier"] == pytest.approx(0.0425)
+    assert f["poblacion"].startswith("prospectiva_verificada")
+
+
+def test_el_desglose_NO_incluye_partidos_sin_resultado(tmp_path):
+    """Lo que no terminó no tiene nada que mostrar, y contarlo insinuaría que sí."""
+    filas = _par(1, "2026-09-07T02:00:00+00:00", 0.60, 0.55)
+    filas += _par(2, "2026-09-08T02:00:00+00:00", 0.60, 0.55)
+    pred, res = _bases_completas(
+        tmp_path, filas, [(1, "2026-09-07", "L", "V", 5, 3, 1)])
+    r = informe(db_pred=pred, db_res=res)
+    assert [f["game_pk"] for f in r["desglose_por_partido"]] == [1]
+    assert r["pendientes"]["prospectiva_verificada|sin_anotar:sin_resultado_todavia"] == 1
+
+
+def test_con_y_igual_a_uno_el_signo_de_la_diferencia_lo_fija_quien_predijo_mas_alto():
+    """Aritmética, no interpretación: si el local gana SIEMPRE,
+    b14 − b12 = (p14 − p12)(p14 + p12 − 2) y el segundo factor es negativo.
+
+    O sea que en una muestra donde todos los partidos los gana el local, la
+    comparación pareada no mide qué modelo predice mejor: mide cuál fue más
+    optimista con el local. Esta prueba existe para que esa propiedad quede
+    escrita y nadie lea un ranking donde no lo hay.
+    """
+    for p12, p14 in ((0.60, 0.55), (0.44, 0.51), (0.50, 0.50)):
+        d = (p14 - 1) ** 2 - (p12 - 1) ** 2
+        assert (d > 0) == (p14 < p12)
+        assert (d == 0) == (p14 == p12)
+
+
+def test_el_cotejo_de_abridores_distingue_cambio_de_falta_de_anuncio():
+    """Tres respuestas, ninguna disfrazada de otra."""
+    from fbq.model.informe_pareado import _cotejo_abridores
+
+    class _A:
+        def __init__(self, pid): self._d = {"pitcher_id": pid,
+                                            "pitcher_nombre": "X",
+                                            "observado_en": "2026-09-07T01:00:00+00:00"}
+        def __getitem__(self, k): return self._d[k]
+
+    anunciados = {(1, "home"): _A(100), (1, "away"): _A(200), (2, "home"): None,
+                  (2, "away"): _A(400)}
+    reales = {(1, "home"): 100, (1, "away"): 999, (2, "home"): 300}
+    c1 = _cotejo_abridores(1, "c", anunciados, reales)
+    assert c1["home"]["coincide"] == "coincidio"
+    assert c1["away"]["coincide"] == "cambio"
+    c2 = _cotejo_abridores(2, "c", anunciados, reales)
+    assert c2["home"]["coincide"] == "sin_anuncio_al_corte"
+    assert c2["away"]["coincide"] == "sin_dato", \
+        "sin abridor real no se puede afirmar ni coincidencia ni cambio"

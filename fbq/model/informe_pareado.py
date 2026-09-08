@@ -61,6 +61,101 @@ def _resultados(db: Path = DB_RESULTADOS) -> Dict[int, int]:
         con.close()
 
 
+DB_ANUNCIOS = Path(__file__).parent.parent.parent / "data" / "anuncios.db"
+DB_RELEVISTAS = Path(__file__).parent.parent.parent / "data" / "relevistas.db"
+
+
+def _contexto(pks: List[int], db_res: Path = DB_RESULTADOS) -> Dict[int, Dict[str, Any]]:
+    """Marcador y equipos de cada partido. Sin esto la tabla no dice qué pasó."""
+    if not pks:
+        return {}
+    con = sqlite3.connect(f"file:{db_res}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        # Se pide sólo lo que la tabla tiene. Un almacén más viejo o más
+        # pequeño deja la columna en None y la tabla lo dice; lo que no puede
+        # es tumbar el informe entero, que es la parte que sí acredita.
+        hay = {r[1] for r in con.execute("PRAGMA table_info(resultado)")}
+        quiero = ["game_pk", "official_date", "home_team", "away_team",
+                  "home_runs", "away_runs", "home_won"]
+        cols = [c for c in quiero if c in hay]
+        marcas = ",".join("?" * len(pks))
+        out = {}
+        for r in con.execute(f"SELECT {', '.join(cols)} FROM resultado "
+                             f"WHERE game_pk IN ({marcas})", pks):
+            fila = {c: None for c in quiero}
+            fila.update(dict(r))
+            out[int(fila["game_pk"])] = fila
+        return out
+    finally:
+        con.close()
+
+
+def _abridores_reales(pks: List[int], db: Path = DB_RELEVISTAS) -> Dict[tuple, int]:
+    """`{(game_pk, lado): pitcher_id}` de quien ABRIÓ de verdad.
+
+    Sale de `data/relevistas.db`, que aplica la regla de rol ya verificada: el
+    primero de la lista QUE LANZÓ. No es el probable del calendario — anunciar
+    y abrir son cosas distintas, y ésa es justamente la pregunta.
+    """
+    if not pks or not Path(db).exists():
+        return {}
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        marcas = ",".join("?" * len(pks))
+        return {(int(pk), "home" if int(loc) else "away"): int(pid)
+                for pk, loc, pid in con.execute(
+                    f"""SELECT game_pk, es_local, pitcher_id FROM aparicion
+                        WHERE rol='abridor' AND game_pk IN ({marcas})""", pks)}
+    finally:
+        con.close()
+
+
+def _abridores_anunciados(pares: List[tuple], db: Path = DB_ANUNCIOS) -> Dict[tuple, Any]:
+    """`{(game_pk, lado): fila}` del ÚLTIMO anuncio anterior al corte del par.
+
+    `vigente_antes` es la única lectura permitida: devuelve lo que se sabía en
+    ese instante, no lo que terminó pasando.
+    """
+    if not pares or not Path(db).exists():
+        return {}
+    from fbq.anuncios.store import AnunciosStore
+    st = AnunciosStore(db)
+    out = {}
+    for pk, corte in pares:
+        for lado in ("home", "away"):
+            out[(int(pk), lado)] = st.vigente_antes(int(pk), lado, corte)
+    return out
+
+
+def _cotejo_abridores(pk: int, corte: str, anunciados, reales) -> Dict[str, Any]:
+    """Por lado: qué se anunció antes del corte y quién abrió.
+
+    Tres respuestas posibles, y ninguna se disfraza de otra: `coincidio`,
+    `cambio`, o `sin_anuncio_al_corte` —que es información, no un hueco que
+    haya que rellenar—. Si falta el dato del abridor real se dice `sin_dato`.
+    """
+    salida: Dict[str, Any] = {}
+    for lado in ("home", "away"):
+        a = anunciados.get((pk, lado))
+        real = reales.get((pk, lado))
+        anunciado = int(a["pitcher_id"]) if a and a["pitcher_id"] is not None else None
+        if real is None:
+            estado = "sin_dato"
+        elif anunciado is None:
+            estado = "sin_anuncio_al_corte"
+        else:
+            estado = "coincidio" if anunciado == real else "cambio"
+        salida[lado] = {
+            "anunciado_id": anunciado,
+            "anunciado_nombre": (a["pitcher_nombre"] if a else None),
+            "anunciado_observado_en": (a["observado_en"] if a else None),
+            "abridor_real_id": real,
+            "coincide": estado,
+        }
+    return salida
+
+
 def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[str, Any]:
     y_real = _resultados(db_res)
     con = sqlite3.connect(f"file:{db_pred}?mode=ro", uri=True)
@@ -145,13 +240,45 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
             "b14": (v["v1.4"]["p_home"] - y) ** 2,
             "sha_v14": v["v1.4"]["modelo_sha"]})
 
+    # ── El desglose por partido ──────────────────────────────────────
+    #
+    # Se publica en CADA corrida, no sólo cuando alguien lo pide a mano: el
+    # objetivo declarado de este tramo es ver qué se pronosticó y qué ocurrió,
+    # y un agregado de 9 pares no lo muestra. Los abridores se cotejan acá
+    # porque un par cuyo abridor cambió entre el corte y el primer lanzamiento
+    # se evaluó sobre una entrada que dejó de ser cierta — y eso hay que poder
+    # verlo partido por partido, no deducirlo.
+    todos = [x for xs in grupos.values() for x in xs]
+    pks = [x["game_pk"] for x in todos]
+    ctx = _contexto(pks, db_res)
+    reales = _abridores_reales(pks)
+    anunciados = _abridores_anunciados([(x["game_pk"], x["corte"]) for x in todos])
+    for clave, xs in grupos.items():
+        for x in xs:
+            c = ctx.get(x["game_pk"], {})
+            x["official_date"] = c.get("official_date")
+            x["home_team"] = c.get("home_team")
+            x["away_team"] = c.get("away_team")
+            x["marcador"] = (None if c.get("home_runs") is None
+                             else f"{c['home_runs']}-{c['away_runs']}")
+            x["gano"] = (None if c.get("home_won") is None
+                         else ("local" if c["home_won"] else "visita"))
+            x["delta_brier"] = x["b14"] - x["b12"]
+            x["poblacion"] = clave
+            x["abridores"] = _cotejo_abridores(x["game_pk"], x["corte"],
+                                               anunciados, reales)
+
     salida: Dict[str, Any] = {
         "advertencia": ("DESCRIPTIVO, no veredicto. Umbral de decisión: n ≥ 900 "
                         "pares con resultado (potencia 80% para ΔBrier=0,001)."),
         "regla_de_seleccion": (
             "primer par completo y verificable de cada partido — "
             "docs/REGLA_SELECCION_PAREJA_2026-09-07.md, declarada con 0 evaluados"),
-        "poblaciones": {}, "pendientes": dict(pendientes),
+        "poblaciones": {},
+        "desglose_por_partido": sorted(
+            (x for x in todos),
+            key=lambda x: (x["poblacion"], x["official_date"] or "", x["game_pk"])),
+        "pendientes": dict(pendientes),
         "emisiones_posteriores": {
             origen: {
                 "n": len(xs),
@@ -182,6 +309,14 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
             "juegos_donde_v1_4_mejora": sum(1 for x in d if x < 0),
             "potencia_alcanzada": f"{n}/900 del umbral de decisión",
             "partidos_unicos": len({x["game_pk"] for x in xs}),
+            "juegos_donde_v1_4_empeora": sum(1 for x in d if x > 0),
+            "juegos_sin_diferencia": sum(1 for x in d if x == 0),
+            "perdida_media_v1_2": b12, "perdida_media_v1_4": b14,
+            "abridores": {
+                estado: sum(1 for x in xs for lado in ("home", "away")
+                            if x["abridores"][lado]["coincide"] == estado)
+                for estado in ("coincidio", "cambio", "sin_anuncio_al_corte",
+                               "sin_dato")},
         }
         assert salida["poblaciones"][clave]["partidos_unicos"] == n, (
             "un partido no puede aportar más de un par al informe principal")
