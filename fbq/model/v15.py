@@ -52,11 +52,16 @@ CONFIG = {
 }
 
 
-def filas_con_carga(seasons: Sequence[int] = (2024, 2025, 2026)):
+def filas_con_carga(seasons: Sequence[int] = (2024, 2025, 2026),
+                    *, con_concentracion: bool = False):
     """Todas las filas predecibles, con la carga ya adjunta en `extra`."""
     partidos = cargar_partidos(seasons)
     indice = cargar_indice(partidos)
-    filas, excl = construir(seasons, indice_carga=indice)
+    conc = None
+    if con_concentracion:
+        from fbq.model.carga import cargar_concentracion
+        conc = cargar_concentracion()
+    filas, excl = construir(seasons, indice_carga=indice, indice_concentracion=conc)
     return filas, excl, indice
 
 

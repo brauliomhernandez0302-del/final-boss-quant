@@ -1,0 +1,187 @@
+{
+  "config": {
+    "preregistro": "docs/PREREGISTRO_V1_6_CONCENTRACION_2026-09-08.md",
+    "v1_2": [
+      "dif_pitagorica",
+      "dif_descanso"
+    ],
+    "v1_6": [
+      "dif_pitagorica",
+      "dif_descanso",
+      "dif_concentracion"
+    ],
+    "ventana_horas": 72.0,
+    "estadistico": "HHI de los lanzamientos de relevo entre brazos",
+    "lambda_l2": 1.0,
+    "evaluacion": "EXPLORATORIA — 2025 y 2026 ya fueron explorados",
+    "dato": "carga OBSERVADA por relevista; no demuestra disponibilidad, lesión ni decisión del entrenador"
+  },
+  "cobertura": {
+    "filas_predecibles": 5741,
+    "con_concentracion": 5690,
+    "sin_concentracion": 51,
+    "motivos": {
+      "sin_relevo_en_la_ventana": 51
+    },
+    "por_temporada": {
+      "2024": {
+        "filas": 1988,
+        "con_concentracion": 1971
+      },
+      "2025": {
+        "filas": 2191,
+        "con_concentracion": 2175
+      },
+      "2026": {
+        "filas": 1562,
+        "con_concentracion": 1544
+      }
+    },
+    "hhi_local": {
+      "media": 0.1930929788651701,
+      "mediana": 0.17869287959853522,
+      "min": 0.0864957264957265,
+      "max": 1.0
+    },
+    "brazos_local": {
+      "media": 6.810720562390158,
+      "min": 1,
+      "max": 13
+    }
+  },
+  "exclusiones_de_fila": {
+    "sin_precio_pinnacle_pre_juego": 1984,
+    "historial_insuficiente": 370
+  },
+  "pliegues": [
+    {
+      "temporada": 2025,
+      "n_entrenamiento": 1971,
+      "n_evaluacion": 2175,
+      "temporadas_entrenamiento": [
+        2024
+      ],
+      "brier_v1_2": 0.24321154168932657,
+      "brier_v1_6": 0.24363634186403962,
+      "brier_mercado": 0.24137596811490908,
+      "coeficientes_v1_6": {
+        "dif_pitagorica": 0.2915299407952585,
+        "dif_descanso": -0.06582115444058262,
+        "dif_concentracion": -0.06842900322468282
+      },
+      "coeficientes_v1_2": {
+        "dif_pitagorica": 0.29317214909199,
+        "dif_descanso": -0.0801019367068382
+      },
+      "desvio_entrenamiento": {
+        "dif_pitagorica": 0.07139709600309439,
+        "dif_descanso": 0.28623101189518585,
+        "dif_concentracion": 0.08053940733384843
+      },
+      "pareado_v1_6_menos_v1_2": {
+        "n": 2175,
+        "clusters": 29,
+        "media": 0.0004248001747130791,
+        "ic95": [
+          -0.00036209042071623645,
+          0.0011599019636405348
+        ],
+        "se_agrupado": 0.0003957199783284748,
+        "se_iid": 0.00034441564469705484,
+        "efecto_diseno": 1.320110277193947,
+        "p_negativa": 0.159
+      },
+      "pareado_v1_6_menos_mercado": {
+        "n": 2175,
+        "clusters": 29,
+        "media": 0.002260373749130515,
+        "ic95": [
+          0.0001172688154962883,
+          0.0045080672965618455
+        ],
+        "se_agrupado": 0.0011067148231871046,
+        "se_iid": 0.0012563758649137646,
+        "efecto_diseno": 0.7759474027310045,
+        "p_negativa": 0.0205
+      },
+      "pareado_v1_2_menos_mercado": {
+        "n": 2175,
+        "clusters": 29,
+        "media": 0.0018355735744174353,
+        "ic95": [
+          -0.0005240933509157691,
+          0.0042553366428706605
+        ],
+        "se_agrupado": 0.0012215892149199127,
+        "se_iid": 0.0012222297644596152,
+        "efecto_diseno": 0.9989521091568203,
+        "p_negativa": 0.063
+      }
+    },
+    {
+      "temporada": 2026,
+      "n_entrenamiento": 4146,
+      "n_evaluacion": 1544,
+      "temporadas_entrenamiento": [
+        2024,
+        2025
+      ],
+      "brier_v1_2": 0.2484065429721538,
+      "brier_v1_6": 0.2484588411460337,
+      "brier_mercado": 0.24646749066513676,
+      "coeficientes_v1_6": {
+        "dif_pitagorica": 0.29583049468571715,
+        "dif_descanso": -0.03177374378923407,
+        "dif_concentracion": -0.02022358800383858
+      },
+      "coeficientes_v1_2": {
+        "dif_pitagorica": 0.29574841749806247,
+        "dif_descanso": -0.03563439428804655
+      },
+      "desvio_entrenamiento": {
+        "dif_pitagorica": 0.07211290845749642,
+        "dif_descanso": 0.27439377356640604,
+        "dif_concentracion": 0.07998832989398569
+      },
+      "pareado_v1_6_menos_v1_2": {
+        "n": 1544,
+        "clusters": 29,
+        "media": 5.229817387983483e-05,
+        "ic95": [
+          -0.00020441421172699383,
+          0.000312095009230319
+        ],
+        "se_agrupado": 0.00013258106348301235,
+        "se_iid": 0.00014117237842855527,
+        "efecto_diseno": 0.8819897406071778,
+        "p_negativa": 0.355
+      },
+      "pareado_v1_6_menos_mercado": {
+        "n": 1544,
+        "clusters": 29,
+        "media": 0.0019913504808969323,
+        "ic95": [
+          -0.0008841374330337246,
+          0.0050227740167704355
+        ],
+        "se_agrupado": 0.0015329940052544722,
+        "se_iid": 0.0014252794996804294,
+        "efecto_diseno": 1.1568600824896706,
+        "p_negativa": 0.092
+      },
+      "pareado_v1_2_menos_mercado": {
+        "n": 1544,
+        "clusters": 29,
+        "media": 0.001939052307017098,
+        "ic95": [
+          -0.0008710707271036497,
+          0.004989708735605947
+        ],
+        "se_agrupado": 0.0015243600727767672,
+        "se_iid": 0.0014184042145236,
+        "efecto_diseno": 1.1549817014824422,
+        "p_negativa": 0.0975
+      }
+    }
+  ]
+}

@@ -263,3 +263,93 @@ def test_COMPLEMENTO_la_carga_si_se_mueve_con_un_partido_de_dentro_de_la_ventana
         "cambiar la carga de un partido DE la ventana tiene que mover la variable"
     assert fuera.diferencia("L", "V", CORTE_BP)["dif_carga_relevo"] == a, \
         "cambiar la de un partido que aún no había terminado NO puede moverla"
+
+
+# ══ v1.6: concentración de la carga entre relevistas ═════════════════════
+
+from fbq.model.carga import IndiceConcentracion
+
+
+def _ap(game_pk, es_local, team_id, pitcher_id, pitches, disponible, rol="relevo"):
+    return {"game_pk": game_pk, "es_local": es_local, "team_id": team_id,
+            "pitcher_id": pitcher_id, "pitches": pitches, "rol": rol,
+            "disponible_desde": disponible}
+
+
+DENTRO = "2025-05-09T02:00:00+00:00"      # dentro de las 72 h del corte
+DESPUES = "2025-05-10T23:00:00+00:00"     # posterior al corte
+
+
+def test_el_hhi_es_uno_cuando_un_solo_brazo_carga_con_todo():
+    idx = IndiceConcentracion([_ap(1, 1, 10, 100, 40, DENTRO)])
+    r = idx.hhi(10, CORTE_BP)
+    assert r["ok"] and r["brazos"] == 1 and r["hhi"] == pytest.approx(1.0)
+
+
+def test_el_hhi_es_un_medio_con_dos_brazos_iguales():
+    idx = IndiceConcentracion([_ap(1, 1, 10, 100, 30, DENTRO),
+                               _ap(1, 1, 10, 200, 30, DENTRO)])
+    assert idx.hhi(10, CORTE_BP)["hhi"] == pytest.approx(0.5)
+
+
+def test_el_hhi_NO_depende_de_cuanto_se_lanzo_sino_de_como_se_repartio():
+    """Es lo que lo distingue de la variable de v1.5: dos bullpens con cargas
+    totales muy distintas y el mismo reparto tienen el mismo índice."""
+    poco = IndiceConcentracion([_ap(1, 1, 10, 100, 10, DENTRO),
+                                _ap(1, 1, 10, 200, 30, DENTRO)])
+    mucho = IndiceConcentracion([_ap(1, 1, 10, 100, 50, DENTRO),
+                                 _ap(1, 1, 10, 200, 150, DENTRO)])
+    assert poco.hhi(10, CORTE_BP)["hhi"] == pytest.approx(mucho.hhi(10, CORTE_BP)["hhi"])
+    assert poco.hhi(10, CORTE_BP)["pitches"] != mucho.hhi(10, CORTE_BP)["pitches"]
+
+
+def test_la_concentracion_solo_mira_partidos_terminados_antes_del_corte():
+    """La misma compuerta de v1.5, sobre el estadístico nuevo."""
+    idx = IndiceConcentracion([_ap(1, 1, 10, 100, 40, DENTRO),
+                               _ap(2, 1, 10, 200, 90, DESPUES)])
+    r = idx.hhi(10, CORTE_BP)
+    assert r["brazos"] == 1 and r["pitches"] == 40, \
+        "el partido que terminó DESPUÉS del corte no puede entrar"
+
+
+def test_sin_relevo_en_la_ventana_la_concentracion_NO_es_computable():
+    """El HHI sería 0/0. No se imputa ni se pone cero: la fila se cae."""
+    idx = IndiceConcentracion([_ap(1, 1, 10, 100, 40, DESPUES)])
+    r = idx.hhi(10, CORTE_BP)
+    assert r["ok"] is False and r["motivo"] == "sin_relevo_en_la_ventana"
+    assert r["hhi"] is None
+
+
+def test_el_abridor_no_cuenta_como_carga_del_bullpen():
+    idx = IndiceConcentracion([_ap(1, 1, 10, 999, 95, DENTRO, rol="abridor"),
+                               _ap(1, 1, 10, 100, 20, DENTRO),
+                               _ap(1, 1, 10, 200, 20, DENTRO)])
+    r = idx.hhi(10, CORTE_BP)
+    assert r["brazos"] == 2 and r["pitches"] == 40 and r["hhi"] == pytest.approx(0.5)
+
+
+def test_un_equipo_cuyo_abridor_lanzo_completo_SIGUE_teniendo_identidad():
+    """Su lado no tiene ninguna fila de relevo. Si el puente juego→equipo se
+    armara sólo con filas de relevo, ese equipo quedaría 'sin identidad' y se
+    confundiría «no usó el bullpen» con «no sé quién es»."""
+    idx = IndiceConcentracion([
+        _ap(1, 1, 10, 999, 110, DENTRO, rol="abridor"),      # local, juego completo
+        _ap(1, 0, 20, 888, 95, DENTRO, rol="abridor"),
+        _ap(1, 0, 20, 300, 25, DENTRO)])
+    r = idx.diferencia_de_juego(1, CORTE_BP)
+    assert r["ok"] is False and r["motivo"] == "sin_relevo_en_la_ventana", \
+        "el motivo tiene que ser el real, no una identidad ausente"
+
+
+def test_cambiar_el_marcador_no_puede_mover_la_concentracion():
+    """Invariancia real, no un grep del código: se le pasan al índice las mismas
+    apariciones con y sin campos de marcador, y el resultado tiene que ser
+    idéntico. Si alguna vez alguien leyera un marcador desde acá, esto cae."""
+    base = [_ap(1, 1, 10, 100, 30, DENTRO), _ap(1, 1, 10, 200, 10, DENTRO)]
+    contaminadas = [dict(a, home_runs=9, away_runs=0, home_won=1) for a in base]
+    a = IndiceConcentracion(base).hhi(10, CORTE_BP)
+    b = IndiceConcentracion(contaminadas).hhi(10, CORTE_BP)
+    c = IndiceConcentracion([dict(a_, home_runs=0, away_runs=9, home_won=0)
+                             for a_ in base]).hhi(10, CORTE_BP)
+    assert a["hhi"] == b["hhi"] == c["hhi"]
+    assert a["brazos"] == b["brazos"] == c["brazos"]

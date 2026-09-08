@@ -410,11 +410,15 @@ def test_las_dos_versiones_se_evaluan_sobre_las_mismas_columnas_de_las_mismas_fi
     assert FF.NOMBRES == ("dif_pitagorica", "dif_descanso")
     assert FF.NOMBRES_V13 == FF.NOMBRES + ("b2b_visita",)
     assert FF.NOMBRES_V15 == FF.NOMBRES + ("dif_carga_relevo",)
-    assert FF.TODAS == FF.NOMBRES_V13 + ("dif_carga_relevo",) + FF.DIAGNOSTICOS
+    assert FF.NOMBRES_V16 == FF.NOMBRES + ("dif_concentracion",)
+    assert FF.TODAS == (FF.NOMBRES_V13 + ("dif_carga_relevo", "dif_concentracion")
+                        + FF.DIAGNOSTICOS)
     assert "b2b_local" in FF.DIAGNOSTICOS and "b2b_local" not in FF.NOMBRES_V13
     # v1.5 es v1.2 MÁS UNA variable, no v1.3 más una: el componente recuperado
     # se cerró sin mejora demostrada y no se arrastra.
     assert "b2b_visita" not in FF.NOMBRES_V15
+    # v1.6 tampoco arrastra la variable de v1.5: cada candidato es v1.2 MÁS UNA.
+    assert "dif_carga_relevo" not in FF.NOMBRES_V16
 
 
 def test_el_diagnostico_del_lado_local_no_entra_a_ninguna_prediccion():
@@ -427,6 +431,90 @@ def test_el_diagnostico_del_lado_local_no_entra_a_ninguna_prediccion():
     f = Fila(game_pk=1, official_date="2025-05-01", season=2025, home_team="A",
              away_team="B", corte="2025-05-01T17:00:00+00:00",
              inicio_utc="2025-05-01T22:00:00+00:00", y=1, p_mercado=0.5,
-             x=(0.1, 1.0, 1.0, 0.5, 999.0))     # b2b_local = 999, imposible
+             x=(0.1, 1.0, 1.0, 0.5, -0.1, 999.0))   # b2b_local = 999, imposible
     X, _ = _matriz([f], FF.NOMBRES_V13)
     assert X.shape == (1, 3) and 999.0 not in X.flatten()
+
+
+# ── El almacén por relevista ─────────────────────────────────────────────
+
+def test_las_apariciones_reconstruyen_el_agregado_por_equipo(tmp_path):
+    """Dos almacenes construidos del MISMO documento por caminos distintos
+    tienen que dar lo mismo. Este proyecto ya pagó una vez el no comprobarlo:
+    `fangraphs.pitcher.daily` y `savant.pitcher.rolling` coincidían en 221 y 129
+    de 300 y se estuvieron combinando igual."""
+    from fbq.model import bullpen as BP
+    from fbq.model import relevistas as REL
+
+    box = {"teams": {
+        "home": {"team": {"id": 10, "name": "Local"},
+                 "pitchers": [1, 2, 3],
+                 "players": {"ID1": {"stats": {"pitching": {"numberOfPitches": 95,
+                                                            "gamesStarted": 1,
+                                                            "inningsPitched": "6.0",
+                                                            "battersFaced": 24}}},
+                             "ID2": {"stats": {"pitching": {"numberOfPitches": 20,
+                                                            "inningsPitched": "1.0",
+                                                            "battersFaced": 4}}},
+                             "ID3": {"stats": {"pitching": {"numberOfPitches": 15,
+                                                            "inningsPitched": "2.0",
+                                                            "battersFaced": 6}}}}},
+        "away": {"team": {"id": 20, "name": "Visita"},
+                 "pitchers": [4],
+                 "players": {"ID4": {"stats": {"pitching": {"numberOfPitches": 110,
+                                                            "gamesStarted": 1,
+                                                            "inningsPitched": "9.0",
+                                                            "battersFaced": 33}}}}}}}
+
+    agg = {(f["es_local"]): f for f in BP.filas_de_boxscore(1, box)}
+    ind = REL.filas_de_boxscore(1, box, official_date="2025-05-08", season=2025,
+                                fin=None, disponible=None, procedencia="desconocido")
+    por_lado = {}
+    for f in ind:
+        por_lado.setdefault(f["es_local"], []).append(f)
+
+    for lado in (1, 0):
+        relevo = [f for f in por_lado[lado] if f["rol"] == "relevo"]
+        assert sum(f["pitches"] for f in relevo) == agg[lado]["pitches_relevo"]
+        assert len(relevo) == agg[lado]["relevistas"]
+        assert sum(f["pitches"] for f in por_lado[lado]) == agg[lado]["pitches_total"]
+    # el que lanzó el juego completo no tiene relevistas, y eso no es un faltante
+    assert agg[0]["relevistas"] == 0
+
+
+def test_una_entrada_de_cero_lanzamientos_se_marca_sin_lanzar_y_no_desplaza_al_abridor():
+    """El caso real de Jon Gray, Mick Abel y Kyle Freeland: figuran primeros con
+    cero lanzamientos. Con la regla literal, la apertura entera del segundo se
+    contaba como relevo."""
+    from fbq.model import relevistas as REL
+    box = {"teams": {"home": {
+        "team": {"id": 10, "name": "L"}, "pitchers": [9, 1, 2],
+        "players": {"ID9": {"stats": {"pitching": {"numberOfPitches": 0,
+                                                   "inningsPitched": "0.0"}}},
+                    "ID1": {"stats": {"pitching": {"numberOfPitches": 80,
+                                                   "gamesStarted": 1,
+                                                   "inningsPitched": "5.0"}}},
+                    "ID2": {"stats": {"pitching": {"numberOfPitches": 25,
+                                                   "inningsPitched": "2.0"}}}}}}}
+    filas = {f["pitcher_id"]: f for f in REL.filas_de_boxscore(
+        1, box, official_date="2025-05-08", season=2025, fin=None,
+        disponible=None, procedencia="desconocido")}
+    assert filas[9]["rol"] == "sin_lanzar"
+    assert filas[1]["rol"] == "abridor", "el abridor real es el primero que lanzó"
+    assert filas[2]["rol"] == "relevo"
+
+
+def test_la_procedencia_del_instante_viaja_en_la_fila():
+    """Ningún consumidor tiene que adivinar si el `disponible_desde` salió del
+    fin medido o de la cota de 8 h."""
+    from fbq.model import relevistas as REL
+    box = {"teams": {"home": {"team": {"id": 10, "name": "L"}, "pitchers": [1],
+                              "players": {"ID1": {"stats": {"pitching": {
+                                  "numberOfPitches": 90, "gamesStarted": 1}}}}}}}
+    f = REL.filas_de_boxscore(1, box, official_date="2025-05-08", season=2025,
+                              fin="2025-05-08T23:40:00+00:00",
+                              disponible="2025-05-09T00:00:00+00:00",
+                              procedencia="medido")[0]
+    assert f["procedencia"] == "medido"
+    assert f["fin_medido"] == "2025-05-08T23:40:00+00:00"
+    assert f["disponible_desde"] == "2025-05-09T00:00:00+00:00"
