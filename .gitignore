@@ -102,3 +102,9 @@ docs/informe_pareado_vigente.json
 # El almacén de relevo: 16.174 filas reconstruibles con `python3 -m
 # fbq.model.bullpen`. Como el resto de los almacenes, el dato no viaja en git.
 data/bullpen.db
+
+# Almacén por relevista y las respuestas originales de boxscore (155 MB):
+# se reconstruyen con `python3 -m fbq.model.bullpen --rehacer` y
+# `python3 -m fbq.model.relevistas`.
+data/relevistas.db
+data/boxscores/

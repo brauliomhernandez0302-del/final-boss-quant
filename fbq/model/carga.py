@@ -134,3 +134,104 @@ class IndiceCarga:
 def cargar_indice(partidos: Sequence[Partido], db=None) -> IndiceCarga:
     from fbq.model.bullpen import DB_PATH, cargar
     return IndiceCarga(partidos, cargar(db or DB_PATH))
+
+
+# ══ Concentración de la carga entre relevistas (candidato v1.6) ══════════
+#
+# Definición congelada en `docs/PREREGISTRO_V1_6_CONCENTRACION_2026-09-08.md`.
+#
+# Misma ventana de 72 h y misma compuerta `disponible_desde` que la carga total:
+# se REUTILIZAN, no se vuelven a elegir. Lo único nuevo es el estadístico.
+
+class IndiceConcentracion:
+    """Herfindahl de los lanzamientos de relevo entre los brazos de un equipo.
+
+        HHI_E(corte) = Σ_i (p_i / P)²    sobre los relevistas i con p_i > 0
+                                          en la ventana; P = Σ p_i
+
+    En 1 cuando un solo brazo cargó con todo; en 1/k cuando k brazos cargaron
+    por igual. Es una proporción, así que no depende de cuántos lanzamientos se
+    hicieron sino de **entre cuántos brazos se repartieron**.
+
+    ⚠️ Esto es carga OBSERVADA, no disponibilidad. Que la carga se concentrara
+    en dos brazos no demuestra que los demás no estuvieran disponibles: pudo ser
+    rol, marcador, o que el partido no pidiera más. Ver el encabezado de
+    `fbq/model/relevistas.py`.
+    """
+
+    def __init__(self, apariciones: Iterable[Dict[str, object]]) -> None:
+        #: {equipo_id: [(disponible_desde, pitcher_id, pitches)]}, ordenado
+        self._por_equipo: Dict[int, List[tuple]] = defaultdict(list)
+        #: {(game_pk, es_local): team_id} — el puente entre `Partido`, que
+        #: identifica equipos por NOMBRE, y este índice, que los identifica por
+        #: id. Se arma del mismo documento, así que no hay emparejamiento de
+        #: nombres que pueda fallar en silencio.
+        self._equipo_de_juego: Dict[tuple, int] = {}
+        for a in apariciones:
+            if a.get("game_pk") is not None and a.get("es_local") is not None:
+                self._equipo_de_juego[(int(a["game_pk"]), int(a["es_local"]))] = \
+                    int(a["team_id"])
+            if a["rol"] != "relevo" or a["disponible_desde"] is None:
+                continue
+            self._por_equipo[int(a["team_id"])].append(
+                (str(a["disponible_desde"]), int(a["pitcher_id"]), int(a["pitches"])))
+        for lista in self._por_equipo.values():
+            lista.sort()
+
+    def hhi(self, team_id: int, corte: str) -> Dict[str, object]:
+        hasta = _t(corte)
+        desde = (hasta - dt.timedelta(hours=VENTANA_HORAS)).isoformat()
+        hasta_s = hasta.isoformat()
+        por_brazo: Dict[int, int] = defaultdict(int)
+        for disp, pid, pitches in self._por_equipo.get(int(team_id), ()):
+            if desde <= disp <= hasta_s:
+                por_brazo[pid] += pitches
+        total = sum(v for v in por_brazo.values() if v > 0)
+        if total <= 0:
+            # Sin lanzamientos de relevo en la ventana el índice es 0/0. No se
+            # inventa un valor: la fila no es computable (preregistro §4).
+            return {"ok": False, "motivo": "sin_relevo_en_la_ventana",
+                    "hhi": None, "brazos": 0, "pitches": 0}
+        hhi = sum((v / total) ** 2 for v in por_brazo.values() if v > 0)
+        return {"ok": True, "motivo": "", "hhi": hhi,
+                "brazos": sum(1 for v in por_brazo.values() if v > 0),
+                "pitches": total}
+
+    def diferencia_de_juego(self, game_pk: int, corte: str) -> Dict[str, object]:
+        """La diferencia del partido, resolviendo los ids por `game_pk`."""
+        local = self._equipo_de_juego.get((int(game_pk), 1))
+        visita = self._equipo_de_juego.get((int(game_pk), 0))
+        if local is None or visita is None:
+            return {"ok": False, "motivo": "sin_identidad_de_equipo",
+                    "dif_concentracion": None}
+        return self.diferencia(local, visita, corte)
+
+    def diferencia(self, local_id: int, visita_id: int, corte: str) -> Dict[str, object]:
+        hl = self.hhi(local_id, corte)
+        hv = self.hhi(visita_id, corte)
+        if not (hl["ok"] and hv["ok"]):
+            return {"ok": False, "motivo": hl["motivo"] or hv["motivo"],
+                    "dif_concentracion": None}
+        return {
+            "ok": True, "motivo": "",
+            "dif_concentracion": float(hl["hhi"]) - float(hv["hhi"]),
+            "hhi_local": float(hl["hhi"]), "hhi_visita": float(hv["hhi"]),
+            "brazos_local": int(hl["brazos"]), "brazos_visita": int(hv["brazos"]),
+        }
+
+
+def cargar_concentracion(db=None) -> IndiceConcentracion:
+    import sqlite3
+    from fbq.model.relevistas import DB_PATH as DB_REL
+    con = sqlite3.connect(f"file:{db or DB_REL}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        return IndiceConcentracion(
+            dict(r) for r in con.execute(
+                # TODAS las filas, no sólo las de relevo: el puente
+                # juego→equipo necesita también los equipos cuyo abridor lanzó
+                # el partido completo. El filtro por rol vive en el índice.
+                "SELECT game_pk, es_local, team_id, pitcher_id, pitches, rol, "
+                "disponible_desde FROM aparicion"))
+    finally:
+        con.close()

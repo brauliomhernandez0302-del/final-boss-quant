@@ -49,6 +49,7 @@ en `docs/PREREGISTRO_V1_5_BULLPEN_2026-09-07.md` y se aplica en
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import logging
 import sqlite3
@@ -64,6 +65,14 @@ log = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "bullpen.db"
 DB_RESULTADOS = Path(__file__).parent.parent.parent / "data" / "results.db"
+#: Las respuestas TAL COMO LLEGARON, una por partido, comprimidas.
+#:
+#: La primera versión de este módulo parseaba y tiraba la respuesta. Fue un
+#: error propio: cuando hizo falta el detalle por relevista —que estaba en el
+#: mismo documento— no quedaba nada que releer y hubo que volver a pedir los
+#: 8.087. Guardarlas cuesta ~149 MB comprimidas y vuelve gratis cualquier
+#: pregunta futura sobre el mismo documento.
+RESPUESTAS = Path(__file__).parent.parent.parent / "data" / "boxscores"
 BASE = "https://statsapi.mlb.com/api/v1"
 TIMEOUT = (5, 25)
 
@@ -166,20 +175,66 @@ def filas_de_boxscore(pk: int, box: Dict[str, Any]) -> List[Dict[str, Any]]:
     return filas
 
 
-def _boxscore(pk: int) -> Optional[Dict[str, Any]]:
+def ruta_respuesta(pk: int, carpeta: Path = RESPUESTAS) -> Path:
+    return Path(carpeta) / f"{int(pk)}.json.gz"
+
+
+def leer_respuesta(pk: int, carpeta: Path = RESPUESTAS) -> Optional[Dict[str, Any]]:
+    """La respuesta guardada, o None si no está. Nunca pide a la red."""
+    ruta = ruta_respuesta(pk, carpeta)
+    if not ruta.exists():
+        return None
+    try:
+        with gzip.open(ruta, "rt", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        # Un archivo a medio escribir no es una respuesta: se ignora y se
+        # vuelve a pedir. No se intenta reparar un JSON truncado.
+        return None
+
+
+def _guardar_respuesta(pk: int, datos: Dict[str, Any],
+                       carpeta: Path = RESPUESTAS) -> None:
+    """Escribe primero a un temporal y renombra: un corte a mitad de escritura
+    deja el archivo viejo o ninguno, nunca uno truncado que parezca válido."""
+    carpeta = Path(carpeta)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    tmp = carpeta / f".{int(pk)}.tmp.gz"
+    with gzip.open(tmp, "wt", encoding="utf-8") as fh:
+        json.dump(datos, fh, separators=(",", ":"))
+    tmp.replace(ruta_respuesta(pk, carpeta))
+
+
+def _boxscore(pk: int, *, carpeta: Path = RESPUESTAS,
+              red: bool = True) -> Optional[Dict[str, Any]]:
+    """La respuesta guardada si está; si no, la pide y la guarda."""
+    datos = leer_respuesta(pk, carpeta)
+    if datos is not None:
+        return datos
+    if not red:
+        return None
     r = requests.get(f"{BASE}/game/{int(pk)}/boxscore", timeout=TIMEOUT)
     r.raise_for_status()
-    return r.json()
+    datos = r.json()
+    _guardar_respuesta(pk, datos, carpeta)
+    return datos
 
 
 def descargar(game_pks: Iterable[int], *, db: Path = DB_PATH,
-              hilos: int = 8) -> Dict[str, int]:
-    """Trae los boxscores que falten y guarda sus dos filas por partido."""
+              hilos: int = 8, carpeta: Path = RESPUESTAS,
+              rehacer: bool = False) -> Dict[str, int]:
+    """Trae los boxscores que falten y guarda sus dos filas por partido.
+
+    `rehacer=True` recalcula las filas de TODOS los partidos pedidos leyendo las
+    respuestas guardadas — sin red si ya están.
+    """
     pks = sorted({int(p) for p in game_pks})
     with _conn(db) as c:
         ya = {int(r[0]) for r in c.execute(
             "SELECT game_pk FROM relevo GROUP BY game_pk HAVING COUNT(*)=2")}
-    faltan = [p for p in pks if p not in ya]
+    faltan = pks if rehacer else [p for p in pks if p not in ya]
+    en_disco = sum(1 for p in faltan if ruta_respuesta(p, carpeta).exists())
+    log.info("respuestas ya guardadas: %s de %s", en_disco, len(faltan))
     log.info("boxscores: %s pedidos · %s ya estaban · %s a bajar",
              len(pks), len(pks) - len(faltan), len(faltan))
 
@@ -188,7 +243,7 @@ def descargar(game_pks: Iterable[int], *, db: Path = DB_PATH,
     def uno(pk: int) -> List[Dict[str, Any]]:
         for i in range(3):
             try:
-                b = _boxscore(pk)
+                b = _boxscore(pk, carpeta=carpeta)
                 return filas_de_boxscore(pk, b or {})
             except Exception:                                  # noqa: BLE001
                 if i == 2:
@@ -215,7 +270,8 @@ def descargar(game_pks: Iterable[int], *, db: Path = DB_PATH,
                        :pitches_relevo,:bf_relevo,:outs_relevo,:abridor_id,
                        :abridor_gs)""", filas)
         n = c.execute("SELECT COUNT(*) FROM relevo").fetchone()[0]
-    return {"pedidos": len(pks), "bajados": len(faltan), "filas": len(filas),
+    return {"pedidos": len(pks), "procesados": len(faltan),
+            "respuestas_reusadas": en_disco, "filas": len(filas),
             "fallidos": len(fallidos), "en_almacen": n}
 
 
@@ -237,6 +293,9 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seasons", nargs="+", type=int, default=[2024, 2025, 2026])
     ap.add_argument("--hilos", type=int, default=8)
+    ap.add_argument("--rehacer", action="store_true",
+                    help="recalcula todas las filas releyendo las respuestas "
+                         "guardadas; sólo pide a la red las que falten")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
@@ -245,7 +304,8 @@ def main() -> int:
         "SELECT game_pk FROM resultado WHERE season IN (%s)"
         % ",".join("?" * len(a.seasons)), a.seasons)]
     con.close()
-    log.info("%s", json.dumps(descargar(pks, hilos=a.hilos), ensure_ascii=False))
+    log.info("%s", json.dumps(descargar(pks, hilos=a.hilos, rehacer=a.rehacer),
+                              ensure_ascii=False))
     return 0
 
 

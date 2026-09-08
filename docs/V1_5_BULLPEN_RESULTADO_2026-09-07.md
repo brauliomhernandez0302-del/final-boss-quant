@@ -128,25 +128,40 @@ local → coeficiente negativo*. Sale **positivo en los dos pliegues**. Por el
 propio preregistro eso es evidencia **contra** la hipótesis de fatiga, no una
 historia nueva que contar.
 
-### Por qué, con los datos a la vista
+### Asociaciones observadas (n = 3.753) — descriptivas, no mecanismos
 
-| medición | valor |
-|---|---|
-| corr(carga, gana el local) | **−0,0046** — asociación cruda nula |
-| corr(carga, P(local) del mercado) | **−0,1257** — el mercado YA la descuenta, y en la dirección de la fatiga |
-| corr(carga, partidos jugados local − visita en la ventana) | **+0,4590** |
+*(Esta sección se reescribió el 2026-09-08. La versión original sobreinterpretaba
+las tres correlaciones; qué decía exactamente y por qué estaba mal, en §7.)*
 
-Esa última fila es lo que importa: casi la mitad de la variable es *cuántos
-partidos jugó cada equipo en 72 h*, que es calendario — lo mismo que ya mide
-`dif_descanso`, cuyo coeficiente se encoge al entrar la carga (−0,0800 → −0,0737
-en 2025; −0,0312 → −0,0237 en 2026). No es una señal nueva: es una versión
-ruidosa de una que ya estaba.
+| asociación | r | r² | IC95 de r |
+|---|---|---|---|
+| carga ↔ gana el local | −0,0046 | 0,0000 | [−0,0365, +0,0274] |
+| carga ↔ P(local) del mercado | −0,1257 | 0,0158 | [−0,1570, −0,0940] |
+| carga ↔ partidos jugados (local − visita) en la ventana | +0,4590 | 0,2107 | [+0,4334, +0,4839] |
 
-Por cuartiles de carga la relación tampoco es monótona (el cuartil más cargado
-gana 0,5445 contra 0,5167 implícito del mercado, pero el MENOS cargado también
-supera al mercado, 0,5505 contra 0,5440). Con ~930 juegos por cuartil el error
-típico de una tasa es ~0,016: elegir el cuartil que más se despega entre cuatro
-es fabricar un hallazgo.
+Lo que cada fila permite decir, y nada más:
+
+1. **Con el resultado, la asociación no se distingue de cero.** El intervalo
+   admite cualquier valor entre −0,037 y +0,027, así que tampoco descarta un
+   efecto pequeño; «nula» sería tan infundado como «real».
+2. **Con el precio hay asociación negativa pequeña**: r² = 1,6 %. Es compatible
+   con que el mercado incorpore carga de bullpen, y también con que ambas
+   variables compartan causas (calidad del equipo, estructura de serie, local o
+   visita). Estos datos **no distinguen** esas explicaciones, así que no se
+   afirma ninguna. Dato adicional: quitarle a la carga su componente de
+   calendario **no** debilita la asociación (r = −0,135), o sea que lo que
+   comparte con el precio no es sólo calendario.
+3. **Con el calendario comparte el 21 % de la varianza** (r = 0,459, r² = 0,211).
+   Es la asociación más fuerte de las tres y el motivo principal de sospecha:
+   `dif_descanso` ya mide calendario, y su coeficiente se encoge al entrar la
+   carga (−0,0800 → −0,0737 en 2025; −0,0312 → −0,0237 en 2026). Encogerse es
+   **consistente** con que las dos compartan información; no lo prueba.
+
+Por cuartiles de carga la relación no es monótona: el cuartil más cargado gana
+0,5445 con 0,5167 implícito del mercado, pero el MENOS cargado también queda por
+encima (0,5505 contra 0,5440). Con ~930 juegos por cuartil el error típico de
+una tasa es ~0,016, así que ninguna de las dos brechas se distingue del ruido —
+y elegir la que más se despega entre cuatro es fabricar un hallazgo.
 
 ## 4. Controles de fuga aplicados a la variable nueva
 
@@ -197,3 +212,23 @@ python3 -m pytest tests/test_fbq_control_fuga.py
 Salidas: `docs/v15_bullpen_2026-09-07.csv` (3.753 juegos evaluados, uno por fila,
 con la carga cruda de cada lado y los tres Brier) y `.json` (cobertura,
 exclusiones, coeficientes, pareados con IC).
+
+## 7. Correcciones a este mismo informe (2026-09-08)
+
+Tres frases de la versión del 2026-09-07 afirmaban más de lo que sus números
+sostienen. Se corrigen sin borrar qué decían:
+
+| decía | por qué está mal | dice ahora |
+|---|---|---|
+| «corr(carga, gana el local) = −0,0046 — **asociación cruda nula**» | con n = 3.753 el error típico de r bajo H₀ es 0,016 y el IC95 va de −0,037 a +0,027: el dato no distingue cero de un efecto pequeño. «Nula» es una conclusión, no la medición | «no se distingue de cero; el intervalo tampoco descarta un efecto pequeño» |
+| «corr(carga, P del mercado) = −0,1257 — **el mercado YA la descuenta**» | es un mecanismo inferido de una asociación de r² = 1,6 %. Compatible con eso y con causas comunes; estos datos no las separan | «asociación negativa pequeña, compatible con varias explicaciones que estos datos no distinguen» |
+| «corr = +0,4590 → **casi la mitad de la variable** es calendario» | confunde el coeficiente con la proporción de varianza. r = 0,459 → **r² = 0,211**: el 21 %, no el 46 % | «comparte el 21 % de la varianza con el calendario» |
+
+Ninguna corrección cambia el veredicto —los intervalos pareados seguían cruzando
+el cero y el coeficiente seguía con el signo contrario al preregistrado— pero sí
+cambia qué se puede citar de acá: **hay asociación con el calendario y no hay
+mecanismo demostrado con nada más**.
+
+El error de fondo es el mismo en los tres casos: leer una correlación como si
+dijera qué causa qué, o cuánto de una variable «es» otra. Queda anotado junto al
+resto del catálogo de modos de falla del proyecto.

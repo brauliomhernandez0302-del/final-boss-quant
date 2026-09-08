@@ -117,6 +117,7 @@ def construir(
     precios: Optional[Dict[int, Dict[str, Any]]] = None,
     cache_fines: Optional[Path] = None,
     indice_carga: Optional[Any] = None,
+    indice_concentracion: Optional[Any] = None,
 ) -> Tuple[List[Fila], Counter]:
     """Las filas predecibles y el conteo de exclusiones por motivo.
 
@@ -141,6 +142,9 @@ def construir(
     if indice_carga == "auto":
         from fbq.model.carga import cargar_indice
         indice_carga = cargar_indice(partidos)
+    if indice_concentracion == "auto":
+        from fbq.model.carga import cargar_concentracion
+        indice_concentracion = cargar_concentracion()
     # El inicio de cada partido, para el componente recuperado.
     #
     # La fuente primaria es la caché de FINES, que trae `inicio` para los 7.664
@@ -165,7 +169,7 @@ def construir(
             continue
         corte = ref["corte"]
         v = construir_fila(ventana, partidos, juego, corte, indice_liga, inicios,
-                           indice_carga)
+                           indice_carga, indice_concentracion)
         if not v.get("ok"):
             excl[str(v.get("motivo", "desconocido"))] += 1
             continue
@@ -182,7 +186,9 @@ def construir(
                 # columna es un cero medido o una ausencia.
                 "carga_ok", "carga_motivo", "pitches_relevo_local",
                 "pitches_relevo_visita", "juegos_ventana_local",
-                "juegos_ventana_visita") if k in v}))
+                "juegos_ventana_visita",
+                "concentracion_ok", "concentracion_motivo", "hhi_local",
+                "hhi_visita", "brazos_local", "brazos_visita") if k in v}))
     return filas, excl
 
 

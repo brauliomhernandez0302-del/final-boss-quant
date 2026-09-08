@@ -50,12 +50,16 @@ NOMBRES_V13 = NOMBRES + ("b2b_visita",)
 # antes de medir, y se calcula en `fbq/model/carga.py`.
 NOMBRES_V15 = NOMBRES + ("dif_carga_relevo",)
 
+# La v1.6 agrega UNA variable distinta: la concentración de esa carga entre los
+# brazos, no su total. `docs/PREREGISTRO_V1_6_CONCENTRACION_2026-09-08.md`.
+NOMBRES_V16 = NOMBRES + ("dif_concentracion",)
+
 # Se calcula siempre pero NO entra a ningún modelo: es el diagnóstico que dice
 # si la neutralización del lado local que hizo el sistema anterior se sostiene
 # sobre datos propios.
 DIAGNOSTICOS = ("b2b_local",)
 
-TODAS = NOMBRES_V13 + ("dif_carga_relevo",) + DIAGNOSTICOS
+TODAS = NOMBRES_V13 + ("dif_carga_relevo", "dif_concentracion") + DIAGNOSTICOS
 
 
 def regress(observed: float, mean: float, n: float, k: float) -> float:
@@ -166,6 +170,7 @@ def construir_fila(
     indice_liga: Optional["IndiceLiga"] = None,
     inicios: Optional[Dict[int, str]] = None,
     indice_carga: Optional[object] = None,
+    indice_concentracion: Optional[object] = None,
 ) -> Dict[str, object]:
     """Las variables de un juego, al corte de su precio de referencia.
 
@@ -204,6 +209,11 @@ def construir_fila(
     carga = ({"ok": False, "motivo": "sin_indice_de_carga"}
              if indice_carga is None
              else indice_carga.diferencia(juego.home_team, juego.away_team, corte))
+    # Concentración (v1.6). Misma política que la carga: no tumba la fila, la
+    # marca. El 0.0 que queda en la columna NUNCA se usa sin `concentracion_ok`.
+    conc = ({"ok": False, "motivo": "sin_indice_de_concentracion"}
+            if indice_concentracion is None
+            else indice_concentracion.diferencia_de_juego(juego.game_pk, corte))
 
     return {
         "ok": True,
@@ -214,6 +224,13 @@ def construir_fila(
         "dif_carga_relevo": (float(carga["dif_carga_relevo"])
                              if carga.get("ok") else 0.0),
         "carga_ok": 1 if carga.get("ok") else 0,
+        "dif_concentracion": (float(conc["dif_concentracion"])
+                              if conc.get("ok") else 0.0),
+        "concentracion_ok": 1 if conc.get("ok") else 0,
+        "concentracion_motivo": conc.get("motivo", ""),
+        "hhi_local": conc.get("hhi_local"), "hhi_visita": conc.get("hhi_visita"),
+        "brazos_local": conc.get("brazos_local"),
+        "brazos_visita": conc.get("brazos_visita"),
         "carga_motivo": carga.get("motivo", ""),
         "pitches_relevo_local": carga.get("pitches_relevo_local"),
         "pitches_relevo_visita": carga.get("pitches_relevo_visita"),
