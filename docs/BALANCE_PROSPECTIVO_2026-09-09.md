@@ -154,3 +154,44 @@ Cron de los `:55` → `docs/informe_pareado_vigente.json`, sin intervención.
 python3 -m fbq.model.informe_pareado
 python3 -m pytest tests/test_fbq_informe_pareado.py
 ```
+
+---
+
+## Re-corrida del 2026-09-09 00:23:30 UTC — mismo contenido
+
+Se volvió a pedir el balance once minutos después del corte anterior. Resultado:
+**idéntico**, y la razón está medida, no supuesta.
+
+| | corte 00:11:59 | corte **00:23:30** |
+|---|---|---|
+| pares prospectivos evaluados | 9 | **9** |
+| completo / incompleto | 3 / 6 | **3 / 6** |
+| Δ completo · incompleto | +0,019624 · −0,023855 | **+0,019624 · −0,023855** |
+| cortes rechazados / partidos excluidos | 14 / 1 | **14 / 1** |
+| pendientes por fecha | 09-08: 12 · 09-09: 7 · 09-10: 3 | **igual** |
+
+### Los partidos del 8 de septiembre, a las 00:23:30 UTC
+
+Consultado al schedule oficial en ese instante: **0 de 15 terminados.**
+
+| estado | n | detalle |
+|---|---|---|
+| **In Progress** | 10 | el más avanzado lleva 108 min y va por la 6ª entrada; tres llevan 43 min |
+| **Pre-Game** | 5 | primer lanzamiento entre 76 y 106 minutos después del corte |
+
+Un partido de nueve entradas dura unas tres horas, así que el primero de esa
+jornada debería quedar disponible alrededor de las **01:30 UTC** y el último
+—que empieza 02:10— cerca de las **05:10 UTC**.
+
+### Cuándo entran solos
+
+Sin intervención: el cron de resultados corre a los `:35` de cada hora y el
+informe a los `:55`. Los primeros partidos del 09-08 entran en la corrida de las
+**01:35 → 01:55 UTC**, y los últimos hacia las **05:35 → 05:55 UTC**.
+`docs/informe_pareado_vigente.json` los recogerá con su propio `generado_utc`.
+
+**Nada que corregir en esta re-corrida**: las cuatro correcciones pedidas —hora
+exacta del corte, separación completo/incompleto, lectura de la jornada de puras
+victorias locales, y cortes rechazados frente a partidos excluidos— ya están en
+el informe automático desde el commit `d8f3615`, y siguen vigentes. Ajustes
+congelados sin tocar; modelo sin cambios.
