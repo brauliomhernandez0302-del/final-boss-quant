@@ -35,6 +35,7 @@ import json
 import math
 import sqlite3
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -157,6 +158,11 @@ def _cotejo_abridores(pk: int, corte: str, anunciados, reales) -> Dict[str, Any]
 
 
 def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[str, Any]:
+    # El instante EXACTO en que se leyó el estado. Sin él, «9 partidos» no se
+    # puede reproducir ni contrastar: la muestra crece sola cada hora, y dos
+    # lecturas del mismo informe con distinto número no son una contradicción
+    # sino dos cortes distintos.
+    generado_utc = datetime.now(timezone.utc).isoformat()
     y_real = _resultados(db_res)
     con = sqlite3.connect(f"file:{db_pred}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
@@ -177,7 +183,7 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
                        if hay_calidad else "'sin_anotar' AS calidad FROM prediccion p")
         filas = con.execute(
             """SELECT p.game_pk, p.corte, p.version, p.p_home, p.cohorte, p.origen,
-                      p.modelo_sha, p.commence_time,
+                      p.modelo_sha, p.commence_time, p.official_date,
                       """ + calidad_sql).fetchall()
     finally:
         con.close()
@@ -210,9 +216,25 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
             completos.setdefault((llave[0], llave[2]), (llave, v))
     elegidos = {llave for llave, _ in completos.values()}
 
+    # Un CORTE rechazado no es un PARTIDO excluido.
+    #
+    # Se contaban juntos y eso exageraba el daño: de los cortes que no forman
+    # par bajo el ajuste vigente, la mayoría pertenece a partidos que sí
+    # aportaron un par en otro corte —la regla del primer par completo
+    # funcionando— y no perdieron nada. Sólo son partidos excluidos los que no
+    # tienen NINGÚN par válido.
+    rechazados: List[Dict[str, Any]] = []
+    sin_resultado: List[Dict[str, Any]] = []
+    con_par = {pk for (pk, _) in completos}
     for (pk, corte, cohorte), v in por_llave.items():
         if "v1.2" not in v or "v1.4" not in v:
-            pendientes["sin_las_dos_versiones"] += 1
+            presentes = sorted(v)
+            rechazados.append({
+                "game_pk": pk, "corte": corte, "cohorte": cohorte,
+                "versiones_presentes": presentes,
+                "falta": [x for x in ("v1.2", "v1.4") if x not in presentes],
+                "el_partido_tiene_otro_par_valido": pk in con_par,
+                "motivo": "sin_las_dos_versiones_bajo_el_ajuste_vigente"})
             continue
         origen = min((v["v1.2"]["origen"], v["v1.4"]["origen"]), key=lambda o: FUERZA.get(o, 0))
         # La CALIDAD es una dimensión aparte de la condición prospectiva: una
@@ -231,6 +253,10 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
             continue
         if pk not in y_real:
             pendientes[f"{clave_grupo}:sin_resultado_todavia"] += 1
+            sin_resultado.append({"game_pk": pk, "corte": corte,
+                                  "official_date": v["v1.2"]["official_date"],
+                                  "commence_time": v["v1.2"]["commence_time"],
+                                  "poblacion": clave_grupo})
             continue
         y = y_real[pk]
         grupos[clave_grupo].append({
@@ -268,17 +294,41 @@ def informe(*, db_pred: Path = DB_PRED, db_res: Path = DB_RESULTADOS) -> Dict[st
             x["abridores"] = _cotejo_abridores(x["game_pk"], x["corte"],
                                                anunciados, reales)
 
+    por_fecha: Dict[str, int] = defaultdict(int)
+    for x in sin_resultado:
+        por_fecha[x["official_date"] or "sin_fecha"] += 1
+
     salida: Dict[str, Any] = {
+        "generado_utc": generado_utc,
         "advertencia": ("DESCRIPTIVO, no veredicto. Umbral de decisión: n ≥ 900 "
                         "pares con resultado (potencia 80% para ΔBrier=0,001)."),
         "regla_de_seleccion": (
             "primer par completo y verificable de cada partido — "
             "docs/REGLA_SELECCION_PAREJA_2026-09-07.md, declarada con 0 evaluados"),
         "poblaciones": {},
+        "cortes_rechazados": {
+            "nota": ("un CORTE rechazado no es un PARTIDO excluido: sólo lo es "
+                     "el que no tiene ningún par válido en ningún corte"),
+            "cortes": len(rechazados),
+            "partidos_afectados": len({r["game_pk"] for r in rechazados}),
+            "partidos_con_otro_par_valido": len(
+                {r["game_pk"] for r in rechazados
+                 if r["el_partido_tiene_otro_par_valido"]}),
+            "partidos_excluidos_definitivamente": len(
+                {r["game_pk"] for r in rechazados
+                 if not r["el_partido_tiene_otro_par_valido"]}),
+            "detalle": sorted(rechazados, key=lambda r: (r["corte"], r["game_pk"])),
+        },
         "desglose_por_partido": sorted(
             (x for x in todos),
             key=lambda x: (x["poblacion"], x["official_date"] or "", x["game_pk"])),
+        # `pendientes` queda sólo para lo que todavía puede resolverse solo:
+        # partidos emitidos que aún no terminaron. Los cortes rechazados viven
+        # en su propia sección porque no son lo mismo ni se arreglan esperando.
         "pendientes": dict(pendientes),
+        "pendientes_por_fecha": dict(sorted(por_fecha.items())),
+        "pendientes_detalle": sorted(
+            sin_resultado, key=lambda x: (x["official_date"] or "", x["game_pk"])),
         "emisiones_posteriores": {
             origen: {
                 "n": len(xs),

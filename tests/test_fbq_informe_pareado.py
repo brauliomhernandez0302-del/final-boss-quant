@@ -14,15 +14,18 @@ import pytest
 from fbq.model.informe_pareado import informe
 
 
+_FECHA = "2026-09-07"
+
+
 def _bases(tmp_path, filas, resultados):
     pred = tmp_path / "prospectiva.db"
     con = sqlite3.connect(pred)
     con.execute("CREATE TABLE prediccion (id INTEGER PRIMARY KEY, game_pk INT, "
                 "corte TEXT, version TEXT, p_home REAL, cohorte TEXT, origen TEXT, "
-                "modelo_sha TEXT, commence_time TEXT)")
+                "modelo_sha TEXT, commence_time TEXT, official_date TEXT)")
     con.executemany("INSERT INTO prediccion (game_pk, corte, version, p_home, "
-                    "cohorte, origen, modelo_sha, commence_time) "
-                    "VALUES (?,?,?,?,?,?,?,?)", filas)
+                    "cohorte, origen, modelo_sha, commence_time, official_date) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)", [f + (_FECHA,) for f in filas])
     con.commit(); con.close()
 
     res = tmp_path / "results.db"
@@ -75,7 +78,12 @@ def test_una_emision_sin_pareja_no_entra_ni_desplaza_a_la_completa(tmp_path):
     p = r["poblaciones"]["prospectiva_verificada|sin_anotar"]
     assert p["pares"] == 1
     assert p["brier_v1_2"] == pytest.approx(0.25), "la suelta de las 01:00 no cuenta"
-    assert r["pendientes"]["sin_las_dos_versiones"] == 1
+    # El corte de las 01:00 queda RECHAZADO, pero el partido no está excluido:
+    # aportó su par en el corte de las 02:00.
+    cr = r["cortes_rechazados"]
+    assert cr["cortes"] == 1 and cr["partidos_afectados"] == 1
+    assert cr["partidos_con_otro_par_valido"] == 1
+    assert cr["partidos_excluidos_definitivamente"] == 0
 
 
 def test_los_partidos_repetidos_no_inflan_la_muestra(tmp_path):
@@ -197,10 +205,10 @@ def _bases_completas(tmp_path, filas, resultados_full):
     con = sqlite3.connect(pred)
     con.execute("CREATE TABLE prediccion (id INTEGER PRIMARY KEY, game_pk INT, "
                 "corte TEXT, version TEXT, p_home REAL, cohorte TEXT, origen TEXT, "
-                "modelo_sha TEXT, commence_time TEXT)")
+                "modelo_sha TEXT, commence_time TEXT, official_date TEXT)")
     con.executemany("INSERT INTO prediccion (game_pk, corte, version, p_home, "
-                    "cohorte, origen, modelo_sha, commence_time) VALUES (?,?,?,?,?,?,?,?)",
-                    filas)
+                    "cohorte, origen, modelo_sha, commence_time, official_date) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)", [f + (_FECHA,) for f in filas])
     con.commit(); con.close()
     res = tmp_path / "results.db"
     con = sqlite3.connect(res)
@@ -245,10 +253,12 @@ def test_con_y_igual_a_uno_el_signo_de_la_diferencia_lo_fija_quien_predijo_mas_a
     """Aritmética, no interpretación: si el local gana SIEMPRE,
     b14 − b12 = (p14 − p12)(p14 + p12 − 2) y el segundo factor es negativo.
 
-    O sea que en una muestra donde todos los partidos los gana el local, la
-    comparación pareada no mide qué modelo predice mejor: mide cuál fue más
-    optimista con el local. Esta prueba existe para que esa propiedad quede
-    escrita y nadie lea un ranking donde no lo hay.
+    Consecuencia: en una jornada de puras victorias locales, el ORDEN de la
+    diferencia pareada coincide con el orden de las probabilidades. La pérdida
+    observada sigue siendo un hecho —cada Brier se comprueba contra el marcador
+    oficial— y sí se puede comparar; lo que no se puede es leerla como
+    superioridad general, porque esa muestra sólo prueba un lado de la
+    calibración y nada dice de los partidos que gana el visitante.
     """
     for p12, p14 in ((0.60, 0.55), (0.44, 0.51), (0.50, 0.50)):
         d = (p14 - 1) ** 2 - (p12 - 1) ** 2
@@ -276,3 +286,50 @@ def test_el_cotejo_de_abridores_distingue_cambio_de_falta_de_anuncio():
     assert c2["home"]["coincide"] == "sin_anuncio_al_corte"
     assert c2["away"]["coincide"] == "sin_dato", \
         "sin abridor real no se puede afirmar ni coincidencia ni cambio"
+
+
+def test_un_corte_rechazado_no_es_un_partido_excluido(tmp_path):
+    """Contarlos juntos exagera el daño. El partido 1 pierde un corte y aporta
+    par en otro; el partido 2 no tiene ninguno y ése sí está excluido."""
+    filas = [(1, "2026-09-07T01:00:00+00:00", "v1.4", 0.9, "prospectiva",
+              "prospectiva_verificada", "SHA14", "2099-01-01T00:00:00+00:00")]
+    filas += _par(1, "2026-09-07T02:00:00+00:00", 0.55, 0.56)
+    filas += [(2, "2026-09-07T02:00:00+00:00", "v1.2", 0.5, "prospectiva",
+               "prospectiva_verificada", "SHA12", "2099-01-01T00:00:00+00:00")]
+    pred, res = _bases(tmp_path, filas, [(1, 1), (2, 1)])
+    cr = informe(db_pred=pred, db_res=res)["cortes_rechazados"]
+    assert cr["cortes"] == 2
+    assert cr["partidos_afectados"] == 2
+    assert cr["partidos_con_otro_par_valido"] == 1
+    assert cr["partidos_excluidos_definitivamente"] == 1
+    d = {r["game_pk"]: r for r in cr["detalle"]}
+    assert d[1]["el_partido_tiene_otro_par_valido"] is True
+    assert d[1]["falta"] == ["v1.2"]
+    assert d[2]["el_partido_tiene_otro_par_valido"] is False
+    assert d[2]["falta"] == ["v1.4"]
+
+
+def test_el_informe_sella_el_instante_de_su_corte(tmp_path):
+    """Sin él, «9 partidos» no se puede reproducir: la muestra crece sola cada
+    hora y dos lecturas con distinto número no son una contradicción sino dos
+    cortes distintos."""
+    import datetime as _dt
+    filas = _par(1, "2026-09-07T02:00:00+00:00", 0.55, 0.56)
+    pred, res = _bases(tmp_path, filas, [(1, 1)])
+    r = informe(db_pred=pred, db_res=res)
+    t = _dt.datetime.fromisoformat(r["generado_utc"])
+    assert t.tzinfo is not None, "el sello va en UTC explícito, no en hora local"
+    assert abs((_dt.datetime.now(_dt.timezone.utc) - t).total_seconds()) < 60
+
+
+def test_los_pendientes_se_ven_por_fecha(tmp_path):
+    """Para poder responder «¿por qué no está la jornada de ayer?» sin abrir
+    una base: o no terminaron, o no hay par."""
+    filas = _par(1, "2026-09-07T02:00:00+00:00", 0.55, 0.56)
+    filas += _par(2, "2026-09-08T02:00:00+00:00", 0.55, 0.56)
+    filas += _par(3, "2026-09-08T03:00:00+00:00", 0.55, 0.56)
+    pred, res = _bases(tmp_path, filas, [(1, 1)])
+    r = informe(db_pred=pred, db_res=res)
+    assert r["pendientes_por_fecha"] == {"2026-09-07": 2}, \
+        "las fixtures comparten fecha; lo que importa es que se agrupe por ella"
+    assert {x["game_pk"] for x in r["pendientes_detalle"]} == {2, 3}
